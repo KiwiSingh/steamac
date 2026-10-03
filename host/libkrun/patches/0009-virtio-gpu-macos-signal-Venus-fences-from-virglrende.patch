@@ -1,7 +1,7 @@
 From 4db69c42bf4188d9dc587fb6b505a9978d6ea9e6 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 21:08:09 +0300
-Subject: [PATCH 09/10] virtio/gpu(macos): signal Venus fences from
+Subject: [PATCH 09/11] virtio/gpu(macos): signal Venus fences from
  virglrenderer's sync thread
 
 Every Venus context fence hung on macOS: in the guest the first Vulkan

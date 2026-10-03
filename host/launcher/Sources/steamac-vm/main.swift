@@ -3,24 +3,6 @@ import CKrun
 import Darwin
 import Foundation
 
-// MARK: cleanup for our own exit() paths (errors, force quit). When the guest stops, libkrun
-// _exit()s without running atexit handlers; Reaper covers that case.
-
-enum Teardown {
-    nonisolated(unsafe) static var console: Console?
-    nonisolated(unsafe) static var gvproxy: Gvproxy?
-    nonisolated(unsafe) static var cleaned = false
-
-    static func cleanup() {
-        guard !cleaned else { return }
-        cleaned = true
-        console?.restoreTerminal()
-        gvproxy?.stop()
-    }
-}
-
-atexit { Teardown.cleanup() }
-
 let options: Options
 do {
     options = try Options.parse(CommandLine.arguments)
@@ -34,24 +16,42 @@ do {
 setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
 
 if options.selftestDisplay { SelfTest.run(options) }
+if options.selftestOverlay { OverlaySelfTest.run(options) }
+// The process the user runs supervises one VM process per boot (see Supervisor).
+if !Supervisor.isChild { Supervisor.run(options) }
+
+// MARK: VM process (one boot)
+
+let windowTitle = "FX Steam Launcher"
 
 /// Graceful shutdown policy shared by window close, menu, signals and the console escape.
 final class Lifecycle: NSObject, NSApplicationDelegate {
+    /// Restored on our own exit() paths (libkrun's _exit skips atexit; the supervisor restores then).
+    nonisolated(unsafe) static var console: Console?
     var vm: VM?
+    var progress: BootProgress?
     weak var window: WindowController?
-    private var requested = false
-    static let gracePeriod: TimeInterval = 90
+    private var requestedAt: Date?
+    /// SteamOS can take ~2 min to stop (systemd stop-job timeouts) before libkrun exits.
+    static let gracePeriod: TimeInterval = 180
 
     func requestShutdown(force: Bool = false) {
-        if force || requested {
+        if let at = requestedAt {
+            // A terminal ^C reaches both the supervisor and us; its forwarded copy is not a second request.
+            if !force && Date().timeIntervalSince(at) < 1 { return }
             log("force quit")
             exit(1)
         }
-        requested = true
+        if force {
+            log("force quit")
+            exit(1)
+        }
+        requestedAt = Date()
         guard let vm, vm.requestShutdown() else {
             log("no guest power key available; exiting")
             exit(0)
         }
+        progress?.hostRequestedShutdown()
         log("power key sent to guest; repeat the request to force quit")
         window?.setStatus("shutting down… (close again to force quit)")
         DispatchQueue.main.asyncAfter(deadline: .now() + Lifecycle.gracePeriod) {
@@ -70,6 +70,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     @objc func menuForceQuit() { requestShutdown(force: true) }
     @objc func menuFullscreen() { window?.window.toggleFullScreen(nil) }
     @objc func menuGrab() { window?.grabPointer() }
+    @objc func menuOverlay() { window?.toggleOverlay() }
 }
 
 let lifecycle = Lifecycle()
@@ -86,18 +87,21 @@ func onSignal(_ sig: Int32, _ handler: @escaping () -> Void) {
 
 do {
     let console = try Console(logPath: options.logFile)
-    Teardown.console = console
     console.onEscape = { force in DispatchQueue.main.async { lifecycle.requestShutdown(force: force) } }
+    atexit { Lifecycle.console?.restoreTerminal() }
+    Lifecycle.console = console
 
-    var network: Gvproxy?
-    if options.network {
-        guard let bin = Gvproxy.locate(explicit: options.gvproxyPath) else {
-            throw OptionError("gvproxy not found (run host/launcher/fetch-gvproxy.sh, pass --gvproxy PATH, or --no-net)")
-        }
-        let g = try Gvproxy()
-        Teardown.gvproxy = g
-        try g.start(binary: bin, sshPort: options.sshPort)
-        network = g
+    let progress = BootProgress(restarting: Supervisor.bootNumber > 1)
+    lifecycle.progress = progress
+    console.onLine = { progress.consoleLine($0) }
+    let progressPort = try ProgressPort()
+    progressPort.start { progress.guestLine($0) }
+    progress.onRebootIntent = {
+        // Tell the supervisor to boot again once libkrun exits; remember where the window was.
+        guard let dir = Supervisor.runDir else { return }
+        let frame = lifecycle.window.map { NSStringFromRect($0.window.frame) } ?? ""
+        FileManager.default.createFile(atPath: Supervisor.rebootMarker(dir), contents: Data(frame.utf8))
+        log("guest is rebooting: the VM will be restarted")
     }
 
     var inputs: VMInputs?
@@ -106,14 +110,16 @@ do {
                           mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.xbox360Pad() : nil)
     }
 
-    let vm = try VM(options: options, display: display, console: console, inputs: inputs, network: network)
+    let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
+                    inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
 
     for sig in [SIGINT, SIGTERM, SIGHUP] {
         onSignal(sig) { lifecycle.requestShutdown() }
     }
-    // SIGUSR1: dump the guest's last frame (and, with a window, the drawable the window presented).
-    var windowView: VMView?
+    // SIGUSR1: dump the guest's last frame (and, with a window, what the window shows:
+    // <name>-window.png = Metal drawable, <name>-overlay.png = drawable + overlay at 2x).
+    var windowController: WindowController?
     onSignal(SIGUSR1) {
         do {
             try display.dumpPNG(to: options.frameDumpPath)
@@ -121,24 +127,21 @@ do {
         } catch {
             log("frame dump failed: \(error)")
         }
-        guard let view = windowView else { return }
-        let path = (options.frameDumpPath as NSString).deletingPathExtension + "-window.png"
-        view.renderer.captureNextDraw = { bytes, w, h in
+        guard let wc = windowController else { return }
+        let base = (options.frameDumpPath as NSString).deletingPathExtension
+        wc.captureWindow { drawable, composite in
             do {
-                try PNG.write(bgrxLike: Data(bytes), width: w, height: h,
-                              format: UInt32(KRUN_DISPLAY_FORMAT_B8G8R8A8_UNORM), to: path)
-                log("window drawable (\(w)x\(h)) dumped to \(path)")
+                if let drawable { try PNG.write(drawable, to: base + "-window.png") }
+                if let composite { try PNG.write(composite, to: base + "-overlay.png") }
+                log("window dumped to \(base)-window.png, \(base)-overlay.png (overlay \(wc.overlay.shown ? "shown" : "hidden"))")
             } catch {
                 log("window dump failed: \(error)")
             }
         }
-        view.redraw()
     }
 
     log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.displayWidth)x\(options.displayHeight)"
-        + " cmdline=\"\(options.cmdline)\"")
-
-    try Reaper.start(gvproxy: network, restoreTerminal: Console.ownsTerminal)
+        + " cmdline=\"\(options.cmdline)\"" + (Supervisor.bootNumber > 1 ? " (boot #\(Supervisor.bootNumber))" : ""))
 
     if options.headless {
         console.start()
@@ -153,26 +156,30 @@ do {
     app.delegate = lifecycle
     let renderer = Renderer()
     let presenter = Presenter(display: display, renderer: renderer)
-    let wc = WindowController(title: "steamac-vm", width: options.displayWidth, height: options.displayHeight,
+    let wc = WindowController(title: windowTitle, width: options.displayWidth, height: options.displayHeight,
                               renderer: renderer, inputs: inputs, mouseMode: options.mouseMode)
+    if let f = Supervisor.windowFrame, !f.isEmpty { wc.window.setFrame(NSRectFromString(f), display: false) }
     presenter.view = wc.view
     wc.view.metalLayer.framebufferOnly = false   // SIGUSR1 can read back the presented drawable
-    windowView = wc.view
+    windowController = wc
     presenter.onScanoutResize = { [weak wc] w, h in wc?.scanoutResized(width: w, height: h) }
     display.sink = presenter
     app.router = wc
     lifecycle.window = wc
     wc.onCloseRequest = { lifecycle.requestShutdown() }
+    wc.attach(progress: progress)
     MainMenu.install(target: lifecycle, shutdown: #selector(Lifecycle.menuShutdown),
                      forceQuit: #selector(Lifecycle.menuForceQuit),
-                     fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab))
+                     fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
+                     overlay: #selector(Lifecycle.menuOverlay))
     let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0) }
     wc.show()
+    wc.overlay.show()
     gamepad?.start()
     if let d = options.inputSelftestDelay { InputSelfTest.schedule(after: d, window: wc, gamepad: gamepad) }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, activity)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, activity, progressPort)) { app.run() }
 } catch {
     fatal("\(error)")
 }

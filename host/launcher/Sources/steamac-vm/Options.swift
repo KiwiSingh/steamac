@@ -20,6 +20,9 @@ struct Options {
     var displayWidth = 1280
     var displayHeight = 800
     var refreshRate = 60
+    var dpi: Int?
+    var displayMM: (Int, Int)?
+    var selftestOverlay = false
     var headless = false
     var logFile: String?
     var network = true
@@ -42,6 +45,7 @@ struct Options {
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
                       [--mouse absolute|capture] [--no-gamepad] [--krun-log-level 0-5]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
+           steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
 
       --kernel PATH        raw arm64 Image (KRUN_KERNEL_FORMAT_RAW)
       --initrd PATH        initramfs
@@ -51,6 +55,12 @@ struct Options {
       --mem MiB            guest RAM (default 16384)
       --display WxH        virtio-gpu display size (default 1280x800)
       --refresh HZ         EDID refresh rate (default 60)
+      --dpi N              EDID pixel density instead of the default physical size (below)
+      --display-mm WxH     EDID physical size in millimetres (overrides --dpi)
+                           Default: the window's real size on the host monitor (initial content size
+                           in points x the screen's mm/point), so guest UIs come out at real-world size;
+                           96 dpi-equivalent when headless or the monitor reports no size. The EDID is
+                           fixed at boot (resizing / fullscreen later only scales the picture).
       --headless           no window and no input devices; SIGUSR1 dumps the latest frame
       --log FILE           also append the hvc0 console to FILE
       --no-net             no virtio-net / gvproxy
@@ -68,6 +78,8 @@ struct Options {
                            verify PNG dump, Metal render and (windowed) the presented drawable
       --input-selftest S   S seconds after boot, inject synthetic key/mouse/gamepad input, then
                            close the window (guest power key) 4 s later
+      --selftest-overlay   drive the FX boot/shutdown overlay with synthetic console and fx.progress
+                           input and write window captures at several progress points
 
     Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G grab pointer, Ctrl+Option release pointer.
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
@@ -107,6 +119,17 @@ struct Options {
                 guard parts.count == 2, parts[0] > 0, parts[1] > 0 else { throw OptionError("--display: expected WxH, got \(v)") }
                 o.displayWidth = parts[0]; o.displayHeight = parts[1]
             case "--refresh": o.refreshRate = try int(a)
+            case "--dpi":
+                let d = try int(a)
+                guard (50...600).contains(d) else { throw OptionError("--dpi must be 50..600") }
+                o.dpi = d
+            case "--display-mm":
+                let v = try value(a)
+                let parts = v.lowercased().split(separator: "x").compactMap { Int($0) }
+                guard parts.count == 2, (10...5000).contains(parts[0]), (10...5000).contains(parts[1]) else {
+                    throw OptionError("--display-mm: expected WxH in millimetres, got \(v)")
+                }
+                o.displayMM = (parts[0], parts[1])
             case "--headless": o.headless = true
             case "--log": o.logFile = try value(a)
             case "--no-net": o.network = false
@@ -127,6 +150,7 @@ struct Options {
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)
+            case "--selftest-overlay": o.selftestOverlay = true
             case "--input-selftest":
                 let v = try value(a)
                 guard let d = Double(v), d >= 0 else { throw OptionError("--input-selftest: seconds") }
@@ -139,7 +163,7 @@ struct Options {
             }
             i += 1
         }
-        if !o.selftestDisplay {
+        if !o.selftestDisplay && !o.selftestOverlay {
             guard !o.kernel.isEmpty else { throw OptionError("--kernel is required") }
             guard (1...255).contains(o.cpus) else { throw OptionError("--cpus must be 1..255") }
             guard o.memMiB >= 256 else { throw OptionError("--mem must be >= 256") }

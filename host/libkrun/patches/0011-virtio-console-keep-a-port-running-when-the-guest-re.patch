@@ -1,0 +1,40 @@
+From 8a2c3ae2cffc3bb0b61e78244a5caa755f9f42db Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 00:27:29 +0300
+Subject: [PATCH 11/11] virtio/console: keep a port running when the guest
+ reopens it
+
+Linux virtio_console sends VIRTIO_CONSOLE_PORT_OPEN=1 on every open of a
+port. The first open moves the port's rx/tx queues into the port's I/O
+threads; a second open (e.g. a guest agent restarting) then hit
+expect("port rx queue should exist") in process_control_tx and aborted
+the VMM. Skip ports whose queues were already handed over: their I/O keeps
+running across guest close/reopen.
+---
+ src/devices/src/virtio/console/device.rs | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/devices/src/virtio/console/device.rs b/src/devices/src/virtio/console/device.rs
+index b1022a3..8dffca4 100644
+--- a/src/devices/src/virtio/console/device.rs
++++ b/src/devices/src/virtio/console/device.rs
+@@ -257,6 +257,16 @@ impl Console {
+             let rx_idx = port_id_to_queue_idx(QueueDirection::Rx, port_id);
+             let tx_idx = port_id_to_queue_idx(QueueDirection::Tx, port_id);
+ 
++            // The guest sends PORT_OPEN again on every close/reopen of the port
++            // (one opener at a time in Linux virtio_console). The port's I/O
++            // already owns its queues and keeps running across reopens.
++            if self.queues[rx_idx].is_none() || self.queues[tx_idx].is_none() {
++                log::debug!(
++                    "console port {port_id} reopened by the guest; port io already running"
++                );
++                continue;
++            }
++
+             // Take ownership of port queues - they are moved to the port.
+             let rx_queue = self.queues[rx_idx]
+                 .take()
+-- 
+2.50.1 (Apple Git-155)
+

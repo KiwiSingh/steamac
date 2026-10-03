@@ -59,7 +59,9 @@ if [[ $MODE == headless ]]; then
 else
     markers+=(
         'Name="Microsoft X-Box 360 pad"'
-        "window drawable"
+        "window dumped to"
+        "progress: kernel"
+        "progress: shutdown"
         "input[steamac virtio keyboard] type=1 code=30 value=1"
         "input[steamac virtio tablet] type=1 code=272 value=1"
         "input[steamac virtio tablet] type=2 code=8 value=1"

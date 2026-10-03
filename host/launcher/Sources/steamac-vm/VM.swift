@@ -28,7 +28,8 @@ final class VM {
     private(set) var shutdownFd: Int32 = -1
     private(set) var running = false
 
-    init(options o: Options, display: DisplayBackend, console: Console, inputs: VMInputs?, network: Gvproxy?) throws {
+    init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
+         inputs: VMInputs?, netSocket: String?) throws {
         try krun("krun_init_log", krun_init_log(KRUN_LOG_TARGET_DEFAULT, o.krunLogLevel, UInt32(KRUN_LOG_STYLE_AUTO), 0))
         ctx = UInt32(try krun("krun_create_ctx", krun_create_ctx()))
         try krun("krun_set_vm_config", krun_set_vm_config(ctx, UInt8(o.cpus), UInt32(o.memMiB)))
@@ -39,6 +40,11 @@ final class VM {
         try krun("krun_disable_implicit_console", krun_disable_implicit_console(ctx))
         let con = try krun("krun_add_virtio_console_multiport", krun_add_virtio_console_multiport(ctx))
         try krun("krun_add_console_port_tty", krun_add_console_port_tty(ctx, UInt32(con), "", console.slaveFd))
+        // Guest -> host boot/shutdown progress (FX overlay): guest writes /dev/virtio-ports/fx.progress.
+        if let p = progressPort {
+            try krun("krun_add_console_port_inout(\(ProgressPort.name))",
+                     krun_add_console_port_inout(ctx, UInt32(con), ProgressPort.name, p.guestInputFd, p.guestOutputFd))
+        }
 
         try krun("krun_set_kernel", krun_set_kernel(ctx, o.kernel, STEAMAC_KERNEL_FORMAT_RAW, o.initrd, o.cmdline))
 
@@ -53,6 +59,12 @@ final class VM {
         try krun("krun_set_gpu_options2", krun_set_gpu_options2(ctx, flags, UInt64(o.shmMiB) << 20))
         let did = UInt32(try krun("krun_add_display", krun_add_display(ctx, UInt32(o.displayWidth), UInt32(o.displayHeight))))
         try krun("krun_display_set_refresh_rate", krun_display_set_refresh_rate(ctx, did, UInt32(o.refreshRate)))
+        // EDID physical size (drives the guest UI scale; libkrun's default of 300 DPI makes Steam ~2x).
+        let edid = EdidSize.resolve(o)
+        try krun("krun_display_set_physical_size",
+                 krun_display_set_physical_size(ctx, did, UInt16(clamping: edid.widthMM), UInt16(clamping: edid.heightMM)))
+        log("display: \(o.displayWidth)x\(o.displayHeight) px → \(edid.widthMM)x\(edid.heightMM) mm (\(edid.source));"
+            + " EDID is fixed for this boot")
         var backend = display.makeCBackend()
         try krun("krun_set_display_backend", krun_set_display_backend(ctx, &backend, MemoryLayout<krun_display_backend>.size))
 
@@ -66,7 +78,7 @@ final class VM {
             try inputs.gamepad?.attach(ctx: ctx)
         }
 
-        if let network { try network.attach(ctx: ctx) }
+        if let netSocket { try Gvproxy.attach(ctx: ctx, socket: netSocket) }
 
         // macOS/aarch64: an eventfd wired to libkrun's gpio-keys device (graceful shutdown key).
         shutdownFd = krun_get_shutdown_eventfd(ctx)

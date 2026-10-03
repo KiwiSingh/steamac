@@ -13,6 +13,8 @@ final class Console {
     private var lastEscape = Date.distantPast
     /// Called on Ctrl+] (once: graceful shutdown request; twice within 2 s: force quit).
     var onEscape: ((_ force: Bool) -> Void)?
+    /// Every complete console line, delivered on the main queue (boot/shutdown progress).
+    var onLine: ((String) -> Void)?
 
     init(logPath: String?) throws {
         var master: Int32 = -1, slave: Int32 = -1
@@ -41,14 +43,23 @@ final class Console {
     }
 
     func start() {
+        let onLine = self.onLine
         let out = Thread { [masterFd, logFd] in
             var buf = [UInt8](repeating: 0, count: 65536)
+            var splitter = LineSplitter()
             while true {
                 let n = Darwin.read(masterFd, &buf, buf.count)
                 if n < 0 && errno == EINTR { continue }
                 if n <= 0 { break }
                 Console.writeAll(STDOUT_FILENO, buf, n)
                 if logFd >= 0 { Console.writeAll(logFd, buf, n) }
+                if let onLine {
+                    var lines: [String] = []
+                    buf.withUnsafeBytes { p in
+                        splitter.feed(UnsafeRawBufferPointer(rebasing: p[0..<n])) { lines.append($0) }
+                    }
+                    if !lines.isEmpty { DispatchQueue.main.async { lines.forEach(onLine) } }
+                }
             }
         }
         out.name = "console-out"

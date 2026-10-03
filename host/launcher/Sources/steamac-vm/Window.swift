@@ -21,6 +21,10 @@ final class WindowController: NSObject, NSWindowDelegate {
     private let mouseMode: MouseMode
     private let baseTitle: String
     var onCloseRequest: (() -> Void)?
+    /// FX boot/shutdown overlay, layered over the Metal view.
+    let overlay: OverlayView
+    private var progress: BootProgress?
+    private var overlayDismissed = false
 
     private var pressedKeys = Set<UInt16>()
     private var tabletButtons = Set<UInt16>()
@@ -38,9 +42,11 @@ final class WindowController: NSObject, NSWindowDelegate {
         self.baseTitle = title
         self.scanoutSize = (width, height)
         let rect = NSRect(x: 0, y: 0, width: width, height: height)
+        let screen = WindowController.targetScreen()
         window = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                          backing: .buffered, defer: false)
+                          backing: .buffered, defer: false, screen: screen)
         view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
+        overlay = OverlayView(frame: rect)
         super.init()
         window.title = title
         window.contentView = view
@@ -53,6 +59,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         fitToScreen(width: width, height: height)
         window.center()
         view.controller = self
+        overlay.frame = view.bounds
+        view.addSubview(overlay)
         updateTitle()
     }
 
@@ -62,15 +70,28 @@ final class WindowController: NSObject, NSWindowDelegate {
         NSApp.activate()
     }
 
-    /// Size the window so one guest pixel = one point (Retina: 2x2 physical pixels), shrunk to fit the screen.
-    private func fitToScreen(width: Int, height: Int) {
+    /// The screen the window opens on: the one under the mouse pointer, else the main screen.
+    static func targetScreen() -> NSScreen? {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+    }
+
+    /// Initial content size: one guest pixel = one point (Retina: 2x2 physical pixels), shrunk to fit
+    /// the screen's visible area below the title bar. Also the basis of the default EDID size.
+    static func initialContentSize(width: Int, height: Int, screen: NSScreen?) -> NSSize {
         var size = NSSize(width: width, height: height)
-        if let vf = (window.screen ?? NSScreen.main)?.visibleFrame {
-            let chrome = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).height - size.height
+        if let vf = screen?.visibleFrame {
+            let chrome = NSWindow.frameRect(forContentRect: NSRect(origin: .zero, size: size),
+                                            styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - size.height
             let s = min(1, vf.width / size.width, (vf.height - chrome) / size.height)
             size = NSSize(width: (size.width * s).rounded(.down), height: (size.height * s).rounded(.down))
         }
-        window.setContentSize(size)
+        return size
+    }
+
+    private func fitToScreen(width: Int, height: Int) {
+        window.setContentSize(WindowController.initialContentSize(width: width, height: height,
+                                                                  screen: window.screen ?? NSScreen.main))
     }
 
     /// Guest changed mode: follow it (unless fullscreen), keep aspect.
@@ -101,6 +122,53 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: overlay
+
+    /// Boot overlay follows `progress`: hides on `ready` (or when the user clicks / presses a key,
+    /// or after 15 minutes), comes back for shutdown/reboot.
+    func attach(progress: BootProgress) {
+        self.progress = progress
+        overlay.update(progress.state)
+        let previous = progress.onChange
+        progress.onChange = { [weak self] s in previous?(s); self?.overlay.update(s) }
+        let previousReady = progress.onReady
+        progress.onReady = { [weak self] in previousReady?(); self?.overlay.hide() }
+        let previousShutdown = progress.onShutdown
+        progress.onShutdown = { [weak self] reboot in
+            previousShutdown?(reboot)
+            self?.overlayDismissed = false
+            self?.overlay.show()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in
+            guard let self, let p = self.progress, p.state.phase == .boot, self.overlay.shown else { return }
+            log("overlay: still booting after 15 min, hiding the overlay")
+            self.overlay.hide()
+        }
+    }
+
+    /// Menu "Show Boot Overlay".
+    func toggleOverlay() {
+        if overlay.shown { overlay.hide() } else { overlay.show() }
+    }
+
+    /// The user interacted with the guest: a visible overlay gets out of the way (input still goes through).
+    private func userInput() {
+        guard overlay.shown, !overlayDismissed else { return }
+        overlayDismissed = true
+        overlay.hide()
+    }
+
+    /// Read back the next presented drawable; `composite` = drawable with the overlay on top, at 2x.
+    func captureWindow(_ done: @escaping (_ drawable: CGImage?, _ composite: CGImage?) -> Void) {
+        view.renderer.captureNextDraw = { [weak self] bytes, w, h in
+            DispatchQueue.main.async {
+                let drawable = PNG.image(bgra: bytes, width: w, height: h)
+                done(drawable, self?.overlay.renderImage(scale: 2, under: drawable))
+            }
+        }
+        view.redraw()
+    }
+
     // MARK: NSWindowDelegate
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -126,6 +194,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
         switch e.type {
         case .keyDown:
+            userInput()
             if mods.contains([.control, .command]) {
                 switch Int(e.keyCode) {
                 case kVK_ANSI_F: toggleFullScreen(); return true
@@ -246,6 +315,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     func pointerButton(_ e: NSEvent, down: Bool) {
         guard let inputs else { return }
         let b = button(for: e)
+        if down { userInput() }
         // Captured: everything on the relative mouse. Absolute mode: side/extra buttons also go
         // there, because the tablet only advertises LEFT/RIGHT/MIDDLE (see InputDevices).
         let viaMouse = captured || !InputDevices.tabletButtons.contains(b)
@@ -301,7 +371,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
 enum MainMenu {
     static func install(target: AnyObject, shutdown: Selector, forceQuit: Selector,
-                        fullscreen: Selector, grab: Selector) {
+                        fullscreen: Selector, grab: Selector, overlay: Selector) {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
@@ -315,6 +385,7 @@ enum MainMenu {
         viewItem.submenu = viewMenu
         viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
         viewMenu.addItem(item("Grab Pointer (Ctrl+Cmd+G; Ctrl+Option releases)", grab, target))
+        viewMenu.addItem(item("Show Boot Overlay", overlay, target))
         NSApp.mainMenu = main
     }
 

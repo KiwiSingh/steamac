@@ -1,0 +1,367 @@
+//! fx-progress-agent — steamac guest side of the "FX STEAM LAUNCHER" overlay.
+//!
+//! Runs as the session user inside the gamescope session
+//! (fx-progress-agent.service, pulled in by gamescope-session.target) and
+//! writes the line protocol of local://overlay-contract.md to the
+//! virtio-console port /dev/virtio-ports/fx.progress:
+//!
+//!   stage <id> <percent> <text>   ids: session steam-check steam-download
+//!                                 steam-install steam-start; percent -1 = indeterminate
+//!   log <text>                    detail line ("583 / 662 MB · 12.4 MB/s")
+//!   ready                         Steam UI is on screen
+//!   shutdown <poweroff|reboot>    session torn down by a system shutdown
+//!
+//! Lifecycle
+//!   1. port missing (older launcher) -> exit 0 quietly.
+//!   2. `stage session 100`, then follow the Steam bootstrapper log
+//!      (steamlog.rs) and the X11 window list (ui.rs) until the Big Picture
+//!      window has been on screen for 1.5 s -> `ready`.
+//!   3. `ready` is sent at most once per boot (marker in /tmp, keyed by
+//!      boot_id): a restarted session/agent goes straight to step 4.
+//!   4. Idle in sigsuspend(2) (no polling, no CPU) only to report the shutdown:
+//!      SIGTERM -> classify (shutdown.rs, bounded ~1.5 s) -> `shutdown <kind>`
+//!      or nothing if only the session ends -> close port, exit 0.
+//!
+//! Never blocks the session: the port is non-blocking, all work is a 200 ms
+//! tick of a few cheap reads.
+//!
+//! Environment overrides (testing / debugging):
+//!   FX_PROGRESS_PORT=<path>   write to <path> instead of the virtio port
+//!                             (a regular file, FIFO or another char device)
+//!   FX_PROGRESS_STEAM_LOG=<path>  bootstrapper log to follow
+//!   FX_PROGRESS_FORCE=1       ignore the once-per-boot `ready` marker
+
+mod port;
+mod shutdown;
+mod steamlog;
+mod ui;
+
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
+
+use port::Port;
+use ui::{Ui, UiState};
+
+const DEFAULT_PORT: &str = "/dev/virtio-ports/fx.progress";
+const TICK_MS: u64 = 200;
+/// The UI window must stay on screen this long before `ready`.
+const SETTLE: Duration = Duration::from_millis(1500);
+/// "Verification complete" is followed within the same second by
+/// "Downloading update..." when an update is pending; only without that is it
+/// the plain start path.
+const START_GRACE: Duration = Duration::from_millis(1500);
+/// Give up on boot progress (overlay has its own 15 min fallback); keep only
+/// the shutdown reporting.
+const GIVE_UP: Duration = Duration::from_secs(30 * 60);
+
+static SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: libc::c_int) {
+    SIGNAL.store(sig, Ordering::SeqCst);
+}
+
+fn install_signals() {
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_signal as *const () as usize;
+            // No SA_RESTART: pause()/nanosleep() return on the signal.
+            sa.sa_flags = 0;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+}
+
+fn terminated() -> bool {
+    SIGNAL.load(Ordering::SeqCst) != 0
+}
+
+/// One nanosleep; returns early when a signal arrives.
+fn nap(ms: u64) {
+    let ts = libc::timespec { tv_sec: (ms / 1000) as _, tv_nsec: ((ms % 1000) * 1_000_000) as _ };
+    unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Stage {
+    Session,
+    Check,
+    Download,
+    Install,
+    Start,
+}
+
+impl Stage {
+    fn id(self) -> &'static str {
+        match self {
+            Stage::Session => "session",
+            Stage::Check => "steam-check",
+            Stage::Download => "steam-download",
+            Stage::Install => "steam-install",
+            Stage::Start => "steam-start",
+        }
+    }
+}
+
+struct Reporter {
+    port: Port,
+    stage: Stage,
+    last_stage_line: String,
+    last_log_line: String,
+    pending_start: Option<Instant>,
+    /// (log timestamp, KB) samples for the download rate.
+    dl_samples: Vec<(i64, u64)>,
+    pct: i32,
+}
+
+impl Reporter {
+    /// Stages only move forward (the bootstrapper restarts itself after an
+    /// update and logs "Verifying installation" again; that is still the start
+    /// phase from the overlay's point of view), and within a stage the percent
+    /// never goes back (-1 = indeterminate counts as lowest).
+    fn stage(&mut self, s: Stage, pct: i32, text: &str) {
+        if s < self.stage || (s == self.stage && pct < self.pct) {
+            return;
+        }
+        self.stage = s;
+        self.pct = pct;
+        let line = format!("stage {} {} {}", s.id(), pct, text);
+        if line != self.last_stage_line {
+            self.port.send(&line);
+            self.last_stage_line = line;
+        }
+    }
+
+    fn log(&mut self, text: &str) {
+        let line = format!("log {text}");
+        if line != self.last_log_line {
+            self.port.send(&line);
+            self.last_log_line = line;
+        }
+    }
+
+    fn steam_line(&mut self, l: &steamlog::Line) {
+        let t = l.text.as_str();
+        if let Some((done, total)) = steamlog::parse_download(t) {
+            self.pending_start = None;
+            let pct = if total > 0 { (done * 100 / total).min(100) as i32 } else { -1 };
+            self.stage(Stage::Download, pct, "Downloading Steam update");
+            if let Some(ts) = l.ts {
+                self.dl_samples.push((ts, done));
+                self.dl_samples.retain(|&(t0, _)| ts - t0 <= 5);
+            }
+            let mb = |kb: u64| kb as f64 / 1000.0;
+            let rate = match (self.dl_samples.first(), self.dl_samples.last()) {
+                (Some(&(t0, k0)), Some(&(t1, k1))) if t1 > t0 && k1 >= k0 => {
+                    Some(mb(k1 - k0) / (t1 - t0) as f64)
+                }
+                _ => None,
+            };
+            let detail = match rate {
+                Some(r) => format!("{:.0} / {:.0} MB · {:.1} MB/s", mb(done), mb(total), r),
+                None => format!("{:.0} / {:.0} MB", mb(done), mb(total)),
+            };
+            self.log(&detail);
+        } else if t.starts_with("Startup - ") {
+            self.stage(Stage::Check, -1, "Starting Steam client");
+        } else if t.starts_with("Verifying installation") {
+            self.stage(Stage::Check, -1, "Verifying Steam installation");
+        } else if t.starts_with("Verification complete") {
+            if self.stage < Stage::Start {
+                self.pending_start = Some(Instant::now() + START_GRACE);
+            }
+        } else if t.starts_with("Checking for available updates") || t.starts_with("Downloading update...") {
+            self.pending_start = None;
+            self.stage(Stage::Check, -1, "Checking for Steam updates");
+        } else if t.starts_with("Download complete") {
+            self.stage(Stage::Download, 100, "Steam update downloaded");
+        } else if t.starts_with("Extracting package") {
+            self.stage(Stage::Install, 10, "Extracting Steam update");
+        } else if t.starts_with("Installing update") {
+            self.stage(Stage::Install, 50, "Installing Steam update");
+        } else if t.starts_with("Cleaning up") {
+            self.stage(Stage::Install, 90, "Installing Steam update");
+        } else if t.starts_with("Update complete") {
+            self.stage(Stage::Install, 100, "Steam update installed");
+            self.stage(Stage::Start, -1, "Restarting Steam");
+        } else if t.starts_with("Nothing to do") || t.starts_with("Download skipped") {
+            self.pending_start = None;
+            self.stage(Stage::Start, -1, "Starting Steam");
+        }
+    }
+
+    fn tick(&mut self, now: Instant) {
+        if let Some(at) = self.pending_start {
+            if now >= at {
+                self.pending_start = None;
+                self.stage(Stage::Start, -1, "Starting Steam");
+            }
+        }
+    }
+}
+
+/// Is a process with this comm running (/proc scan, cheap)?
+fn process_running(comm: &str) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let Some(n) = name.to_str() else { continue };
+        if !n.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(c) = std::fs::read_to_string(format!("/proc/{n}/comm")) {
+            if c.trim_end() == comm {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn boot_time() -> i64 {
+    std::fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("btime ").and_then(|v| v.trim().parse().ok())))
+        .unwrap_or(0)
+}
+
+fn boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default().trim().to_string()
+}
+
+fn ready_marker() -> String {
+    format!("/tmp/.fx-progress-ready-{}", unsafe { libc::getuid() })
+}
+
+/// Boot progress until `ready` (or give-up / SIGTERM).
+fn report_boot(rep: &mut Reporter) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
+    let log_path = std::env::var("FX_PROGRESS_STEAM_LOG")
+        .unwrap_or_else(|_| format!("{home}/.local/share/Steam/logs/bootstrap_log.txt"));
+    // 5 s margin: the guest clock is set from the RTC before Steam writes.
+    let mut tail = steamlog::Tailer::new(log_path, boot_time() - 5);
+    let mut ui = Ui::new();
+
+    rep.stage(Stage::Session, 100, "Session started");
+    rep.stage(Stage::Check, -1, "Starting Steam client");
+
+    let begin = Instant::now();
+    let mut on_screen_since: Option<Instant> = None;
+    let mut next_ui = Instant::now();
+    let mut next_proc = Instant::now();
+    while !terminated() {
+        let now = Instant::now();
+        for l in tail.poll() {
+            rep.steam_line(&l);
+        }
+        rep.tick(now);
+
+        if now >= next_proc {
+            next_proc = now + Duration::from_secs(1);
+            // UI process up while no update is in progress: Steam is starting.
+            if (rep.stage <= Stage::Check || rep.stage == Stage::Start) && process_running("steamwebhelper") {
+                rep.pending_start = None;
+                rep.stage(Stage::Start, 50, "Loading Steam UI");
+            }
+        }
+        if now >= next_ui {
+            next_ui = now + Duration::from_millis(500);
+            match ui.check() {
+                UiState::OnScreen => {
+                    let since = *on_screen_since.get_or_insert(now);
+                    if rep.stage < Stage::Download || rep.stage == Stage::Start {
+                        rep.stage(Stage::Start, 90, "Opening Steam");
+                    }
+                    if now.duration_since(since) >= SETTLE {
+                        rep.stage(Stage::Start, 100, "Steam is ready");
+                        rep.port.send("ready");
+                        let _ = std::fs::write(ready_marker(), boot_id());
+                        return;
+                    }
+                }
+                UiState::Partial => {
+                    on_screen_since = None;
+                    if rep.stage < Stage::Download || rep.stage == Stage::Start {
+                        rep.stage(Stage::Start, 80, "Opening Steam");
+                    }
+                }
+                UiState::NoWindow | UiState::NoDisplay => on_screen_since = None,
+            }
+        }
+        rep.port.flush();
+        if now.duration_since(begin) > GIVE_UP {
+            eprintln!("fx-progress: no Steam UI after {} min, stop reporting boot progress", GIVE_UP.as_secs() / 60);
+            return;
+        }
+        nap(TICK_MS);
+    }
+}
+
+fn main() {
+    let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
+    let port = match Port::open(&port_path) {
+        Ok(p) => p,
+        Err(e) => {
+            // Older launcher without the port (or no permission): nothing to report to.
+            eprintln!("fx-progress: {port_path}: {e}; exiting");
+            return;
+        }
+    };
+    install_signals();
+    let mut rep = Reporter {
+        port,
+        stage: Stage::Session,
+        last_stage_line: String::new(),
+        last_log_line: String::new(),
+        pending_start: None,
+        dl_samples: Vec::new(),
+        pct: -1,
+    };
+
+    let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
+    let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
+    if already {
+        eprintln!("fx-progress: ready already reported this boot; waiting for shutdown only");
+    } else {
+        report_boot(&mut rep);
+    }
+
+    // Idle until the session is torn down. The signals are blocked around the
+    // flag check and atomically unblocked by sigsuspend(2), so a SIGTERM can
+    // not slip in between check and wait; no wake-ups while idle.
+    unsafe {
+        let mut block: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut block);
+        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            libc::sigaddset(&mut block, sig);
+        }
+        libc::sigprocmask(libc::SIG_BLOCK, &block, &mut old);
+        while !terminated() {
+            if rep.port.has_pending() {
+                libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+                rep.port.flush();
+                nap(TICK_MS);
+                libc::sigprocmask(libc::SIG_BLOCK, &block, std::ptr::null_mut());
+            } else {
+                libc::sigsuspend(&old);
+            }
+        }
+        libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+    }
+    let sig = SIGNAL.load(Ordering::SeqCst);
+    match shutdown::detect() {
+        Some(kind) => {
+            rep.port.send(&format!("shutdown {}", kind.word()));
+            // Short bounded retry if the host is momentarily not reading.
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while rep.port.has_pending() && Instant::now() < deadline {
+                nap(20);
+                rep.port.flush();
+            }
+        }
+        None => eprintln!("fx-progress: signal {sig}, session ends without system shutdown"),
+    }
+    // Port is closed on drop.
+}

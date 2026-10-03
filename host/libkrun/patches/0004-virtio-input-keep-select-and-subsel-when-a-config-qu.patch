@@ -1,7 +1,7 @@
 From 305846360ca2803cae0247e1cae7e69e0c56b787 Mon Sep 17 00:00:00 2001
 From: Willie Abrams <willie@pobox.com>
 Date: Mon, 28 Sep 2026 09:58:40 -0500
-Subject: [PATCH 04/10] virtio/input: keep select and subsel when a config
+Subject: [PATCH 04/11] virtio/input: keep select and subsel when a config
  query fails
 
 The Linux virtio-input driver sets select and subsel with two separate

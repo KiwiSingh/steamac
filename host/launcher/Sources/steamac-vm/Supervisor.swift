@@ -1,0 +1,139 @@
+import Darwin
+import Foundation
+
+/// The process the user starts. libkrun ends a VM by `_exit()`ing its process (power-off *and*
+/// reboot), so each boot runs in a child process (`STEAMAC_VM_CHILD=1`, same argv) while this
+/// supervisor stays in the foreground: it owns gvproxy (restarted per boot), restores the
+/// terminal, forwards signals, cleans up, and relaunches the VM when the child left a reboot
+/// marker (guest-initiated restart).
+enum Supervisor {
+    static let childEnv = "STEAMAC_VM_CHILD"
+    static let runDirEnv = "STEAMAC_RUN_DIR"
+    static let netSockEnv = "STEAMAC_NET_SOCK"
+    static let bootEnv = "STEAMAC_BOOT"
+    static let frameEnv = "STEAMAC_WINDOW_FRAME"
+
+    static var isChild: Bool { ProcessInfo.processInfo.environment[childEnv] == "1" }
+    static var runDir: String? { ProcessInfo.processInfo.environment[runDirEnv] }
+    static var netSocket: String? { ProcessInfo.processInfo.environment[netSockEnv] }
+    static var bootNumber: Int { Int(ProcessInfo.processInfo.environment[bootEnv] ?? "1") ?? 1 }
+    static var windowFrame: String? { ProcessInfo.processInfo.environment[frameEnv] }
+    static func rebootMarker(_ dir: String) -> String { dir + "/reboot" }
+
+    nonisolated(unsafe) private static var childPid: pid_t = 0
+    nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
+
+    static func run(_ o: Options) -> Never {
+        // sun_path is 104 bytes on macOS: keep the run dir short.
+        let dir = "/tmp/steamac-\(getpid())"
+        try? FileManager.default.removeItem(atPath: dir)
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        } catch {
+            fatal("cannot create \(dir): \(error)")
+        }
+
+        var savedTermios: termios?
+        if Console.ownsTerminal {
+            var t = termios()
+            if tcgetattr(STDIN_FILENO, &t) == 0 { savedTermios = t }
+        }
+
+        var gvproxy: Gvproxy?
+        var gvproxyBinary = ""
+        if o.network {
+            guard let bin = Gvproxy.locate(explicit: o.gvproxyPath) else {
+                fatal("gvproxy not found (run host/launcher/fetch-gvproxy.sh, pass --gvproxy PATH, or --no-net)")
+            }
+            gvproxy = Gvproxy(runDir: dir)
+            gvproxyBinary = bin
+        }
+
+        func cleanup() {
+            gvproxy?.stop()
+            try? FileManager.default.removeItem(atPath: dir)
+            if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
+        }
+
+        // Forward termination/dump signals to the VM process (it implements the policy:
+        // first request = guest power key, a later one = force quit).
+        let queue = DispatchQueue(label: "steamac.signals")
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGUSR1] {
+            signal(sig, SIG_IGN)
+            let s = DispatchSource.makeSignalSource(signal: sig, queue: queue)
+            s.setEventHandler { if childPid > 0 { kill(childPid, sig) } }
+            s.resume()
+            signalSources.append(s)
+        }
+
+        let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        var boot = 1
+        var frame: String?
+        while true {
+            do {
+                try gvproxy?.start(binary: gvproxyBinary, sshPort: o.sshPort)
+            } catch {
+                log("error: \(error)")
+                cleanup()
+                exit(1)
+            }
+            var env = ProcessInfo.processInfo.environment
+            env[childEnv] = "1"
+            env[runDirEnv] = dir
+            env[bootEnv] = String(boot)
+            env[netSockEnv] = gvproxy?.vfkitSocket
+            env[frameEnv] = frame
+            let status = spawnAndWait(exe, CommandLine.arguments, env)
+            childPid = 0
+            if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
+            gvproxy?.stop()
+
+            let marker = rebootMarker(dir)
+            if let contents = try? String(contentsOfFile: marker, encoding: .utf8) {
+                try? FileManager.default.removeItem(atPath: marker)
+                boot += 1
+                frame = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+                log("guest rebooted (VM exit status \(status)): starting boot #\(boot)")
+                continue
+            }
+            cleanup()
+            exit(status)
+        }
+    }
+
+    /// posix_spawn (same process group, so the VM process can own the terminal) + waitpid.
+    private static func spawnAndWait(_ exe: String, _ argv: [String], _ env: [String: String]) -> Int32 {
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        // Default signal dispositions in the child (we ignore the forwarded ones here).
+        var defaults = sigset_t()
+        sigemptyset(&defaults)
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGPIPE] { sigaddset(&defaults, sig) }
+        posix_spawnattr_setsigdefault(&attr, &defaults)
+        var noMask = sigset_t()
+        sigemptyset(&noMask)
+        posix_spawnattr_setsigmask(&attr, &noMask)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+
+        let cArgs = argv.map { strdup($0) } + [nil]
+        let cEnv = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { cArgs.forEach { free($0) }; cEnv.forEach { free($0) } }
+        var pid: pid_t = 0
+        let rc = posix_spawn(&pid, exe, nil, &attr, cArgs, cEnv)
+        guard rc == 0 else {
+            log("error: cannot start VM process: \(String(cString: strerror(rc)))")
+            return 1
+        }
+        childPid = pid
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 {
+            if errno != EINTR { return 1 }
+        }
+        // WIFEXITED / WEXITSTATUS / WTERMSIG (macros are not imported into Swift).
+        let low = status & 0x7f
+        if low == 0 { return (status >> 8) & 0xff }
+        return 128 + low
+    }
+}

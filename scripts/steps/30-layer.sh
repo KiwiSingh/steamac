@@ -3,7 +3,8 @@
 # Read-only erofs image; its usr/ becomes the top lowerdir of the guest /usr
 # overlay (lowerdir=<layer>/usr:<rootfs>/usr), see guest/initramfs/init.
 # Contents: guest/layer/usr (steamac files) + work/out/mesa-venus/usr (Venus
-# ICDs from guest/mesa; required unless ALLOW_NO_VENUS=1).
+# ICDs from guest/mesa; required unless ALLOW_NO_VENUS=1) + the
+# fx-progress-agent binary built by step 25 from guest/progress-agent.
 set -euo pipefail
 . /src/scripts/config.env
 
@@ -25,6 +26,12 @@ else
     echo "[layer] $VENUS/usr missing: build guest/mesa first (or ALLOW_NO_VENUS=1 for a test layer)" >&2
     exit 1
 fi
+
+AGENT=/work/cache/progress-agent/fx-progress-agent
+[[ -x $AGENT ]] || { echo "[layer] $AGENT missing: run step 25 (scripts/build-image.sh layer does)" >&2; exit 1; }
+install -m 0755 "$AGENT" "$ST/usr/lib/steamac/fx-progress-agent"
+[[ -L $ST/usr/lib/systemd/user/gamescope-session.target.wants/fx-progress-agent.service ]] \
+    || { echo "[layer] fx-progress-agent.service is not wanted by gamescope-session.target" >&2; exit 1; }
 
 # Sanity: the pieces the initramfs and the A/B flow depend on.
 for f in usr/bin/splctl usr/lib/rauc/post-install.sh usr/lib/steamac/kernelsetup.sh \

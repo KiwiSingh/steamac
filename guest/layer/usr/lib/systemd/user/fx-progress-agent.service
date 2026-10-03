@@ -1,0 +1,23 @@
+# steamac: guest side of the FX Steam Launcher boot/shutdown overlay.
+# Reports session -> Steam client update -> Steam UI ready, and the shutdown
+# kind, over /dev/virtio-ports/fx.progress (see
+# guest/progress-agent/src/main.rs for the protocol and lifecycle).
+# Pulled in by gamescope-session.target (.wants symlink in the layer); stops
+# with it, so it receives SIGTERM when the session is torn down.
+[Unit]
+Description=FX Steam Launcher progress reporter
+PartOf=gamescope-session.target
+# DISPLAY is imported into the user manager by gamescope-onready before
+# gamescope-session.service reports ready.
+After=gamescope-session.service
+
+[Service]
+Type=simple
+Slice=session.slice
+ExecStart=/usr/lib/steamac/fx-progress-agent
+# Exits 0 by itself when the launcher has no fx.progress port.
+Restart=on-failure
+RestartSec=2
+# The agent answers SIGTERM within ~1.5 s worst case; never hold up shutdown.
+TimeoutStopSec=3
+Nice=5

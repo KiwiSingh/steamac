@@ -1,7 +1,7 @@
 From 794b7110e6f2f629a4071ef701fc152a6410ef0b Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 21:47:12 +0300
-Subject: [PATCH 10/10] rutabaga_gfx: route virglrenderer's log into the VMM
+Subject: [PATCH 10/11] rutabaga_gfx: route virglrenderer's log into the VMM
  log by level
 
 rutabaga installed virglrenderer's deprecated level-less debug callback and

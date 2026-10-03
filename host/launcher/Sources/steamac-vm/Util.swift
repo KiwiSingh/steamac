@@ -32,6 +32,23 @@ enum PNG {
         try write(rgba: rgba, width: width, height: height, to: path)
     }
 
+    static func write(_ image: CGImage, to path: String) throws {
+        guard let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw OptionError("cannot create \(path)")
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { throw OptionError("cannot write \(path)") }
+    }
+
+    /// BGRA (Metal drawable readback) -> opaque CGImage.
+    static func image(bgra: [UInt8], width: Int, height: Int) -> CGImage? {
+        let provider = CGDataProvider(data: Data(bgra) as CFData)!
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     static func write(rgba: [UInt8], width: Int, height: Int, to path: String) throws {
         let provider = CGDataProvider(data: Data(rgba) as CFData)!
         guard let image = CGImage(

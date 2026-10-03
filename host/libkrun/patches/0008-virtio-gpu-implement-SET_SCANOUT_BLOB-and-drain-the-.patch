@@ -1,7 +1,7 @@
 From 4ba3396411c0a7e440d2b03c800e4b288359049d Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 20:29:31 +0300
-Subject: [PATCH 08/10] virtio/gpu: implement SET_SCANOUT_BLOB and drain the
+Subject: [PATCH 08/11] virtio/gpu: implement SET_SCANOUT_BLOB and drain the
  cursor queue
 
 v1.19.6 panics the VMM on SET_SCANOUT_BLOB, which the guest's KMS driver

@@ -4,6 +4,7 @@
 #   work/out/steamos.img          raw sparse GPT disk  -> guest /dev/vda
 #   work/out/initramfs.cpio.gz    boot stage (busybox + guest/initramfs/init)
 #   work/out/steamac-layer.img    read-only erofs /usr layer -> guest /dev/vdb
+#                                 (includes guest/progress-agent, built in Rust)
 #
 # All loop/mkfs/btrfs work runs in a privileged linux/arm64 OrbStack container
 # built from scripts/builder/Dockerfile (pinned). Idempotent: the verified
@@ -47,7 +48,14 @@ for step in "${steps[@]}"; do
             ;;
         rootfs)    run_in_builder /src/scripts/steps/10-rootfs.sh ;;
         initramfs) run_in_builder /src/scripts/steps/20-initramfs.sh ;;
-        layer)     run_in_builder /src/scripts/steps/30-layer.sh ;;
+        layer)
+            # guest/progress-agent (Rust, static musl) in the pinned rust container,
+            # then the erofs layer (which installs the binary).
+            docker run --rm --platform linux/arm64 \
+                -v "$REPO:/src:ro" -v "$WORK:/work" \
+                "$RUST_IMAGE" /src/scripts/steps/25-progress-agent.sh
+            run_in_builder /src/scripts/steps/30-layer.sh
+            ;;
         disk)      run_in_builder /src/scripts/steps/40-disk.sh ;;
         check)     run_in_builder /src/scripts/steps/50-check.sh ;;
         *) echo "unknown step $step" >&2; exit 2 ;;
