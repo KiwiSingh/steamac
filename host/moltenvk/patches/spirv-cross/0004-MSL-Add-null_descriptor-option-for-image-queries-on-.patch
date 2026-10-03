@@ -1,7 +1,7 @@
 From 04faecac8bf3d729e13e215516a6283be86f47e7 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 21:20:57 +0300
-Subject: [PATCH 04/16] MSL: Add null_descriptor option for image queries on
+Subject: [PATCH 04/17] MSL: Add null_descriptor option for image queries on
  null textures
 
 VK_EXT_robustness2 nullDescriptor requires image size/levels/samples queries on

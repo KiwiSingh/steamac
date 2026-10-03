@@ -1,0 +1,14 @@
+#version 450
+#extension GL_EXT_null_initializer : require
+// Same with a specialization-constant workgroup size (local_size_x_id), set to 32 at pipeline creation.
+layout(local_size_x_id = 0) in;
+shared uint g0[100] = {};
+shared uint g1[7] = {};
+layout(set = 0, binding = 0, std430) buffer Out { uint v[]; } o;
+void main() {
+  barrier();
+  uint n = gl_WorkGroupSize.x;
+  uint i = gl_LocalInvocationIndex;
+  for (uint k = i; k < 100u; k += n) o.v[k] = g0[k];
+  for (uint k = i; k < 7u; k += n) o.v[100u + k] = g1[k];
+}

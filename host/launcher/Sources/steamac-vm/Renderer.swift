@@ -146,10 +146,17 @@ final class Renderer {
         enc.endEncoding()
     }
 
-    func draw(to layer: CAMetalLayer) {
+    /// `flushedAt` > 0 marks a new guest frame for the perf stats (on-screen time and latency).
+    func draw(to layer: CAMetalLayer, flushedAt: CFTimeInterval = 0) {
+        let perf = flushedAt > 0 ? PerfStats.shared : nil
+        let t0 = perf != nil ? CACurrentMediaTime() : 0
         guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1,
               let drawable = layer.nextDrawable(),
               let cb = queue.makeCommandBuffer() else { return }
+        if let perf {
+            perf.waitedForDrawable(ms: (CACurrentMediaTime() - t0) * 1000)
+            drawable.addPresentedHandler { d in perf.shown(at: d.presentedTime, flushedAt: flushedAt) }
+        }
         encode(into: drawable.texture, commandBuffer: cb)
         if let capture = captureNextDraw, !layer.framebufferOnly {
             captureNextDraw = nil

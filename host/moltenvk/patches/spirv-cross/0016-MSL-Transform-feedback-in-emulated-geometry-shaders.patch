@@ -1,7 +1,7 @@
 From 5f65c8b3c86a7ecf1f99deca7a67259f79489f8e Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:01 +0300
-Subject: [PATCH 16/16] MSL: Transform feedback in emulated geometry shaders
+Subject: [PATCH 16/17] MSL: Transform feedback in emulated geometry shaders
 
 Transform feedback of a geometry shader (zink with a geometry shader on every draw, DXVK's
 stream-output geometry shaders) did not compile: one 'int gl_VertexIndex = 0' per captured

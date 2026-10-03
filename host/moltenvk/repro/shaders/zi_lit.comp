@@ -1,0 +1,15 @@
+#version 450
+#extension GL_EXT_null_initializer : require
+// Workgroup memory zero-initialized (OpConstantNull initializers, VK_KHR_zero_initialize_workgroup_memory),
+// literal workgroup size: two variables (DXVK g0/g1 pattern), a uint array and a struct array.
+layout(local_size_x = 64) in;
+struct S { uint a; vec2 b; };
+shared uint g0[100] = {};
+shared S g1[33] = {};
+layout(set = 0, binding = 0, std430) buffer Out { uint v[]; } o;
+void main() {
+  barrier();
+  uint i = gl_LocalInvocationIndex;
+  for (uint k = i; k < 100u; k += 64u) o.v[k] = g0[k];
+  for (uint k = i; k < 33u; k += 64u) o.v[100u + k] = g1[k].a | floatBitsToUint(g1[k].b.x) | floatBitsToUint(g1[k].b.y);
+}

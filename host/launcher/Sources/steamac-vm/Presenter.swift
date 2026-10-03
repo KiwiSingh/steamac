@@ -56,10 +56,14 @@ final class Presenter: DisplaySink {
         pending = false
         os_unfair_lock_unlock(&lock)
         guard let f = scanout.take() else { return }
+        let perf = PerfStats.shared
+        let flushedAt = perf?.frameTaken() ?? 0
+        let t0 = perf != nil ? CACurrentMediaTime() : 0
         renderer.upload(f)
+        if let perf { perf.uploaded(ms: (CACurrentMediaTime() - t0) * 1000) }
         scanout.release(f)
         framesShown &+= 1
-        view?.redraw()
+        view?.redraw(flushedAt: flushedAt)
     }
 }
 
@@ -128,7 +132,8 @@ final class VMView: NSView {
         }
     }
 
-    func redraw() { renderer.draw(to: metalLayer) }
+    /// `flushedAt`: the guest flush time of a new frame (perf stats), 0 for a plain redraw.
+    func redraw(flushedAt: CFTimeInterval = 0) { renderer.draw(to: metalLayer, flushedAt: flushedAt) }
 
     /// The guest picture's rect in view points (same fit as the renderer).
     var fitRect: CGRect {

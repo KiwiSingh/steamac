@@ -1,7 +1,7 @@
 From 4db6d583fe49358c324931cb79e53e86f27161d4 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:00:41 +0300
-Subject: [PATCH 06/16] MSL: Fix input primitive assembly in the
+Subject: [PATCH 06/17] MSL: Fix input primitive assembly in the
  geometry-shader object stage
 
 The object stage that assembles geometry-shader input primitives took the

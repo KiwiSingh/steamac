@@ -23,7 +23,11 @@
 #
 # The esp is mounted privately (own mount namespace) for each call, so this
 # works from systemd services, from steamos-chroot and before /esp is
-# automounted; flock serialises concurrent writers.
+# automounted; flock serialises concurrent writers. Queries mount it
+# read-only, set-* mount it read-write only for the write (atomic: write
+# bootenv.new, fsync, rename, fsync dir, sync, umount), which keeps the window
+# in which a killed VM leaves a dirty FAT tiny; the steamac initramfs runs
+# fsck.fat on the esp at every boot anyway.
 set -euo pipefail
 
 MAX_TRIES=3
@@ -67,16 +71,21 @@ load_state() {
     done < "$STATE"
 }
 save_state() {
-    mkdir -p "${STATE%/*}"
-    {
+    mkdir -p "${STATE%/*}" \
+    && {
         echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
         echo "BOOT_ORDER=$BOOT_ORDER"
         echo "BOOT_A_LEFT=$BOOT_A_LEFT"
         echo "BOOT_B_LEFT=$BOOT_B_LEFT"
-    } > "$STATE.new"
-    sync "$STATE.new"
-    mv -f "$STATE.new" "$STATE"
-    sync "${STATE%/*}"
+    } > "$STATE.new" \
+    && sync "$STATE.new" \
+    && mv -f "$STATE.new" "$STATE" \
+    && sync "${STATE%/*}" \
+    && sync \
+    || die "cannot write esp:/$STATE_REL (esp read-only after FAT errors?); reboot so the initramfs can repair the esp"
+    if findmnt -n -o OPTIONS --target "$STATE" | grep -qE '(^|,)ro(,|$)'; then
+        die "esp was switched read-only by the kernel while writing (FAT errors); reboot so the initramfs can repair it"
+    fi
 }
 left() { local v="BOOT_${1}_LEFT"; echo "${!v}"; }
 set_left() { printf -v "BOOT_${1}_LEFT" '%s' "$2"; }
@@ -121,7 +130,18 @@ case $cmd in
         # mountpoint under /run is safe and leaves nothing behind.
         mnt=/run/steamac/splctl-esp
         mkdir -p "$mnt"
-        mount -t vfat -o rw,noatime "$(esp_device)" "$mnt"
+        dev=$(esp_device)
+        case $1 in
+            set-*)
+                mount -t vfat -o rw,noatime,errors=remount-ro "$dev" "$mnt" \
+                    || die "cannot mount the esp ($dev) read-write (read-only after FAT errors?); reboot so the initramfs can repair it" ;;
+            *)
+                # ro; if systemd's /esp automount holds the same filesystem
+                # read-write the kernel refuses a ro mount (EBUSY), share it rw.
+                mount -t vfat -o ro "$dev" "$mnt" 2>/dev/null \
+                    || mount -t vfat -o rw,noatime "$dev" "$mnt" \
+                    || die "cannot mount the esp ($dev)" ;;
+        esac
         trap 'umount "$mnt"' EXIT
         STATE=$mnt/$STATE_REL
         run_state_cmd "$@"

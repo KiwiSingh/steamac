@@ -1,7 +1,7 @@
 From 77f207b61dcd7afc18c72f6a47002f0e05f9f0b7 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:18:10 +0300
-Subject: [PATCH 08/16] MSL: Rename variables named after MSL types (sampler,
+Subject: [PATCH 08/17] MSL: Rename variables named after MSL types (sampler,
  array)
 
 A variable named 'sampler' (Xwayland's glamor shaders through zink name their

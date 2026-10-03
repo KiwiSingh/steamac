@@ -18,6 +18,8 @@
 # 5. xfb.c: transform feedback captured by geometry shaders (DXVK stream-output style without
 #    position and with rasterizer discard, strips with varying vertex counts, lines, 2 buffers,
 #    buffer offsets/sizes, counter buffers), buffer contents checked.
+# 6. zero_init.c: compute shaders with zero-initialized workgroup memory (literal and
+#    specialization-constant workgroup sizes), read back after a dispatch dirtied the memory.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -65,6 +67,9 @@ mkdir -p "$gspv"
 for s in "$here"/shaders/*.vert "$here"/shaders/*.geom "$here"/shaders/*.frag; do
 	glslangValidator -V --quiet "$s" -o "$gspv/$(basename "$s").spv"
 done
+for s in "$here"/shaders/*.comp; do
+	glslangValidator -V --quiet --target-env vulkan1.3 "$s" -o "$gspv/$(basename "$s").spv"
+done
 for s in "$here"/shaders/*.spvasm; do
 	spirv-as --target-env vulkan1.0 "$s" -o "$gspv/$(basename "$s" .spvasm).spv"
 done
@@ -83,3 +88,7 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/xfb.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/xfb"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/xfb" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/zero_init.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/zero_init"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/zero_init" "$gspv"

@@ -1,7 +1,7 @@
 From 81367e522982ce0ab008819eac6b8d2057973859 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:20:56 +0300
-Subject: [PATCH 13/16] MSL: Adjacency topologies and instance-rate attributes
+Subject: [PATCH 13/17] MSL: Adjacency topologies and instance-rate attributes
  in the GS object stage
 
 - Geometry shaders with lines/triangles adjacency input read 2/3 vertices per primitive

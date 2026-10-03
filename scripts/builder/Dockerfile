@@ -16,7 +16,8 @@ RUN set -eux; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl openssl jq xxd file binutils \
         squashfs-tools btrfs-progs e2fsprogs dosfstools mtools gdisk fdisk util-linux \
-        erofs-utils busybox-static cpio gzip zstd xz-utils rsync kmod; \
+        erofs-utils busybox-static cpio gzip zstd xz-utils rsync kmod \
+        gcc make libc6-dev pkgconf; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \

@@ -255,6 +255,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         SNORM normalization, fill of missing components)"
 	echo "  0016 = steamac: transform feedback in emulated geometry shaders (mesh stream capture,"
 	echo "         implicit position for stream-output-only GS, EmitStreamVertex stream 0)"
+	echo "  0017 = steamac: gl_WorkGroupSize declared for zero-initialized workgroup memory (DXVK compute"
+	echo "         shaders: 'use of undeclared identifier gl_WorkGroupSize')"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

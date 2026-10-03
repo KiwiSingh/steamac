@@ -44,7 +44,7 @@ struct Options {
                       [--cpus N] [--mem MiB] [--display WxH] [--refresh HZ] [--headless]
                       [--log FILE] [--no-net] [--ssh-port PORT] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
-                      [--mouse absolute|capture] [--no-gamepad] [--krun-log-level 0-5]
+                      [--mouse absolute|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
 
@@ -77,6 +77,9 @@ struct Options {
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
 
     Diagnostics:
+      --perf-stats         every 5 s log frame pacing (also STEAMAC_PERF_STATS=1): guest flush and
+                           on-screen frame intervals (p50/p95/p99/max, count > 25 / > 50 ms), libkrun's
+                           per-flush copy, flush -> screen latency, dropped/replaced frames, upload time
       --selftest-display   feed synthetic frames (all formats) through the display backend vtable and
                            verify PNG dump, Metal render and (windowed) the presented drawable
       --input-selftest S   S seconds after boot, inject synthetic key/mouse/gamepad input, then
@@ -154,6 +157,7 @@ struct Options {
                 o.mouseMode = m
             case "--no-gamepad": o.gamepad = false
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
+            case "--perf-stats": break   // read by PerfStats.shared (argv is passed to the VM process)
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true

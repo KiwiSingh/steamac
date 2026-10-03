@@ -117,18 +117,74 @@ wait_part() { # wait up to 30 s for a partition label to appear
 
 wait_part esp || fatal "no partition labelled 'esp' (is steamos.img attached as the first disk?)"
 ESP_DEV=$(part_dev esp)
-mount -t vfat -o rw,noatime,umask=0077 "$ESP_DEV" /esp || fatal "cannot mount esp $ESP_DEV"
+
+# ---------------------------------------------------------------- FAT check
+# esp and efi-X are vfat. Linux sets the FAT "dirty" bit on every read-write
+# mount and clears it on a clean umount; a VM that is killed while one is
+# mounted read-write (systemd's /esp,/efi automounts, splctl, this script)
+# leaves it set, and a crash mid-update can leave broken cluster chains. The
+# kernel then reports "Volume was not properly unmounted" and, on the first
+# inconsistent FAT entry, flips the volume read-only (errors=remount-ro), so
+# A/B counters could no longer be written. Every boot therefore runs the
+# static dosfstools checker in automatic repair mode on the unmounted
+# partition first (-a: repair, -w: write changes immediately).
+# fsck.fat exit status: 0 clean, 1 errors found (repaired with -a), other = failure.
+# (The static build has no iconv modules; it falls back to its internal CP850
+# table, so those notices and the version banner are dropped from the log.)
+fat_check() { # fat_check <dev> <label>
+    _out=$(fsck.fat -a -w "$1" 2>&1); _rc=$?
+    _out=$(echo "$_out" | grep -vE '^Cannot initialize conversion|^Using internal CP850|^fsck\.fat [0-9]')
+    case $_rc in
+        0) msg "fsck.fat $2 ($1): clean" ;;
+        1) warn "fsck.fat $2 ($1): errors repaired:"
+           echo "$_out" | while IFS= read -r _l; do [ -n "$_l" ] && warn "  fsck.fat: $_l"; done ;;
+        *) warn "fsck.fat $2 ($1) failed (exit $_rc):"
+           echo "$_out" | while IFS= read -r _l; do [ -n "$_l" ] && warn "  fsck.fat: $_l"; done ;;
+    esac
+    return 0
+}
+fat_check "$ESP_DEV" esp
+
+# ---------------------------------------------------------------- esp access
+# The esp is mounted read-only for reading the state, and read-write only for
+# the moment a write needs (mount, write, fsync, umount), so the dirty-bit
+# window stays a few milliseconds per boot.
+esp_rw_mount() {
+    mount -t vfat -o rw,noatime,umask=0077,errors=remount-ro "$ESP_DEV" /esp \
+        || { warn "cannot mount esp ($ESP_DEV) read-write"; return 1; }
+    if grep -q " /esp vfat ro[, ]" /proc/mounts; then
+        warn "esp ($ESP_DEV) came up read-only"; umount /esp; return 1
+    fi
+    return 0
+}
+esp_rw_umount() { # flush everything, then a clean umount clears the FAT dirty bit
+    sync
+    _ro=0; grep -q " /esp vfat ro[, ]" /proc/mounts && _ro=1
+    umount /esp || { warn "cannot unmount esp"; return 1; }
+    [ $_ro = 0 ] || { warn "esp was switched read-only by the kernel during the write (FAT errors)"; return 1; }
+    return 0
+}
 
 # ---------------------------------------------------------------- A/B state
 STATE=/esp/$STATE_REL
-load_state() {
+FACTORY_RESET_CFG=
+esp_read() { # load state + factory-reset request with a read-only mount
     BOOT_ORDER="A B"; BOOT_A_LEFT=$MAX_TRIES; BOOT_B_LEFT=$MAX_TRIES
-    if [ ! -f "$STATE" ]; then
-        warn "no A/B state at esp:/$STATE_REL, using defaults"
+    if ! mount -t vfat -o ro,umask=0077 "$ESP_DEV" /esp; then
+        warn "cannot mount esp ($ESP_DEV); using default A/B state"
         return
     fi
-    # Parse, never source: accept only well-formed lines.
-    tr -d '\r' < "$STATE" > /tmp/bootenv
+    if [ -f "$STATE" ]; then
+        # Parse, never source: accept only well-formed lines.
+        tr -d '\r' < "$STATE" > /tmp/bootenv
+    else
+        warn "no A/B state at esp:/$STATE_REL, using defaults"
+        : > /tmp/bootenv
+    fi
+    for _cfg in /esp/efi/steamos/factory-reset/*.cfg; do
+        [ -f "$_cfg" ] && { FACTORY_RESET_CFG=${_cfg#/esp}; break; }
+    done
+    umount /esp
     while IFS='=' read -r _k _v; do
         case "$_k" in
             BOOT_ORDER)
@@ -138,15 +194,34 @@ load_state() {
         esac
     done < /tmp/bootenv
 }
+# Atomic replace: write bootenv.new, fsync it, rename over bootenv, sync, umount.
+# A crash at any point leaves either the old or the new complete file. If the
+# esp cannot be written the chosen slot still boots (with a clear warning):
+# the attempt counter then simply is not consumed this time.
 save_state() {
-    mkdir -p "${STATE%/*}"
-    {
-        echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
-        echo "BOOT_ORDER=$BOOT_ORDER"
-        echo "BOOT_A_LEFT=$BOOT_A_LEFT"
-        echo "BOOT_B_LEFT=$BOOT_B_LEFT"
-    } > "$STATE.new" && sync && mv -f "$STATE.new" "$STATE" && sync \
-        || warn "could not write $STATE"
+    if ! esp_rw_mount; then
+        warn "A/B state NOT saved (esp not writable); booting slot $SLOT anyway"
+        return 0
+    fi
+    _ok=1
+    mkdir -p "${STATE%/*}" \
+        && {
+            echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
+            echo "BOOT_ORDER=$BOOT_ORDER"
+            echo "BOOT_A_LEFT=$BOOT_A_LEFT"
+            echo "BOOT_B_LEFT=$BOOT_B_LEFT"
+        } > "$STATE.new" \
+        && sync "$STATE.new" \
+        && mv -f "$STATE.new" "$STATE" \
+        && sync "${STATE%/*}" \
+        && grep -qx "BOOT_ORDER=$BOOT_ORDER" "$STATE" || _ok=0
+    esp_rw_umount || _ok=0
+    if [ $_ok = 1 ]; then
+        msg "A/B state saved: BOOT_ORDER='$BOOT_ORDER' BOOT_A_LEFT=$BOOT_A_LEFT BOOT_B_LEFT=$BOOT_B_LEFT"
+    else
+        warn "A/B state NOT saved (write to esp:/$STATE_REL failed); booting slot $SLOT anyway"
+    fi
+    return 0
 }
 left_of() { eval echo "\$BOOT_${1}_LEFT"; }
 set_left() { eval "BOOT_${1}_LEFT=$2"; }
@@ -167,7 +242,7 @@ pick_slot() { # sets SLOT, consumes one attempt; $1 = slot to exclude (optional)
     return 1
 }
 
-load_state
+esp_read
 msg "A/B state: BOOT_ORDER='$BOOT_ORDER' BOOT_A_LEFT=$BOOT_A_LEFT BOOT_B_LEFT=$BOOT_B_LEFT"
 FORCED=$(getarg steamac.slot)
 case "$FORCED" in
@@ -194,6 +269,7 @@ assemble_slot() {
     # -- partsets (stock hook `partsets`): efi-X:/SteamOS/partsets/* -> udev rules
     #    so that the real udevd creates /dev/disk/by-partsets/{self,other,A,B,shared,all}/*
     #    after switch_root (rules files survive because /run is moved, not recreated).
+    fat_check "$EFI_DEV" "efi-$_s"
     mount -t vfat -o ro "$EFI_DEV" /efi || { warn "slot $_s: cannot mount $EFI_DEV"; return 1; }
     if [ ! -f /efi/SteamOS/partsets/self ]; then
         warn "slot $_s: efi-$_s has no SteamOS/partsets/self"; umount /efi; return 1
@@ -247,10 +323,10 @@ echo "$SLOT" > /run/steamac/slot
 # (written by steamos-factory-reset-config) reformats var-A, var-B and home with
 # the stock mke2fs options. The rootfs's own mke2fs is used (casefold support).
 # Unlike the device we continue booting instead of rebooting (nothing but the
-# read-only rootfs and the esp is mounted at this point).
-for _cfg in /esp/efi/steamos/factory-reset/*.cfg; do
-    [ -f "$_cfg" ] || continue
-    msg "factory reset requested by ${_cfg#/esp}: formatting var-A, var-B and home"
+# read-only rootfs is mounted at this point). FACTORY_RESET_CFG was found while
+# the esp was mounted read-only for the A/B state (see esp_read).
+if [ -n "$FACTORY_RESET_CFG" ]; then
+    msg "factory reset requested by $FACTORY_RESET_CFG: formatting var-A, var-B and home"
     mount -o bind /dev /newroot/dev && mount -t proc proc /newroot/proc || fatal "factory reset: cannot prepare chroot"
     for _p in var-A var-B; do
         _d=$(part_dev "$_p") && chroot /newroot /usr/bin/mke2fs -t ext4 -qF -L "$_p" "$_d" \
@@ -259,11 +335,13 @@ for _cfg in /esp/efi/steamos/factory-reset/*.cfg; do
     _d=$(part_dev home) && chroot /newroot /usr/bin/mke2fs -t ext4 -qF -L home -O casefold -T huge -m 0 "$_d" \
         || warn "factory reset: mke2fs home failed"
     umount /newroot/proc; umount /newroot/dev
-    rm -rf /esp/efi/steamos
-    sync
-    break
-done
-umount /esp
+    if esp_rw_mount; then
+        rm -rf /esp/efi/steamos
+        esp_rw_umount || warn "factory reset: esp:/efi/steamos may still request a reset"
+    else
+        warn "factory reset: esp not writable; the request in esp:/efi/steamos stays and repeats on the next boot"
+    fi
+fi
 
 # ---------------------------------------------------------------- /var and /etc
 # Stock hook `etc_overlay`, same paths and options.

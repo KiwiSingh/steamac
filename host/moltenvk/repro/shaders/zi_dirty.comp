@@ -1,0 +1,10 @@
+#version 450
+// Fills workgroup memory with a pattern, so stale threadgroup memory is not zero by chance.
+layout(local_size_x = 64) in;
+shared uint dirty[2048];
+layout(set = 0, binding = 0, std430) buffer Out { uint v[]; } o;
+void main() {
+  for (uint k = gl_LocalInvocationIndex; k < 2048u; k += 64u) dirty[k] = 0xdeadbeefu ^ k;
+  barrier();
+  if (gl_LocalInvocationIndex == 0u) o.v[1000] = dirty[17];
+}
