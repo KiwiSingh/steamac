@@ -71,10 +71,11 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 - все обязательные возможности DXVK из Proton 11 / DXVK 3.x видны в госте (geometryShader,
   shaderCullDistance, depthClipEnable, robustness2 + nullDescriptor, maintenance5/6, …);
 - клавиатура, планшет, мышь и виртуальный Xbox 360 pad видны в SteamOS;
-- обновление A→B официальным OTA и откат.
+- обновление A→B официальным OTA и откат;
+- GL через zink (glamor в Xwayland, glxgears ~60 FPS), интерфейс Steam (gamepad UI, CEF с GPU)
+  отрисовывается на экране ВМ.
 
-В работе: GL через zink (glamor в Xwayland, интерфейс Steam) — исправления эмуляции
-геометрических шейдеров и вершинных форматов в MoltenVK.
+Дальше: вход в Steam (только вручную: QR-код или логин), Proton 11 / FEX, проверка DX9-игры.
 
 ## Ограничения
 
