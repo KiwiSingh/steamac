@@ -1,4 +1,4 @@
-From 31168df5563359f02700a6e24b6080a3c9c398dd Mon Sep 17 00:00:00 2001
+From 011555816cabebad3b21b6d43d81c26a4781f4b0 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
 Subject: [PATCH 19/21] Transform feedback captured by geometry shaders
@@ -24,27 +24,27 @@ draw).
   pipeline creation with VK_ERROR_FEATURE_NOT_PRESENT instead of writing to an unbound buffer.
 - Transform feedback properties: 1 stream, 4 buffers, no queries, no vkCmdDrawIndirectByteCountEXT.
 ---
- MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm      | 85 ++++++++++++++++---
- MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm | 52 ++++++++----
- MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h | 21 ++++-
+ MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm      | 95 ++++++++++++++++---
+ MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm | 52 ++++++----
+ MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h | 21 +++-
  .../MoltenVK/Commands/MVKCommandBuffer.mm     | 14 +++
  .../Commands/MVKCommandEncodingPool.h         |  8 ++
  .../Commands/MVKCommandEncodingPool.mm        | 14 +++
- ...KCommandPipelineStateFactoryShaderSource.h | 60 +++++++++++++
+ ...KCommandPipelineStateFactoryShaderSource.h | 60 ++++++++++++
  .../Commands/MVKCommandResourceFactory.h      |  6 ++
  .../Commands/MVKCommandResourceFactory.mm     |  8 ++
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.h      |  1 +
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm     | 12 ++-
  MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h    |  9 +-
- MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 35 +++++++-
+ MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 35 ++++++-
  MoltenVK/MoltenVK/Utility/MVKFoundation.h     |  1 +
- 14 files changed, 288 insertions(+), 38 deletions(-)
+ 14 files changed, 298 insertions(+), 38 deletions(-)
 
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
-index 1215fbf1..6f2e4a0e 100644
+index 1215fbf1..acaa9134 100644
 --- a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
 +++ b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
-@@ -241,6 +241,72 @@ static uint32_t getGeometryPrimitiveCount(uint32_t vertexCount, uint32_t vertsPe
+@@ -241,6 +241,82 @@ static uint32_t getGeometryPrimitiveCount(uint32_t vertexCount, uint32_t vertsPe
  	uint32_t vertexDivisors[kMVKMaxBufferCount];
  };
  
@@ -56,16 +56,26 @@ index 1215fbf1..6f2e4a0e 100644
 +	if ( !pipeline->usesGeometryXfb() ) { return; }
 +	id<MTLRenderCommandEncoder> mtlRendEnc = cmdEncoder->_mtlRenderEncoder;
 +	const auto& idx = pipeline->getGeometryXfbIndices();
++	// Placeholder bindings below are bound at every index of the 4 buffers; the shader declares only
++	// the buffers it writes, so binding the others is harmless.
 +	[mtlRendEnc setMeshBytes: &mode length: sizeof(mode) atIndex: idx.mode];
-+	if ( !mode ) { return; }
-+	const MVKMTLBufferAllocation* session = cmdEncoder->_xfbSession;
-+	[mtlRendEnc setMeshBuffer: session->_mtlBuffer offset: session->_offset atIndex: idx.session];
-+	[mtlRendEnc setMeshBuffer: prims->_mtlBuffer offset: prims->_offset atIndex: idx.prims];
-+	for (uint32_t b = 0; b < kMVKMaxTransformFeedbackBuffers; b++) {
-+		const auto& binding = cmdEncoder->_xfbBindings[b];
-+		if (binding.mtlBuffer && idx.buffer0 >= b) {
-+			[mtlRendEnc setMeshBuffer: binding.mtlBuffer offset: binding.offset atIndex: idx.buffer0 - b];
++	// The shader only touches the buffers in modes 1 and 2 and the bound transform feedback buffers,
++	// but every buffer argument must be bound (Metal API validation).
++	const MVKMTLBufferAllocation* placeholder = nullptr;
++	auto bindOrPlaceholder = [&](id<MTLBuffer> mtlBuff, NSUInteger offset, NSUInteger index) {
++		if ( !mtlBuff ) {
++			if ( !placeholder ) { placeholder = cmdEncoder->getTempMTLBuffer(16, true); }
++			mtlBuff = placeholder->_mtlBuffer;
++			offset = placeholder->_offset;
 +		}
++		[mtlRendEnc setMeshBuffer: mtlBuff offset: offset atIndex: index];
++	};
++	const MVKMTLBufferAllocation* session = mode ? cmdEncoder->_xfbSession : nullptr;
++	bindOrPlaceholder(session ? session->_mtlBuffer : nil, session ? session->_offset : 0, idx.session);
++	bindOrPlaceholder(mode ? prims->_mtlBuffer : nil, mode ? prims->_offset : 0, idx.prims);
++	for (uint32_t b = 0; b < kMVKMaxTransformFeedbackBuffers && b <= idx.buffer0; b++) {
++		const auto& binding = cmdEncoder->_xfbBindings[b];
++		bindOrPlaceholder(mode ? binding.mtlBuffer : nil, binding.offset, idx.buffer0 - b);
 +	}
 +}
 +
@@ -117,7 +127,7 @@ index 1215fbf1..6f2e4a0e 100644
  /* Encodes indirect draws with a geometry-shader (object + mesh) pipeline: a compute pass turns each
   * Vulkan indirect draw into mesh threadgroup counts and the DrawInfo the object stage reads, then
   * each draw is a drawMeshThreadgroupsWithIndirectBuffer. ibb is null for non-indexed draws. */
-@@ -295,6 +361,10 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
+@@ -295,6 +371,10 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
  
  	id<MTLRenderCommandEncoder> mtlRendEnc = cmdEncoder->_mtlRenderEncoder;
  	if (ibb) { [mtlRendEnc useResource: ibb->mtlBuffer usage: MTLResourceUsageRead stages: MTLRenderStageObject]; }
@@ -128,7 +138,7 @@ index 1215fbf1..6f2e4a0e 100644
  	for (uint32_t drawIdx = 0; drawIdx < drawCount; drawIdx++) {
  		[mtlRendEnc setObjectBuffer: tempBuff->_mtlBuffer
  							 offset: tempBuff->_offset + drawInfoOffset + drawInfoStride * drawIdx
-@@ -521,12 +591,7 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
+@@ -521,12 +601,7 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
  					drawInfo.baseInstance = _firstInstance;
  					setGeometryVertexStrides(drawInfo, cmdEncoder, pipeline);
  
@@ -142,7 +152,7 @@ index 1215fbf1..6f2e4a0e 100644
  #endif
                  } else {
                      MVKRenderSubpass* subpass = cmdEncoder->getSubpass();
-@@ -789,7 +854,6 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
+@@ -789,7 +864,6 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
  					drawInfo.indexSize = (int)idxSize;
  					drawInfo.indexBuffer = ibb.mtlBuffer.gpuAddress + idxBuffOffset;
  
@@ -150,7 +160,7 @@ index 1215fbf1..6f2e4a0e 100644
  
  					uint32_t vertsPerPrim = 0;
  					MVKGeometryTopology topology = kMVKGeometryTopologyList;
-@@ -801,12 +865,7 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
+@@ -801,12 +875,7 @@ static void encodeGeometryIndirectDraws(MVKCommandEncoder* cmdEncoder, MVKGraphi
  					drawInfo.baseInstance = _firstInstance;
  					setGeometryVertexStrides(drawInfo, cmdEncoder, pipeline);
  

@@ -18,6 +18,8 @@
 # 5. xfb.c: transform feedback captured by geometry shaders (DXVK stream-output style without
 #    position and with rasterizer discard, strips with varying vertex counts, lines, 2 buffers,
 #    buffer offsets/sizes, counter buffers), buffer contents checked.
+# All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
+# fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
 set -eu
 
@@ -55,7 +57,7 @@ done
 
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/gamescope_cs.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/gamescope_cs"
-MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv"
 
 gspv=$work/geometry-spv
 rm -rf "$gspv"
@@ -68,16 +70,16 @@ for s in "$here"/shaders/*.spvasm; do
 done
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/geometry.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/geometry"
-MVK_CONFIG_LOG_LEVEL=1 "$work/geometry" "$gspv"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/geometry" "$gspv"
 
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/depth_stencil.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/depth_stencil"
-MVK_CONFIG_LOG_LEVEL=1 "$work/depth_stencil"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/depth_stencil"
 
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/linear_pitch.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/linear_pitch"
-MVK_CONFIG_LOG_LEVEL=1 "$work/linear_pitch"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/linear_pitch"
 
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/xfb.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/xfb"
-MVK_CONFIG_LOG_LEVEL=1 "$work/xfb" "$gspv"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/xfb" "$gspv"
