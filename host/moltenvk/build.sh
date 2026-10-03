@@ -31,8 +31,10 @@
 #                                             vulkan-headers or from the MoltenVK package in
 #                                             work/build/host-moltenvk/src/Package/Release/MoltenVK/include)
 #   MOLTENVK.txt                              provenance + enabled features
-# The probe in probe/ is built against the installed dylib and run at the end; it fails the
-# build when a feature steamac depends on is missing.
+# The dylib is first staged in work/build/host-moltenvk/stage and verified there: the probe in
+# probe/ (fails when a feature steamac depends on is missing) and the gamescope compute-pipeline
+# repro in repro/ (all of gamescope 3.16.28's cs_*.comp pipelines + a pixel check). Only then is
+# it installed, by temp file + rename (a running VM may have the old dylib mapped).
 set -eu
 
 MVK_REPO=https://github.com/utmapp/MoltenVK.git
@@ -105,26 +107,20 @@ fi
 pkg=$src/Package/Release/MoltenVK
 built=$pkg/dynamic/dylib/macOS
 
-# --- install
-mkdir -p "$out/lib" "$out/share/vulkan/icd.d" "$out/include"
-lib=$out/lib/libMoltenVK.dylib
-rm -f "$lib"
-lipo "$built/libMoltenVK.dylib" -thin arm64 -output "$lib"
-test "$(otool -D "$lib" | sed -n 2p)" = "@rpath/libMoltenVK.dylib"
-codesign --force -s - "$lib"
+# --- stage
+stage=$work/stage
+rm -rf "$stage"
+mkdir -p "$stage/lib"
+staged=$stage/lib/libMoltenVK.dylib
+lipo "$built/libMoltenVK.dylib" -thin arm64 -output "$staged"
+test "$(otool -D "$staged" | sed -n 2p)" = "@rpath/libMoltenVK.dylib"
+codesign --force -s - "$staged"
 
-sed 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]*"#"library_path": "../../../lib/libMoltenVK.dylib"#' \
-	"$built/MoltenVK_icd.json" > "$out/share/vulkan/icd.d/MoltenVK_icd.json"
-grep -q '"library_path": "../../../lib/libMoltenVK.dylib"' "$out/share/vulkan/icd.d/MoltenVK_icd.json"
-
-rm -rf "$out/include/MoltenVK"
-cp -R "$pkg/include/MoltenVK" "$out/include/MoltenVK"
-
-# --- probe (links the installed dylib directly, like virglrenderer)
+# --- probe (links the staged dylib directly, like virglrenderer)
 probe=$work/probe
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$pkg/include" "$here/probe/probe.c" \
-	-L"$out/lib" -lMoltenVK -Wl,-rpath,"$out/lib" -o "$probe"
-echo ">> probe: $lib"
+	-L"$stage/lib" -lMoltenVK -Wl,-rpath,"$stage/lib" -o "$probe"
+echo ">> probe: $staged"
 probe_log=$work/probe.log
 MVK_CONFIG_LOG_LEVEL=1 "$probe" > "$probe_log" 2>&1 || { cat "$probe_log"; exit 1; }
 cat "$probe_log"
@@ -134,6 +130,29 @@ if grep -q 'MVK-BUILD-ERROR' "$probe_log"; then
 	echo "probe: MoltenVK reported a build error (see above)" >&2
 	exit 1
 fi
+
+# --- gamescope compute pipelines (argument buffers on, MoltenVK's default)
+echo ">> repro: gamescope 3.16.28 compute pipelines"
+repro_log=$work/repro.log
+"$here/repro/run.sh" "$stage/lib" > "$repro_log" 2>&1 || { cat "$repro_log"; exit 1; }
+grep -v '^\[mvk-info\]\|^	' "$repro_log"
+
+# --- install (temp + rename, never rewrite a mapped dylib in place)
+mkdir -p "$out/lib" "$out/share/vulkan/icd.d" "$out/include"
+lib=$out/lib/libMoltenVK.dylib
+cp "$staged" "$lib.tmp.$$"
+mv -f "$lib.tmp.$$" "$lib"
+
+icd=$out/share/vulkan/icd.d/MoltenVK_icd.json
+sed 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]*"#"library_path": "../../../lib/libMoltenVK.dylib"#' \
+	"$built/MoltenVK_icd.json" > "$icd.tmp.$$"
+grep -q '"library_path": "../../../lib/libMoltenVK.dylib"' "$icd.tmp.$$"
+mv -f "$icd.tmp.$$" "$icd"
+
+rm -rf "$out/include/MoltenVK.tmp.$$"
+cp -R "$pkg/include/MoltenVK" "$out/include/MoltenVK.tmp.$$"
+rm -rf "$out/include/MoltenVK"
+mv "$out/include/MoltenVK.tmp.$$" "$out/include/MoltenVK"
 
 # --- provenance
 mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$built/MoltenVK_icd.json")
@@ -161,9 +180,19 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0002 = KhronosGroup/MoltenVK PR #2712 dc89e437 (VK_EXT_depth_clip_enable, conformant"
 	echo "         KosmicKrisp-style emulation); Metal OpenGL-mode compensation dropped, GS stages"
 	echo "         excluded from depth-clip emulation (see patch header)"
+	echo "  0003 = steamac: Y'CbCr immutable-sampler arrays got the SUM of the samplers' plane counts"
+	echo "         (16 NV12 samplers -> 32 'planes' -> Tex3SampSoA) instead of the maximum; broke"
+	echo "         gamescope's s_ycbcr_samplers[16] (same bug in KhronosGroup/MoltenVK main)"
+	echo "  0004 = steamac: nullDescriptor -> image size/levels/samples queries on null descriptors"
+	echo "         return 0 (was only with robustImageAccess2; Metal reports 1 mip level for nil)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
-	echo "  = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
+	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
+	echo "  0003 = steamac: arrays of Y'CbCr combined image-samplers with argument buffers (plane"
+	echo "         indexes, plane/sampler expressions for array elements, spvDynamicImageSampler for"
+	echo "         elements passed to functions, padding of multiplanar bindings, constant gather"
+	echo "         component); needed by gamescope's compute shaders"
+	echo "  0004 = steamac: MSL option null_descriptor (zero image queries on nil textures)"
 	echo
 	echo "Not included: KhronosGroup/MoltenVK PR #2812 (indexed/indirect GS mesh draws). It is part of"
 	echo "  a different geometry-shader implementation (stacked on PR #2786, rebase of #1815/#1943 with"
@@ -180,6 +209,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo
 	echo "Probe (host/moltenvk/probe, $(sysctl -n machdep.cpu.brand_string), macOS $(sw_vers -productVersion)):"
 	sed 's/^/  /' "$probe_log"
+	echo
+	echo "gamescope 3.16.28 compute pipelines (host/moltenvk/repro, Metal argument buffers on):"
+	grep -v '^\[mvk-info\]\|^	' "$repro_log" | sed 's/^/  /'
 } > "$out/MOLTENVK.txt"
 
 echo ">> $lib"

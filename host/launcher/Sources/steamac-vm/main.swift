@@ -29,6 +29,10 @@ do {
     exit(2)
 }
 
+// MoltenVK (loaded by virglrenderer in this process) logs every instance/device creation at info
+// level, which buries the guest console. Errors only, unless the user asks for more.
+setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
+
 if options.selftestDisplay { SelfTest.run(options) }
 
 /// Graceful shutdown policy shared by window close, menu, signals and the console escape.

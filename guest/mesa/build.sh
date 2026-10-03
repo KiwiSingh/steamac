@@ -3,7 +3,8 @@
 #   aarch64 (native: Steam, Proton ARM64EC/WoW64 unix side, gamescope, zink)
 #   x86_64 + i386 (FEX-emulated x86 apps; installed into the fex-mesa pressure-vessel provider)
 # Output: work/out/mesa-venus/ = tree rooted at guest "/" + MANIFEST.txt.
-# Verification runs against the stock rootfs image (work/frame/rootfsA.img) in a chroot.
+# Verification runs against the stock rootfs in a chroot: by default the signature- and
+# sha256-verified OTA rootfs that `scripts/build-image.sh rootfs` caches in work/cache/rootfs/.
 #
 # Usage: guest/mesa/build.sh [--clean] [step...]
 #   steps: fetch aarch64 x86 verify   (default: all, in that order)
@@ -20,7 +21,8 @@ set +a
 
 OUT=$REPO/work/out/mesa-venus
 WORK=$REPO/work/build/mesa-venus
-ROOTFS_IMG=${ROOTFS_IMG:-$REPO/work/frame/rootfsA.img}
+STEAMOS_BUILDID=$(. "$REPO/scripts/config.env" && echo "$STEAMOS_BUILDID")
+ROOTFS_IMG=${ROOTFS_IMG:-$REPO/work/cache/rootfs/$STEAMOS_BUILDID/rootfs.img}
 SRC_VOLUME=steamac-mesa-src
 
 clean=0
