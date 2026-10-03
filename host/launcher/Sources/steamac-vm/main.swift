@@ -149,6 +149,14 @@ do {
         }
     }
     onSignal(SIGUSR1) { dumpFrames(to: options.frameDumpPath) }
+    // If the supervisor dies (e.g. SIGKILL), gvproxy goes with it: shut the guest down cleanly
+    // instead of leaving an orphaned VM without networking.
+    let supervisorWatch = DispatchSource.makeProcessSource(identifier: getppid(), eventMask: .exit, queue: .main)
+    supervisorWatch.setEventHandler {
+        log("launcher supervisor exited; shutting the guest down")
+        lifecycle.requestShutdown()
+    }
+    supervisorWatch.resume()
 
     log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.displayWidth)x\(options.displayHeight)"
         + " cmdline=\"\(options.cmdline)\"" + (Supervisor.bootNumber > 1 ? " (boot #\(Supervisor.bootNumber))" : ""))
@@ -194,7 +202,7 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, activity, progressPort)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch)) { app.run() }
 } catch {
     fatal("\(error)")
 }

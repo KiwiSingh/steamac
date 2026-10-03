@@ -54,11 +54,36 @@ enum ResizeSelfTest {
                 let g = display.scanouts[0].geometry.map { "\($0.width)x\($0.height)" } ?? "none"
                 log("resize selftest: FAIL step \(i + 1) \(name): guest scanout \(g), wanted \(want.0)x\(want.1)")
             }
-            Thread.sleep(forTimeInterval: 5)   // let Steam re-layout at the new size
+            // Steam's webhelper GPU process restarts after a mode switch (MoltenVK "cannot reserve
+            // 'buffer' resource location" — not resize-specific); wait until the guest shows a
+            // non-black picture again (max 90 s), then let it settle.
+            let repaintStart = Date()
+            while Date().timeIntervalSince(repaintStart) < 90 && meanBrightness(display) < 12 {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            log("resize selftest: step \(i + 1) \(name): picture after \(String(format: "%.1f", Date().timeIntervalSince(repaintStart))) s"
+                + " (mean brightness \(Int(meanBrightness(display))))")
+            Thread.sleep(forTimeInterval: 3)
             let sem = DispatchSemaphore(value: 0)
             DispatchQueue.main.async { dump("\(base)-resize-\(i + 1)-\(name).png") { sem.signal() } }
             _ = sem.wait(timeout: .now() + 10)
         }
         log("resize selftest: \(failures == 0 ? "PASS" : "FAIL (\(failures) steps)")")
+    }
+
+    /// Mean of (R+G+B)/3 over a sparse grid of the last presented frame (0 = black / no frame).
+    static func meanBrightness(_ display: DisplayBackend) -> Double {
+        guard let snap = display.scanouts[0].snapshot(), let off = ScanoutFormat.rgbOffsets(snap.format) else { return 0 }
+        var sum = 0, n = 0
+        snap.data.withUnsafeBytes { (p: UnsafeRawBufferPointer) in
+            for y in stride(from: 0, to: snap.height, by: 16) {
+                for x in stride(from: 0, to: snap.width, by: 16) {
+                    let i = (y * snap.width + x) * 4
+                    sum += Int(p[i + off.r]) + Int(p[i + off.g]) + Int(p[i + off.b])
+                    n += 3
+                }
+            }
+        }
+        return n == 0 ? 0 : Double(sum) / Double(n)
     }
 }

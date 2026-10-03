@@ -1,0 +1,65 @@
+From b47bd8ca0e3bda4decaf35a01e05448f9d6ead38 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: create the pipeline cache empty if the driver rejects
+ its initial data
+
+Venus creates pipeline caches asynchronously, so when the host fails to
+create one the guest does not know, and its next pipeline creation with that
+cache fails the object lookup and kills the context.  MoltenVK fails the
+whole cache when the initial data holds MSL that no longer compiles, as
+caches written by an older MoltenVK build do: Steam's webhelper (zink, with
+zink's on-disk pipeline caches) died at every start.
+
+Initial data is only a hint.  If the driver rejects it, log once and create
+the cache without it.
+---
+ src/venus/vkr_pipeline.c | 35 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 617a54fc..f6424c0b 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -69,7 +69,40 @@ static void
+ vkr_dispatch_vkCreatePipelineCache(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCreatePipelineCache *args)
+ {
+-   vkr_pipeline_cache_create_and_add(dispatch->data, args);
++   struct vkr_context *ctx = dispatch->data;
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++
++   struct vkr_pipeline_cache *obj = vkr_context_alloc_object(
++      ctx, sizeof(*obj), VK_OBJECT_TYPE_PIPELINE_CACHE, args->pPipelineCache);
++   if (!obj) {
++      args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++      return;
++   }
++
++   /* Venus creates pipeline caches asynchronously, so a failure here kills the
++    * context at the next use of the cache.  Initial data is only a hint, and
++    * the driver may reject it (MoltenVK fails the cache when cached MSL does
++    * not compile): create the cache empty instead.
++    */
++   if (vkr_pipeline_cache_create_driver_handle(ctx, args, obj) != VK_SUCCESS &&
++       args->pCreateInfo->initialDataSize) {
++      vkr_log("pipeline cache %" PRIu64 ": initial data (%zu bytes) rejected by the "
++              "driver (VkResult %d), creating it empty",
++              obj->base.id, args->pCreateInfo->initialDataSize, args->ret);
++
++      VkPipelineCacheCreateInfo empty_info = *args->pCreateInfo;
++      empty_info.initialDataSize = 0;
++      empty_info.pInitialData = NULL;
++      /* args->device is the driver handle now */
++      args->ret = dev->proc_table.CreatePipelineCache(args->device, &empty_info, NULL,
++                                                      &obj->base.handle.pipeline_cache);
++   }
++   if (args->ret != VK_SUCCESS) {
++      free(obj);
++      return;
++   }
++
++   vkr_device_add_object(ctx, dev, &obj->base);
+ }
+ 
+ static void

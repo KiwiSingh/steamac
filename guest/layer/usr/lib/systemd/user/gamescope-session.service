@@ -19,7 +19,16 @@ Slice=session.slice
 # The DRM backend opens the KMS device and builds Vulkan pipelines over Venus,
 # which takes longer than the stock 5 s on first start.
 TimeoutStartSec=60
-TimeoutStopSec=10
+# Stock: 10 s. At system shutdown / session end, logind revokes the session's
+# DRM and evdev fds as soon as sddm-helper (the session leader) exits, which
+# happens in the same instant the session scope is signalled. gamescope's DRM
+# backend then sits in its event loop waiting for the seat to come back and
+# never acts on SIGTERM (reproduced with `loginctl terminate-session`: main
+# thread in ppoll, killed only by the timeout), so every power-off waited the
+# full 10 s. Nothing is lost by killing it: steam.service is ordered after this
+# unit, so Steam has already been stopped (and saved its state) before
+# gamescope gets SIGTERM; Xwayland is SIGKILLed with KillMode=mixed anyway.
+TimeoutStopSec=3
 ExecStart=/usr/lib/steamos/gamescope-session
 Type=notify
 NotifyAccess=all

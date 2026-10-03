@@ -12,6 +12,8 @@ final class Gvproxy {
     let vfkitSocket: String
     let apiSocket: String
     private var process: Process?
+    /// Write end of the guard's lifeline pipe (closing it also stops gvproxy).
+    private var lifeline: Pipe?
 
     init(runDir: String) {
         self.runDir = runDir
@@ -36,20 +38,37 @@ final class Gvproxy {
     func start(binary: String, sshPort: Int) throws {
         try? FileManager.default.removeItem(atPath: vfkitSocket)
         try? FileManager.default.removeItem(atPath: apiSocket)
+        // gvproxy runs under a tiny /bin/sh guard holding the read end of a pipe whose only writer
+        // is this process: if the launcher dies in any way (even SIGKILL), the guard sees EOF and
+        // kills gvproxy, so its ssh port is never left bound by an orphan. SIGTERM (stop()) is
+        // forwarded and waited for.
+        let guardScript = """
+        exec 3<&0
+        "$@" </dev/null >/dev/null 2>&1 3<&- &
+        p=$!
+        trap 'kill $p 2>/dev/null; wait $p; exit 0' TERM INT HUP
+        # (async lists get stdin from /dev/null, so the lifeline is read via fd 3)
+        ( while read -r _ <&3; do :; done; kill $p 2>/dev/null ) &
+        wait $p
+        """
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: binary)
-        p.arguments = [
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", guardScript, "gvproxy", binary,
             "-listen-vfkit", "unixgram://" + vfkitSocket,
             "-listen", "unix://" + apiSocket,
             "-ssh-port", String(sshPort == 0 ? -1 : sshPort),
             "-log-file", runDir + "/gvproxy.log",
             "-pid-file", runDir + "/gvproxy.pid",
         ]
-        p.standardInput = FileHandle.nullDevice
+        let lifeline = Pipe()
+        _ = fcntl(lifeline.fileHandleForWriting.fileDescriptor, F_SETFD, FD_CLOEXEC)
+        p.standardInput = lifeline
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try p.run()
+        try? lifeline.fileHandleForReading.close()
         process = p
+        self.lifeline = lifeline
         // Wait for the vfkit socket (libkrun connects to it when the net device is created).
         let deadline = Date().addingTimeInterval(10)
         while !FileManager.default.fileExists(atPath: vfkitSocket) {
@@ -63,7 +82,9 @@ final class Gvproxy {
             guard Date() < deadline else { throw OptionError("gvproxy did not create \(vfkitSocket)") }
             usleep(20_000)
         }
-        log("network: gvproxy \(binary) pid \(p.processIdentifier), guest 192.168.127.2"
+        let pid = (try? String(contentsOfFile: runDir + "/gvproxy.pid", encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+        log("network: gvproxy \(binary) pid \(pid), guest 192.168.127.2"
             + (sshPort == 0 ? "" : ", ssh -p \(sshPort) <user>@127.0.0.1") + ", API unix://\(apiSocket)")
     }
 
@@ -79,9 +100,13 @@ final class Gvproxy {
     func stop() {
         guard let p = process else { return }
         process = nil
+        defer {
+            try? lifeline?.fileHandleForWriting.close()
+            lifeline = nil
+        }
         guard p.isRunning else { return }
-        kill(p.processIdentifier, SIGTERM)
-        for _ in 0..<100 where p.isRunning { usleep(10_000) }
+        kill(p.processIdentifier, SIGTERM)   // guard forwards it to gvproxy and waits for it
+        for _ in 0..<300 where p.isRunning { usleep(10_000) }
         if p.isRunning { kill(p.processIdentifier, SIGKILL) }
         p.waitUntilExit()
     }

@@ -12,6 +12,9 @@
 #    (stock by default; opt-in public client branch via
 #    /etc/steamac/steam-client-branch, see that file) also replaces the copy
 #    unpacked from the Frame steam.tar.zst, which can be newer.
+#  - TimeoutStopSec=10 instead of 20: Steam exits on SIGTERM in 1-2 s here
+#    (state saved); the cap keeps a wedged client from holding a power-off
+#    past the 15 s budget (see gamescope-session.service for the rest).
 # Everything else (bootstrap, health check) is stock.
 [Unit]
 Description=Steam Launcher
@@ -23,7 +26,7 @@ Slice=session.slice
 
 Type=simple
 Restart=always
-TimeoutStopSec=20
+TimeoutStopSec=10
 
 # Steam bootstrapper uses 42 as the "restart me" exit status, we just consider that normal success
 SuccessExitStatus=0 42
