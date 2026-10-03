@@ -1,0 +1,409 @@
+From 8bbead29b51a24ed874b3319385a462980f97170 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: unmap freed host memory only after the GPU work
+ submitted before
+
+On a host that emulates dma_buf with VK_EXT_external_memory_host, host
+visible and exportable VkDeviceMemory is shm mapped by vkr and imported into
+the driver as a host pointer.  vkFreeMemory unmapped it right away.  The guest
+frees memory once the work that used it has completed by its own sync, which
+on MoltenVK is a timeline semaphore the GPU signals before the Metal command
+buffer completes; MoltenVK therefore releases the MTLBuffer of freed memory
+only once the command buffers committed before have completed (MoltenVK
+0022), but the pages under it were already gone.
+
+Keep the mapping until then.  Freed shm is batched per device (2 ms or
+64 MiB) and handed to the queues: each queue gets a release marker, an empty
+vkQueueSubmit with a fence after everything submitted so far, retired in
+order by the queue's sync thread, and the batch is unmapped once the markers
+of all queues completed.  Batches are flushed after frees and submissions.
+At device destruction the device is idle and freed shm is unmapped right
+away.
+
+The guest's own mapping of the memory (the VMM's mapping of the exported
+blob) and the resource mapping vkr keeps for shm resources are not driver
+visible and are unaffected.
+---
+ src/venus/vkr_device.c        |  11 ++++
+ src/venus/vkr_device.h        |  17 +++++
+ src/venus/vkr_device_memory.c | 117 +++++++++++++++++++++++++++++++++-
+ src/venus/vkr_device_memory.h |  24 +++++++
+ src/venus/vkr_queue.c         |  49 +++++++++++++-
+ src/venus/vkr_queue.h         |   8 +++
+ 6 files changed, 224 insertions(+), 2 deletions(-)
+
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index b14de3f0..c82e0ac1 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -228,6 +228,12 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    mtx_init(&dev->free_sync_mutex, mtx_plain);
+    list_inithead(&dev->free_syncs);
+ 
++   mtx_init(&dev->shm_release.mutex, mtx_plain);
++   list_inithead(&dev->shm_release.pending);
++   dev->shm_release.pending_size = 0;
++   dev->shm_release.last_flush_ns = 0;
++   dev->shm_release.immediate = false;
++
+    mtx_init(&dev->object_mutex, mtx_plain);
+    list_inithead(&dev->objects);
+ 
+@@ -363,6 +369,9 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+ 
+    mtx_destroy(&dev->object_mutex);
+ 
++   /* idle now: freed shm can be unmapped right away */
++   vkr_device_fini_shm_releases(dev);
++
+    if (!list_is_empty(&dev->objects)) {
+       list_for_each_entry_safe (struct vkr_object, obj, &dev->objects, track_head)
+          vkr_device_object_destroy(ctx, dev, obj);
+@@ -371,6 +380,8 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    list_for_each_entry_safe (struct vkr_queue, queue, &dev->queues, base.track_head)
+       vkr_queue_destroy(ctx, queue);
+ 
++   mtx_destroy(&dev->shm_release.mutex);
++
+    list_for_each_entry_safe (struct vkr_queue_sync, sync, &dev->free_syncs, head) {
+       vk->DestroyFence(dev->base.handle.device, sync->fence, NULL);
+       free(sync);
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index fabb06e6..3cab999d 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -29,6 +29,23 @@ struct vkr_device {
+ 
+    /* set when the physical device emulates dma_buf on top of host memory */
+    PFN_vkGetMemoryHostPointerPropertiesEXT GetMemoryHostPointerPropertiesEXT;
++
++   /* Host memory (shm) imported into the driver must stay mapped until the
++    * GPU work submitted before its VkDeviceMemory was freed has completed: the
++    * driver may still reference it (MoltenVK releases its MTLBuffer only then),
++    * and the guest only waits for the work that used it, through a semaphore
++    * the GPU signals before the driver's command buffer completes.  Freed shm
++    * is batched in pending and handed to the queues with a release marker per
++    * queue (see vkr_device_flush_shm_releases).
++    */
++   struct {
++      mtx_t mutex;
++      struct list_head pending;
++      size_t pending_size;
++      int64_t last_flush_ns;
++      /* set once the device is idle for destruction: unmap right away */
++      bool immediate;
++   } shm_release;
+ };
+ VKR_DEFINE_OBJECT_CAST(device, VK_OBJECT_TYPE_DEVICE, VkDevice)
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 3fc3aa62..799e5e9a 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -13,10 +13,13 @@
+ #include <strings.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "util/anon_file.h"
++#include "vkr_device.h"
+ #include "vkr_physical_device.h"
++#include "vkr_queue.h"
+ 
+ static bool
+ vkr_get_fd_info_from_resource_info(const struct vkr_resource *res,
+@@ -799,10 +802,122 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
+       vkr_dispatch_vkGetMemoryResourcePropertiesMESA;
+ }
+ 
++/* release batching: one marker per queue per batch */
++#define VKR_SHM_RELEASE_BATCH_NS (2 * 1000 * 1000)
++#define VKR_SHM_RELEASE_BATCH_SIZE ((size_t)64 << 20)
++
++static int64_t
++vkr_shm_release_now_ns(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
++}
++
++static void
++vkr_shm_free_list(struct list_head *shms)
++{
++   list_for_each_entry_safe (struct vkr_shm, shm, shms, head)
++      vkr_shm_free(shm);
++   list_inithead(shms);
++}
++
++/* Hand the pending shm to the queues: each gets a marker after what it has
++ * been submitted so far, and the shm is unmapped when all markers completed.
++ * Unless forced, pending shm is batched for VKR_SHM_RELEASE_BATCH_NS or up to
++ * VKR_SHM_RELEASE_BATCH_SIZE.  Called after frees and submissions.
++ */
++void
++vkr_device_flush_shm_releases(struct vkr_device *dev, bool force)
++{
++   mtx_lock(&dev->shm_release.mutex);
++   if (list_is_empty(&dev->shm_release.pending)) {
++      mtx_unlock(&dev->shm_release.mutex);
++      return;
++   }
++   const int64_t now = vkr_shm_release_now_ns();
++   if (!force && now - dev->shm_release.last_flush_ns < VKR_SHM_RELEASE_BATCH_NS &&
++       dev->shm_release.pending_size < VKR_SHM_RELEASE_BATCH_SIZE) {
++      mtx_unlock(&dev->shm_release.mutex);
++      return;
++   }
++
++   struct vkr_shm_release *release = malloc(sizeof(*release));
++   if (!release) {
++      mtx_unlock(&dev->shm_release.mutex);
++      return;
++   }
++   release->device = dev;
++   list_inithead(&release->shms);
++   list_splicetail(&dev->shm_release.pending, &release->shms);
++   list_inithead(&dev->shm_release.pending);
++   dev->shm_release.pending_size = 0;
++   dev->shm_release.last_flush_ns = now;
++
++   /* one reference for this function, released below */
++   release->pending_queues = 1;
++   list_for_each_entry (struct vkr_queue, queue, &dev->queues, base.track_head)
++      release->pending_queues++;
++   mtx_unlock(&dev->shm_release.mutex);
++
++   /* The markers are submitted outside the lock.  Queues are only removed at
++    * device destruction, which does not race with frees or submissions.
++    */
++   list_for_each_entry (struct vkr_queue, queue, &dev->queues, base.track_head) {
++      if (!vkr_queue_submit_shm_release(queue, release))
++         vkr_shm_release_complete_queue(release);
++   }
++   vkr_shm_release_complete_queue(release);
++}
++
++void
++vkr_shm_release_complete_queue(struct vkr_shm_release *release)
++{
++   struct vkr_device *dev = release->device;
++
++   mtx_lock(&dev->shm_release.mutex);
++   const bool done = !--release->pending_queues;
++   mtx_unlock(&dev->shm_release.mutex);
++
++   if (done) {
++      vkr_shm_free_list(&release->shms);
++      free(release);
++   }
++}
++
++/* The device is idle and about to be destroyed: nothing can use the shm
++ * anymore.  Markers still queued are retired with the queues.
++ */
++void
++vkr_device_fini_shm_releases(struct vkr_device *dev)
++{
++   mtx_lock(&dev->shm_release.mutex);
++   dev->shm_release.immediate = true;
++   vkr_shm_free_list(&dev->shm_release.pending);
++   dev->shm_release.pending_size = 0;
++   mtx_unlock(&dev->shm_release.mutex);
++}
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem)
+ {
+-   vkr_shm_free(mem->shm);
++   if (mem->shm) {
++      struct vkr_device *dev = mem->device;
++
++      mtx_lock(&dev->shm_release.mutex);
++      const bool immediate = dev->shm_release.immediate;
++      if (!immediate) {
++         list_addtail(&mem->shm->head, &dev->shm_release.pending);
++         dev->shm_release.pending_size += mem->shm->size;
++      }
++      mtx_unlock(&dev->shm_release.mutex);
++
++      if (immediate)
++         vkr_shm_free(mem->shm);
++      else
++         vkr_device_flush_shm_releases(dev, false);
++      mem->shm = NULL;
++   }
+    if (mem->gbm_bo)
+       vkr_gbm_bo_destroy(mem->gbm_bo);
+    if (mem->udmabuf_fd >= 0)
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index 1e83bab9..07928ae7 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -14,6 +14,21 @@ struct vkr_shm {
+    int fd;
+    void *ptr;
+    size_t size;
++
++   /* in vkr_device::shm_release.pending or vkr_shm_release::shms */
++   struct list_head head;
++};
++
++/* shm whose VkDeviceMemory has been freed, unmapped once the GPU work
++ * submitted before the free has completed on every queue of the device
++ */
++struct vkr_shm_release {
++   struct vkr_device *device;
++   /* queues whose release marker has not completed yet, under
++    * vkr_device::shm_release.mutex
++    */
++   uint32_t pending_queues;
++   struct list_head shms;
+ };
+ 
+ struct vkr_device_memory {
+@@ -48,6 +63,15 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx);
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem);
+ 
++void
++vkr_device_flush_shm_releases(struct vkr_device *dev, bool force);
++
++void
++vkr_shm_release_complete_queue(struct vkr_shm_release *release);
++
++void
++vkr_device_fini_shm_releases(struct vkr_device *dev);
++
+ bool
+ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+                               uint64_t blob_size,
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 372ab27d..395e51ad 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -8,6 +8,7 @@
+ #include "vn_protocol_renderer_queue.h"
+ 
+ #include "vkr_context.h"
++#include "vkr_device_memory.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_queue_gen.h"
+ 
+@@ -52,6 +53,7 @@ vkr_device_alloc_queue_sync(struct vkr_device *dev,
+    }
+ 
+    sync->device_lost = false;
++   sync->shm_release = NULL;
+    sync->flags = fence_flags;
+    sync->ring_idx = ring_idx;
+    sync->fence_id = fence_id;
+@@ -71,7 +73,10 @@ static inline void
+ vkr_queue_sync_retire(struct vkr_queue *queue, struct vkr_queue_sync *sync)
+ {
+    TRACE_FUNC();
+-   queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
++   if (sync->shm_release)
++      vkr_shm_release_complete_queue(sync->shm_release);
++   else
++      queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
+    vkr_device_free_queue_sync(queue->device, sync);
+ }
+ 
+@@ -108,6 +113,42 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
+    cnd_signal(&queue->sync_thread.cond);
+    mtx_unlock(&queue->sync_thread.mutex);
+ 
++   vkr_device_flush_shm_releases(dev, false);
++
++   return true;
++}
++
++/* Submit a marker after everything already submitted to the queue; release
++ * completes its part for this queue once the marker has completed.
++ */
++bool
++vkr_queue_submit_shm_release(struct vkr_queue *queue, struct vkr_shm_release *release)
++{
++   struct vkr_device *dev = queue->device;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++
++   struct vkr_queue_sync *sync = vkr_device_alloc_queue_sync(dev, 0, 0, 0);
++   if (!sync)
++      return false;
++   sync->shm_release = release;
++
++   mtx_lock(&queue->vk_mutex);
++   VkResult result = vk->QueueSubmit(queue->base.handle.queue, 0, NULL, sync->fence);
++   mtx_unlock(&queue->vk_mutex);
++
++   if (result == VK_ERROR_DEVICE_LOST) {
++      sync->device_lost = true;
++   } else if (result != VK_SUCCESS) {
++      vkr_device_free_queue_sync(dev, sync);
++      vkr_log("shm release marker submit failed (vk ret %d)", result);
++      return false;
++   }
++
++   mtx_lock(&queue->sync_thread.mutex);
++   list_addtail(&sync->head, &queue->sync_thread.syncs);
++   cnd_signal(&queue->sync_thread.cond);
++   mtx_unlock(&queue->sync_thread.mutex);
++
+    return true;
+ }
+ 
+@@ -378,6 +419,8 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++
++   vkr_device_flush_shm_releases(queue->device, false);
+ }
+ 
+ static void
+@@ -394,6 +437,8 @@ vkr_dispatch_vkQueueBindSparse(UNUSED struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueBindSparse(args->queue, args->bindInfoCount, args->pBindInfo, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++
++   vkr_device_flush_shm_releases(queue->device, false);
+ }
+ 
+ static void
+@@ -419,6 +464,8 @@ vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
+    args->ret =
+       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
++
++   vkr_device_flush_shm_releases(queue->device, false);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_queue.h b/src/venus/vkr_queue.h
+index 6a3a909e..bf7844c5 100644
+--- a/src/venus/vkr_queue.h
++++ b/src/venus/vkr_queue.h
+@@ -12,6 +12,9 @@ struct vkr_queue_sync {
+    VkFence fence;
+    bool device_lost;
+ 
++   /* a shm release marker rather than a client fence */
++   struct vkr_shm_release *shm_release;
++
+    uint32_t flags;
+    uint32_t ring_idx;
+    uint64_t fence_id;
+@@ -95,4 +98,9 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
+                       uint32_t ring_idx,
+                       uint64_t fence_id);
+ 
++struct vkr_shm_release;
++
++bool
++vkr_queue_submit_shm_release(struct vkr_queue *queue, struct vkr_shm_release *release);
++
+ #endif /* VKR_QUEUE_H */
