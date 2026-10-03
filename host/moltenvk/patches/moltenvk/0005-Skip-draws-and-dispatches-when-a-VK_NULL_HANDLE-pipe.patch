@@ -1,7 +1,7 @@
 From 5e8831c6d8a3c479fa9f80d61727744ddceeb365 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 21:54:05 +0300
-Subject: [PATCH 05/16] Skip draws and dispatches when a VK_NULL_HANDLE
+Subject: [PATCH 05/20] Skip draws and dispatches when a VK_NULL_HANDLE
  pipeline is bound
 
 vkCreate*Pipelines returns VK_NULL_HANDLE for pipelines that fail to compile.

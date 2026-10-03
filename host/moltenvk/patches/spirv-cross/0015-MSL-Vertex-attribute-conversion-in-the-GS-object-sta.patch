@@ -1,7 +1,7 @@
 From 5807b45b5f515e3887868ed83969870be2456d8b Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:42:55 +0300
-Subject: [PATCH 15/15] MSL: Vertex attribute conversion in the GS object stage
+Subject: [PATCH 15/16] MSL: Vertex attribute conversion in the GS object stage
 
 The object stage loaded vertex attributes with the MSL type of the API's format type, which
 for SCALED and NORM formats is float: the bits of R16G16_SSCALED positions (glamor's GL_SHORT

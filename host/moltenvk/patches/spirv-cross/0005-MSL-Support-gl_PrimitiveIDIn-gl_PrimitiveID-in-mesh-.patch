@@ -1,7 +1,7 @@
 From c6aedec7df88154ae22fdb6ebbaa69b55bab3b71 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 21:53:56 +0300
-Subject: [PATCH 05/15] MSL: Support gl_PrimitiveIDIn / gl_PrimitiveID in
+Subject: [PATCH 05/16] MSL: Support gl_PrimitiveIDIn / gl_PrimitiveID in
  mesh-emulated geometry shaders
 
 The geometry-shader-as-mesh-shader emulation treated every input variable as a

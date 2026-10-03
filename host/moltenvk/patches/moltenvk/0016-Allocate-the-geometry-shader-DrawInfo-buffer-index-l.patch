@@ -1,7 +1,7 @@
 From 76cdfe85f2c9f22188ed85da60e391e9d4eec02d Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 00:31:13 +0300
-Subject: [PATCH 16/16] Allocate the geometry-shader DrawInfo buffer index like
+Subject: [PATCH 16/20] Allocate the geometry-shader DrawInfo buffer index like
  the implicit buffers
 
 The DrawInfo buffer of the geometry-shader object stage was fixed at Metal buffer index 20.
