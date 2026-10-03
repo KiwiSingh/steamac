@@ -1,0 +1,515 @@
+From 85ca1b91c715e99558762f12716843e048c4e37c Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sat, 3 Oct 2026 20:22:42 +0300
+Subject: [PATCH 7/9] virtio/gpu(macos): map Venus blobs through
+ virglrenderer's shm fds
+
+v1.19.6 on macOS depends on slp's virglrenderer fork (0.10.4e-krunkit):
+virgl_renderer_resource_get_map_ptr() and VIRGL_RENDERER_BLOB_FD_TYPE_APPLE,
+i.e. a vkMapMemory pointer handed to hv_vm_map. Upstream virglrenderer's
+macOS Venus (and UTM's fork of it, which emulates dma_buf/drm modifiers for
+the guest) instead backs host-visible and exportable memory with POSIX shm
+imported into MoltenVK, and exports it as a VIRGL_RENDERER_BLOB_FD_TYPE_SHM
+fd. Drop the map_ptr API from rutabaga and, on macOS, map the shm fd into the
+VMM once per resource (whole host pages; a short fd leaves an anonymous zero
+tail instead of faulting) and hv_vm_map that. Blobs that are not aligned to
+the host page are refused with a clear error: rounding would map over the
+guest's next blob, and a guest honoring VIRTIO_GPU_F_BLOB_ALIGNMENT never
+sends them. The host mapping is released when the resource is unreferenced.
+
+Upstream virglrenderer runs Venus only behind its render server and libkrun
+never polls the renderer, so with VIRGLRENDERER_VENUS on macOS also request
+VIRGLRENDERER_RENDER_SERVER and VIRGLRENDERER_USE_ASYNC_FENCE_CB.
+---
+ src/devices/src/virtio/gpu/virtio_gpu.rs      | 215 +++++++++++++++---
+ src/rutabaga_gfx/src/cross_domain/mod.rs      |   8 -
+ .../src/generated/virgl_renderer_bindings.rs  |   8 -
+ src/rutabaga_gfx/src/rutabaga_2d.rs           |   2 -
+ src/rutabaga_gfx/src/rutabaga_core.rs         |  19 --
+ src/rutabaga_gfx/src/rutabaga_utils.rs        |   1 -
+ src/rutabaga_gfx/src/virgl_renderer.rs        |  14 --
+ 7 files changed, 181 insertions(+), 86 deletions(-)
+
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index 593263e..1df37c8 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -1,7 +1,6 @@
+ use std::collections::BTreeMap;
+ use std::env;
+ use std::io::IoSliceMut;
+-#[cfg(target_os = "linux")]
+ use std::os::fd::AsRawFd;
+ use std::os::fd::RawFd;
+ use std::path::PathBuf;
+@@ -20,7 +19,7 @@ use krun_display::{
+ };
+ use libc::c_void;
+ #[cfg(target_os = "macos")]
+-use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_APPLE;
++use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_SHM;
+ #[cfg(all(feature = "virgl_resource_map2", target_os = "linux"))]
+ use rutabaga_gfx::RUTABAGA_MEM_HANDLE_TYPE_DMABUF;
+ #[cfg(all(not(feature = "virgl_resource_map2"), target_os = "linux"))]
+@@ -110,6 +109,16 @@ impl AssociatedScanouts {
+     }
+ }
+ 
++/// Host view of a blob that virglrenderer exported as a shared-memory fd: the
++/// fd mapped into the VMM, which is what the hypervisor maps into the guest and
++/// what a blob scanout is read from.
++#[cfg(target_os = "macos")]
++#[derive(Copy, Clone)]
++struct HostMapping {
++    addr: u64,
++    len: u64,
++}
++
+ #[derive(Copy, Clone)]
+ struct VirtioGpuResource {
+     id: u32,
+@@ -120,6 +129,8 @@ struct VirtioGpuResource {
+     size: u64, // only for blob resources
+     shmem_offset: Option<u64>,
+     rutabaga_external_mapping: bool,
++    #[cfg(target_os = "macos")]
++    host_mapping: Option<HostMapping>,
+ }
+ 
+ impl VirtioGpuResource {
+@@ -141,10 +152,18 @@ impl VirtioGpuResource {
+             format,
+             shmem_offset: None,
+             rutabaga_external_mapping: false,
++            #[cfg(target_os = "macos")]
++            host_mapping: None,
+         }
+     }
+ }
+ 
++#[cfg(target_os = "macos")]
++fn host_page_size() -> u64 {
++    // SAFETY: sysconf has no memory-safety preconditions.
++    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
++}
++
+ pub struct VirtioGpuScanout {
+     resource_id: u32,
+     width: u32,
+@@ -228,6 +247,20 @@ impl VirtioGpu {
+         render_server_fd: Option<RawFd>,
+         export_table: Option<ExportTable>,
+     ) -> Option<Rutabaga> {
++        // virglrenderer only runs Venus behind its render server (built in thread
++        // mode on macOS), and libkrun never polls the renderer, so fences must be
++        // signaled from virglrenderer's own threads.
++        #[cfg(target_os = "macos")]
++        let virgl_flags = {
++            const VIRGLRENDERER_VENUS: u32 = 1 << 6;
++            const VIRGLRENDERER_USE_ASYNC_FENCE_CB: u32 = 1 << 8;
++            const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
++            if virgl_flags & VIRGLRENDERER_VENUS != 0 {
++                virgl_flags | VIRGLRENDERER_RENDER_SERVER | VIRGLRENDERER_USE_ASYNC_FENCE_CB
++            } else {
++                virgl_flags
++            }
++        };
+         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
+             Ok(dir) => dir,
+             Err(_) => "/run/user/1000".to_string(),
+@@ -440,6 +473,19 @@ impl VirtioGpu {
+             self.rutabaga.unmap(resource_id)?;
+         }
+ 
++        #[cfg(target_os = "macos")]
++        if let Some(mapping) = resource.host_mapping {
++            if resource.shmem_offset.is_some() {
++                // The hypervisor still maps these pages into the guest; leak them
++                // rather than leave the guest mapping pointing at freed memory.
++                warn!("resource {resource_id} unreferenced while still mapped into the guest");
++            } else {
++                // SAFETY: the range was mapped by blob_host_mapping and nothing else
++                // refers to it any more.
++                unsafe { libc::munmap(mapping.addr as *mut c_void, mapping.len as usize) };
++            }
++        }
++
+         self.rutabaga.unref_resource(resource_id)?;
+         Ok(OkNoData)
+     }
+@@ -917,6 +963,104 @@ impl VirtioGpu {
+             map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
+         })
+     }
++
++    /// Maps the shared memory behind a blob into the VMM, once per resource.
++    ///
++    /// virglrenderer hands out host-visible and exportable Venus memory (and its
++    /// own shm blobs, e.g. the Venus rings) as a POSIX shm fd. The mapping spans
++    /// whole host pages; if the fd is shorter than that, the tail stays
++    /// anonymous zero pages rather than faulting.
++    #[cfg(target_os = "macos")]
++    fn blob_host_mapping(
++        &mut self,
++        resource_id: u32,
++    ) -> std::result::Result<HostMapping, GpuResponse> {
++        let resource = self
++            .resources
++            .get_mut(&resource_id)
++            .ok_or(ErrInvalidResourceId)?;
++        if let Some(mapping) = resource.host_mapping {
++            return Ok(mapping);
++        }
++
++        let export = self.rutabaga.export_blob(resource_id).map_err(|e| {
++            debug!("resource {resource_id} cannot be exported: {e}");
++            ErrUnspec
++        })?;
++        if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_SHM {
++            error!(
++                "resource {resource_id}: unsupported blob handle type {:#x}",
++                export.handle_type
++            );
++            return Err(ErrUnspec);
++        }
++        let fd = export.os_handle.as_raw_fd();
++
++        let page_size = host_page_size();
++        let len = resource.size.div_ceil(page_size) * page_size;
++        if len == 0 {
++            return Err(ErrUnspec);
++        }
++        // SAFETY: an all-zero stat is a valid out-parameter for fstat.
++        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
++        // SAFETY: fd is a valid descriptor owned by `export`.
++        if unsafe { libc::fstat(fd, &mut stat) } != 0 {
++            error!("resource {resource_id}: fstat on the blob fd failed");
++            return Err(ErrUnspec);
++        }
++        let file_len = (stat.st_size.max(0) as u64).min(len) / page_size * page_size;
++        if file_len == 0 {
++            error!("resource {resource_id}: blob fd is empty");
++            return Err(ErrUnspec);
++        }
++        if file_len < len {
++            warn!(
++                "resource {resource_id}: blob fd holds {file_len} bytes, resource is {}",
++                resource.size
++            );
++        }
++
++        // SAFETY: a fresh anonymous mapping; no existing memory is touched.
++        let addr = unsafe {
++            libc::mmap(
++                std::ptr::null_mut(),
++                len as usize,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_ANON | libc::MAP_PRIVATE,
++                -1,
++                0,
++            )
++        };
++        if addr == libc::MAP_FAILED {
++            error!("resource {resource_id}: cannot reserve {len} bytes");
++            return Err(ErrUnspec);
++        }
++        // SAFETY: replaces the start of the reservation made just above.
++        let ret = unsafe {
++            libc::mmap(
++                addr,
++                file_len as usize,
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_SHARED | libc::MAP_FIXED,
++                fd,
++                0,
++            )
++        };
++        if ret == libc::MAP_FAILED {
++            error!("resource {resource_id}: cannot map the blob fd");
++            // SAFETY: the reservation made above, unused.
++            unsafe { libc::munmap(addr, len as usize) };
++            return Err(ErrUnspec);
++        }
++
++        let mapping = HostMapping {
++            addr: addr as u64,
++            len,
++        };
++        resource.host_mapping = Some(mapping);
++        Ok(mapping)
++    }
++
+     #[cfg(target_os = "macos")]
+     pub fn resource_map_blob(
+         &mut self,
+@@ -924,44 +1068,47 @@ impl VirtioGpu {
+         shm_region: &VirtioShmRegion,
+         offset: u64,
+     ) -> VirtioGpuResult {
++        let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
++        let mapping = self.blob_host_mapping(resource_id)?;
+         let resource = self
+             .resources
+             .get_mut(&resource_id)
+             .ok_or(ErrInvalidResourceId)?;
+ 
+-        let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+-        let map_ptr = self.rutabaga.map_ptr(resource_id).map_err(|_| ErrUnspec)?;
+-
+-        if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+-            if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_APPLE {
+-                let guest_addr = checked_blob_map_addr(
+-                    shm_region.guest_addr,
+-                    offset,
+-                    resource.size,
+-                    shm_region.size as u64,
+-                )
+-                .ok_or(ErrUnspec)?;
+-                debug!(
+-                    "mapping: map_ptr={:x}, guest_addr={:x}, size={}",
+-                    map_ptr, guest_addr, resource.size
+-                );
++        let guest_addr = checked_blob_map_addr(
++            shm_region.guest_addr,
++            offset,
++            resource.size,
++            shm_region.size as u64,
++        )
++        .ok_or(ErrUnspec)?;
++        // hv_vm_map works in host pages. Rounding up here would map over the
++        // guest's next blob, so a guest that ignores VIRTIO_GPU_F_BLOB_ALIGNMENT
++        // gets an error instead.
++        let page_size = host_page_size();
++        if guest_addr % page_size != 0 || resource.size % page_size != 0 {
++            error!(
++                "resource {resource_id}: blob at {guest_addr:#x} size {:#x} is not aligned to \
++                 the {page_size:#x} host page (guest ignores VIRTIO_GPU_F_BLOB_ALIGNMENT)",
++                resource.size
++            );
++            return Err(ErrUnspec);
++        }
++        debug!(
++            "mapping: host_addr={:x}, guest_addr={:x}, size={}",
++            mapping.addr, guest_addr, resource.size
++        );
+ 
+-                let (reply_sender, reply_receiver) = unbounded();
+-                self.map_sender
+-                    .send(WorkerMessage::GpuAddMapping(
+-                        reply_sender,
+-                        map_ptr,
+-                        guest_addr,
+-                        resource.size,
+-                    ))
+-                    .unwrap();
+-                if !reply_receiver.recv().unwrap() {
+-                    return Err(ErrUnspec);
+-                }
+-            } else {
+-                return Err(ErrUnspec);
+-            }
+-        } else {
++        let (reply_sender, reply_receiver) = unbounded();
++        self.map_sender
++            .send(WorkerMessage::GpuAddMapping(
++                reply_sender,
++                mapping.addr,
++                guest_addr,
++                resource.size,
++            ))
++            .unwrap();
++        if !reply_receiver.recv().unwrap() {
+             return Err(ErrUnspec);
+         }
+ 
+diff --git a/src/rutabaga_gfx/src/cross_domain/mod.rs b/src/rutabaga_gfx/src/cross_domain/mod.rs
+index 72ffd47..9e6df6b 100644
+--- a/src/rutabaga_gfx/src/cross_domain/mod.rs
++++ b/src/rutabaga_gfx/src/cross_domain/mod.rs
+@@ -1118,8 +1118,6 @@ impl RutabagaContext for CrossDomainContext {
+                 blob_mem: resource_create_blob.blob_mem,
+                 blob_flags: resource_create_blob.blob_flags,
+                 map_info: Some(reqs.map_info | RUTABAGA_MAP_ACCESS_RW),
+-                #[cfg(target_os = "macos")]
+-                map_ptr: None,
+                 info_2d: None,
+                 info_3d: Some(info_3d),
+                 vulkan_info: reqs.vulkan_info,
+@@ -1169,8 +1167,6 @@ impl RutabagaContext for CrossDomainContext {
+                     blob_mem: resource_create_blob.blob_mem,
+                     blob_flags: resource_create_blob.blob_flags,
+                     map_info: Some(RUTABAGA_MAP_CACHE_CACHED | access),
+-                    #[cfg(target_os = "macos")]
+-                    map_ptr: None,
+                     info_2d: None,
+                     info_3d: None,
+                     vulkan_info: None,
+@@ -1195,8 +1191,6 @@ impl RutabagaContext for CrossDomainContext {
+                     blob_mem: resource_create_blob.blob_mem,
+                     blob_flags: resource_create_blob.blob_flags,
+                     map_info: Some(RUTABAGA_MAP_CACHE_CACHED | access),
+-                    #[cfg(target_os = "macos")]
+-                    map_ptr: None,
+                     info_2d: None,
+                     info_3d: None,
+                     vulkan_info: None,
+@@ -1401,8 +1395,6 @@ impl RutabagaComponent for CrossDomain {
+             blob_mem: resource_create_blob.blob_mem,
+             blob_flags: resource_create_blob.blob_flags,
+             map_info: None,
+-            #[cfg(target_os = "macos")]
+-            map_ptr: None,
+             info_2d: None,
+             info_3d: None,
+             vulkan_info: None,
+diff --git a/src/rutabaga_gfx/src/generated/virgl_renderer_bindings.rs b/src/rutabaga_gfx/src/generated/virgl_renderer_bindings.rs
+index 970e500..9c82c9b 100644
+--- a/src/rutabaga_gfx/src/generated/virgl_renderer_bindings.rs
++++ b/src/rutabaga_gfx/src/generated/virgl_renderer_bindings.rs
+@@ -41,7 +41,6 @@ pub const VIRGL_RENDERER_MAP_CACHE_WC: u32 = 3;
+ pub const VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF: u32 = 1;
+ pub const VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE: u32 = 2;
+ pub const VIRGL_RENDERER_BLOB_FD_TYPE_SHM: u32 = 3;
+-pub const VIRGL_RENDERER_BLOB_FD_TYPE_APPLE: u32 = 4;
+ pub const VIRGL_RENDERER_FENCE_FLAG_MERGEABLE: u32 = 1;
+ pub type __int32_t = ::std::os::raw::c_int;
+ pub type __uint32_t = ::std::os::raw::c_uint;
+@@ -397,13 +396,6 @@ extern "C" {
+         map_info: *mut u32,
+     ) -> ::std::os::raw::c_int;
+ }
+-#[cfg(target_os = "macos")]
+-extern "C" {
+-    pub fn virgl_renderer_resource_get_map_ptr(
+-        res_handle: u32,
+-        map_ptr: *mut u64,
+-    ) -> ::std::os::raw::c_int;
+-}
+ extern "C" {
+     pub fn virgl_renderer_resource_export_blob(
+         res_id: u32,
+diff --git a/src/rutabaga_gfx/src/rutabaga_2d.rs b/src/rutabaga_gfx/src/rutabaga_2d.rs
+index 417e679..0877ff1 100644
+--- a/src/rutabaga_gfx/src/rutabaga_2d.rs
++++ b/src/rutabaga_gfx/src/rutabaga_2d.rs
+@@ -179,8 +179,6 @@ impl RutabagaComponent for Rutabaga2D {
+             blob_mem: 0,
+             blob_flags: 0,
+             map_info: None,
+-            #[cfg(target_os = "macos")]
+-            map_ptr: None,
+             info_2d: Some(info_2d),
+             info_3d: None,
+             vulkan_info: None,
+diff --git a/src/rutabaga_gfx/src/rutabaga_core.rs b/src/rutabaga_gfx/src/rutabaga_core.rs
+index c406f40..691ad8a 100644
+--- a/src/rutabaga_gfx/src/rutabaga_core.rs
++++ b/src/rutabaga_gfx/src/rutabaga_core.rs
+@@ -46,8 +46,6 @@ pub struct RutabagaResource {
+     pub blob_mem: u32,
+     pub blob_flags: u32,
+     pub map_info: Option<u32>,
+-    #[cfg(target_os = "macos")]
+-    pub map_ptr: Option<u64>,
+     pub info_2d: Option<Rutabaga2DInfo>,
+     pub info_3d: Option<Resource3DInfo>,
+     pub vulkan_info: Option<VulkanInfo>,
+@@ -112,8 +110,6 @@ pub trait RutabagaComponent {
+             blob_mem: 0,
+             blob_flags: 0,
+             map_info: None,
+-            #[cfg(target_os = "macos")]
+-            map_ptr: None,
+             info_2d: None,
+             info_3d: None,
+             vulkan_info: None,
+@@ -460,8 +456,6 @@ impl Rutabaga {
+                     blob_mem: 0,
+                     blob_flags: 0,
+                     map_info: None,
+-                    #[cfg(target_os = "macos")]
+-                    map_ptr: None,
+                     info_2d: Some(Rutabaga2DInfo {
+                         width: s.width,
+                         height: s.height,
+@@ -905,19 +899,6 @@ impl Rutabaga {
+             .ok_or(RutabagaError::SpecViolation("no map info available"))
+     }
+ 
+-    /// Returns the `map_ptr` of the blob resource.
+-    #[cfg(target_os = "macos")]
+-    pub fn map_ptr(&self, resource_id: u32) -> RutabagaResult<u64> {
+-        let resource = self
+-            .resources
+-            .get(&resource_id)
+-            .ok_or(RutabagaError::InvalidResourceId)?;
+-
+-        resource
+-            .map_ptr
+-            .ok_or(RutabagaError::SpecViolation("no map ptr available"))
+-    }
+-
+     /// Returns the `vulkan_info` of the blob resource, which consists of the physical device
+     /// index and memory index associated with the resource.
+     pub fn vulkan_info(&self, resource_id: u32) -> RutabagaResult<VulkanInfo> {
+diff --git a/src/rutabaga_gfx/src/rutabaga_utils.rs b/src/rutabaga_gfx/src/rutabaga_utils.rs
+index c32e92b..085912c 100644
+--- a/src/rutabaga_gfx/src/rutabaga_utils.rs
++++ b/src/rutabaga_gfx/src/rutabaga_utils.rs
+@@ -631,7 +631,6 @@ pub const RUTABAGA_MEM_HANDLE_TYPE_DMABUF: u32 = 0x0002;
+ pub const RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_WIN32: u32 = 0x0003;
+ pub const RUTABAGA_MEM_HANDLE_TYPE_SHM: u32 = 0x0004;
+ pub const RUTABAGA_MEM_HANDLE_TYPE_ZIRCON: u32 = 0x0005;
+-pub const RUTABAGA_MEM_HANDLE_TYPE_APPLE: u32 = 0x0006;
+ 
+ pub const RUTABAGA_FENCE_HANDLE_TYPE_OPAQUE_FD: u32 = 0x0006;
+ pub const RUTABAGA_FENCE_HANDLE_TYPE_SYNC_FD: u32 = 0x0007;
+diff --git a/src/rutabaga_gfx/src/virgl_renderer.rs b/src/rutabaga_gfx/src/virgl_renderer.rs
+index a2627ca..56142c9 100644
+--- a/src/rutabaga_gfx/src/virgl_renderer.rs
++++ b/src/rutabaga_gfx/src/virgl_renderer.rs
+@@ -358,15 +358,6 @@ impl VirglRenderer {
+         Err(RutabagaError::Unsupported)
+     }
+ 
+-    #[cfg(target_os = "macos")]
+-    fn map_ptr(&self, resource_id: u32) -> RutabagaResult<u64> {
+-        let mut map_ptr = 0;
+-        let ret = unsafe { virgl_renderer_resource_get_map_ptr(resource_id, &mut map_ptr) };
+-        ret_to_res(ret)?;
+-
+-        Ok(map_ptr)
+-    }
+-
+     fn query(&self, resource_id: u32) -> RutabagaResult<Resource3DInfo> {
+         let query = export_query(resource_id)?;
+         if query.out_num_fds == 0 {
+@@ -402,7 +393,6 @@ impl VirglRenderer {
+                 VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF => RUTABAGA_MEM_HANDLE_TYPE_DMABUF,
+                 VIRGL_RENDERER_BLOB_FD_TYPE_SHM => RUTABAGA_MEM_HANDLE_TYPE_SHM,
+                 VIRGL_RENDERER_BLOB_FD_TYPE_OPAQUE => RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+-                VIRGL_RENDERER_BLOB_FD_TYPE_APPLE => RUTABAGA_MEM_HANDLE_TYPE_APPLE,
+                 _ => {
+                     return Err(RutabagaError::Unsupported);
+                 }
+@@ -509,8 +499,6 @@ impl RutabagaComponent for VirglRenderer {
+             blob_mem: 0,
+             blob_flags: 0,
+             map_info: None,
+-            #[cfg(target_os = "macos")]
+-            map_ptr: None,
+             info_2d: None,
+             info_3d: self.query(resource_id).ok(),
+             vulkan_info: None,
+@@ -681,8 +669,6 @@ impl RutabagaComponent for VirglRenderer {
+                 blob_mem: resource_create_blob.blob_mem,
+                 blob_flags: resource_create_blob.blob_flags,
+                 map_info: self.map_info(resource_id).ok(),
+-                #[cfg(target_os = "macos")]
+-                map_ptr: self.map_ptr(resource_id).ok(),
+                 info_2d: None,
+                 info_3d: self.query(resource_id).ok(),
+                 vulkan_info: None,
+-- 
+2.50.1 (Apple Git-155)
+

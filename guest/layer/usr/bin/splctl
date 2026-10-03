@@ -1,0 +1,136 @@
+#!/bin/bash
+# steamac replacement for the Frame's /usr/bin/splctl (package
+# deckard-uboot-splctl, a static binary that edits the U-Boot environment).
+#
+# Same CLI and output as the stock tool, observed by tracing it with fake
+# fw_printenv/fw_setenv (its legacy U-Boot env backend):
+#   get-primary          -> first word of BOOT_ORDER                ("A")
+#   set-primary X        -> BOOT_ORDER="X <other>", BOOT_X_LEFT=3
+#   get-boot-count X     -> BOOT_X_LEFT                             ("3")
+#   get-state X          -> "good" if BOOT_X_LEFT > 0, else "bad"
+#   set-state X good|bad -> BOOT_X_LEFT=3 | BOOT_X_LEFT=0
+#   get-valid X          -> prints nothing (stock legacy backend does the same)
+#   get-current          -> rauc.slot= from /proc/cmdline
+#   get-bootfw-slot      -> prints nothing: the VM has no boot-firmware slots
+#   set-bootfw-slot X    -> accepted, no-op
+# Instead of the U-Boot env, the state is the text file esp:/steamac/bootenv,
+# which the steamac initramfs (guest/initramfs/init) reads and decrements on
+# every boot exactly like the Frame bootloader does with BOOT_x_LEFT.
+#
+# Callers (all stock, unmodified): /usr/bin/steamos-bootconf (wrapper used by
+# rauc's bootloader-custom-backend.sh, rauc/post-install.sh, steamos-boot.service,
+# steamos-manager), /usr/bin/steamos-dump-info, /boot/kernelsetup.sh.
+#
+# The esp is mounted privately (own mount namespace) for each call, so this
+# works from systemd services, from steamos-chroot and before /esp is
+# automounted; flock serialises concurrent writers.
+set -euo pipefail
+
+MAX_TRIES=3
+STATE_REL=steamac/bootenv
+LOCK=/run/lock/steamac-splctl.lock
+
+die() { echo "splctl: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<EOF
+usage: splctl <command> [args]
+  get-primary | set-primary A|B
+  get-state A|B | set-state A|B good|bad
+  get-boot-count A|B | get-valid A|B
+  get-current | get-bootfw-slot | set-bootfw-slot A|B
+(steamac VM implementation, state in esp:/$STATE_REL)
+EOF
+    exit 1
+}
+check_slot() { [[ ${1:-} == A || ${1:-} == B ]] || die "Invalid slot '${1:-}'"; }
+
+esp_device() {
+    local d
+    for d in /dev/disk/by-partsets/shared/esp /dev/disk/by-partlabel/esp; do
+        [[ -b $d ]] && { readlink -f "$d"; return; }
+    done
+    die "esp partition not found"
+}
+
+# --- state file helpers (run inside the private mount namespace)
+load_state() {
+    BOOT_ORDER="A B"; BOOT_A_LEFT=$MAX_TRIES; BOOT_B_LEFT=$MAX_TRIES
+    [[ -f $STATE ]] || return 0
+    local k v
+    while IFS='=' read -r k v; do
+        v=${v%$'\r'}
+        case $k in
+            BOOT_ORDER) [[ $v == "A B" || $v == "B A" ]] && BOOT_ORDER=$v ;;
+            BOOT_A_LEFT) [[ $v =~ ^[0-9]$ ]] && BOOT_A_LEFT=$v ;;
+            BOOT_B_LEFT) [[ $v =~ ^[0-9]$ ]] && BOOT_B_LEFT=$v ;;
+        esac
+    done < "$STATE"
+}
+save_state() {
+    mkdir -p "${STATE%/*}"
+    {
+        echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
+        echo "BOOT_ORDER=$BOOT_ORDER"
+        echo "BOOT_A_LEFT=$BOOT_A_LEFT"
+        echo "BOOT_B_LEFT=$BOOT_B_LEFT"
+    } > "$STATE.new"
+    sync "$STATE.new"
+    mv -f "$STATE.new" "$STATE"
+    sync "${STATE%/*}"
+}
+left() { local v="BOOT_${1}_LEFT"; echo "${!v}"; }
+set_left() { printf -v "BOOT_${1}_LEFT" '%s' "$2"; }
+other() { [[ $1 == A ]] && echo B || echo A; }
+
+run_state_cmd() {
+    local cmd=$1 slot=${2:-} arg=${3:-}
+    load_state
+    case $cmd in
+        get-primary)    echo "${BOOT_ORDER%% *}" ;;
+        get-boot-count) left "$slot" ;;
+        get-state)      (( $(left "$slot") > 0 )) && echo good || echo bad ;;
+        set-primary)
+            BOOT_ORDER="$slot $(other "$slot")"
+            set_left "$slot" "$MAX_TRIES"
+            save_state ;;
+        set-state)
+            case $arg in
+                good) set_left "$slot" "$MAX_TRIES" ;;
+                bad)  set_left "$slot" 0 ;;
+                *)    die "Invalid state '$arg' (good|bad)" ;;
+            esac
+            save_state ;;
+    esac
+}
+
+cmd=${1:-}
+case $cmd in
+    get-primary) ;;
+    get-boot-count|get-state|set-primary) check_slot "${2:-}" ;;
+    set-state) check_slot "${2:-}"; [[ ${3:-} == good || ${3:-} == bad ]] || die "Invalid state '${3:-}' (good|bad)" ;;
+    get-valid) check_slot "${2:-}"; exit 0 ;;
+    get-current)
+        sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline
+        exit 0 ;;
+    get-bootfw-slot) exit 0 ;;
+    set-bootfw-slot) check_slot "${2:-}"; echo "splctl: no boot firmware slots in the VM, ignoring" >&2; exit 0 ;;
+    __in_ns)
+        # internal: we are inside the private mount namespace
+        shift
+        # The mount exists only in this private namespace, so a fixed
+        # mountpoint under /run is safe and leaves nothing behind.
+        mnt=/run/steamac/splctl-esp
+        mkdir -p "$mnt"
+        mount -t vfat -o rw,noatime "$(esp_device)" "$mnt"
+        trap 'umount "$mnt"' EXIT
+        STATE=$mnt/$STATE_REL
+        run_state_cmd "$@"
+        exit 0 ;;
+    *) usage ;;
+esac
+
+(( EUID == 0 )) || die "must be run as root"
+mkdir -p "${LOCK%/*}"
+exec 9>"$LOCK"
+flock 9
+unshare --mount --propagation private "$0" __in_ns "$@"

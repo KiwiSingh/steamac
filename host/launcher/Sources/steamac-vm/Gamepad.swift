@@ -1,0 +1,116 @@
+import Foundation
+import GameController
+
+/// Feeds the fixed virtual Xbox 360 pad from whichever GameController.framework
+/// extended gamepad (Xbox, DualSense, DualShock, MFi, ...) is current.
+final class GamepadBridge {
+    private let device: InputDevice
+    private var controller: GCController?
+    private var state = PadState()
+    private var observers: [NSObjectProtocol] = []
+
+    struct PadState: Equatable {
+        var buttons: [UInt16: Bool] = [:]
+        var axes: [UInt16: Int32] = [:]
+    }
+
+    static let buttonCodes: [UInt16] = [BTN.SOUTH, BTN.EAST, BTN.NORTH, BTN.WEST, BTN.TL, BTN.TR,
+                                        BTN.SELECT, BTN.START, BTN.MODE, BTN.THUMBL, BTN.THUMBR]
+    static let axisCodes: [UInt16] = [ABS.X, ABS.Y, ABS.Z, ABS.RX, ABS.RY, ABS.RZ, ABS.HAT0X, ABS.HAT0Y]
+
+    init(device: InputDevice) {
+        self.device = device
+        for c in GamepadBridge.buttonCodes { state.buttons[c] = false }
+        for a in GamepadBridge.axisCodes { state.axes[a] = 0 }
+    }
+
+    func start() {
+        GCController.shouldMonitorBackgroundEvents = true
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] n in
+            if let c = n.object as? GCController { log("gamepad connected: \(c.vendorName ?? "?") (\(c.productCategory))") }
+            self?.selectController()
+        })
+        observers.append(nc.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] n in
+            if let c = n.object as? GCController { log("gamepad disconnected: \(c.vendorName ?? "?")") }
+            self?.selectController()
+        })
+        observers.append(nc.addObserver(forName: .GCControllerDidBecomeCurrent, object: nil, queue: .main) { [weak self] _ in
+            self?.selectController()
+        })
+        GCController.startWirelessControllerDiscovery(completionHandler: nil)
+        selectController()
+    }
+
+    private func selectController() {
+        let candidates = GCController.controllers().filter { $0.extendedGamepad != nil }
+        let next = (GCController.current.flatMap { c in candidates.contains(c) ? c : nil }) ?? candidates.first
+        if next === controller { return }
+        controller?.extendedGamepad?.valueChangedHandler = nil
+        controller = next
+        // Release everything the previous controller held.
+        apply(PadState(buttons: Dictionary(uniqueKeysWithValues: GamepadBridge.buttonCodes.map { ($0, false) }),
+                       axes: Dictionary(uniqueKeysWithValues: GamepadBridge.axisCodes.map { ($0, 0) })))
+        guard let pad = next?.extendedGamepad else { return }
+        log("gamepad active: \(next?.vendorName ?? "?") -> virtual Xbox 360 pad")
+        // Keep the Home/PS button for the guest (Steam button) instead of macOS.
+        pad.buttonHome?.preferredSystemGestureState = .disabled
+        pad.buttonOptions?.preferredSystemGestureState = .disabled
+        pad.buttonMenu.preferredSystemGestureState = .disabled
+        pad.valueChangedHandler = { [weak self] pad, _ in self?.apply(GamepadBridge.read(pad)) }
+        apply(GamepadBridge.read(pad))
+    }
+
+    private static func stick(_ v: Float) -> Int32 {
+        Int32((max(-1, min(1, v)) * 32767).rounded())
+    }
+
+    private static func read(_ p: GCExtendedGamepad) -> PadState {
+        var s = PadState()
+        s.buttons[BTN.SOUTH] = p.buttonA.isPressed
+        s.buttons[BTN.EAST] = p.buttonB.isPressed
+        s.buttons[BTN.NORTH] = p.buttonX.isPressed   // xpad: Xbox "X" (west position) is BTN_X
+        s.buttons[BTN.WEST] = p.buttonY.isPressed    // xpad: Xbox "Y" (north position) is BTN_Y
+        s.buttons[BTN.TL] = p.leftShoulder.isPressed
+        s.buttons[BTN.TR] = p.rightShoulder.isPressed
+        s.buttons[BTN.SELECT] = p.buttonOptions?.isPressed ?? false
+        s.buttons[BTN.START] = p.buttonMenu.isPressed
+        s.buttons[BTN.MODE] = p.buttonHome?.isPressed ?? false
+        s.buttons[BTN.THUMBL] = p.leftThumbstickButton?.isPressed ?? false
+        s.buttons[BTN.THUMBR] = p.rightThumbstickButton?.isPressed ?? false
+        // xpad reports Y axes inverted relative to GameController (up = negative).
+        s.axes[ABS.X] = stick(p.leftThumbstick.xAxis.value)
+        s.axes[ABS.Y] = -stick(p.leftThumbstick.yAxis.value)
+        s.axes[ABS.RX] = stick(p.rightThumbstick.xAxis.value)
+        s.axes[ABS.RY] = -stick(p.rightThumbstick.yAxis.value)
+        s.axes[ABS.Z] = Int32((max(0, min(1, p.leftTrigger.value)) * 255).rounded())
+        s.axes[ABS.RZ] = Int32((max(0, min(1, p.rightTrigger.value)) * 255).rounded())
+        let d = p.dpad
+        s.axes[ABS.HAT0X] = d.left.isPressed ? -1 : (d.right.isPressed ? 1 : 0)
+        s.axes[ABS.HAT0Y] = d.up.isPressed ? -1 : (d.down.isPressed ? 1 : 0)
+        return s
+    }
+
+    private func apply(_ next: PadState) {
+        var events: [(UInt16, UInt16, Int32)] = []
+        for c in GamepadBridge.buttonCodes where next.buttons[c] != state.buttons[c] {
+            events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))
+        }
+        for a in GamepadBridge.axisCodes where next.axes[a] != state.axes[a] {
+            events.append((EV.ABS, a, next.axes[a]!))
+        }
+        state = next
+        device.send(events)
+    }
+
+    /// --input-selftest: press/release A and push the left stick right, then return to rest.
+    func injectTestSequence() {
+        var s = state
+        s.buttons[BTN.SOUTH] = true
+        s.axes[ABS.X] = 32767
+        apply(s)
+        s.buttons[BTN.SOUTH] = false
+        s.axes[ABS.X] = 0
+        apply(s)
+    }
+}

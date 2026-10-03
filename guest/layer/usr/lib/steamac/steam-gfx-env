@@ -1,0 +1,26 @@
+#!/bin/bash
+# steamac: ExecStartPre of steam.service, after the stock step that copies
+# /usr/share/deckard/steam_launch_wrapper_env_defaults.txt to
+# $XDG_RUNTIME_DIR/steam/env/gfx.txt (read by steam-launch-wrapper per game).
+#
+# The stock file clamps the Vulkan heap reported to games to 4096 MiB, but only
+# for VK_VRAM_REPORT_LIMIT_DEVICE_ID=0x5143:0x43051401 (Adreno 750). Under
+# Venus the device IDs are MoltenVK's (vendor 0x106b, deviceID encodes the macOS
+# version + GPU family), so the ID is read from the live device and substituted.
+# Without a Venus device the stock value stays (a no-op on this hardware).
+set -euo pipefail
+
+gfx=${XDG_RUNTIME_DIR:?}/steam/env/gfx.txt
+[[ -f $gfx ]] || exit 0
+
+# Bounded: a wedged virtio-gpu fence must never block steam.service start.
+id=$(timeout -k 2 10 vulkaninfo --summary 2>/dev/null | awk '
+    $1 == "vendorID" { v = $3 }
+    $1 == "deviceID" { d = $3 }
+    $1 == "driverID" && $3 == "DRIVER_ID_MESA_VENUS" { print v ":" d; exit }')
+if [[ -z $id ]]; then
+    echo "steam-gfx-env: no Venus device found, leaving VK_VRAM_REPORT_LIMIT_DEVICE_ID as shipped" >&2
+    exit 0
+fi
+sed -i "s/^VK_VRAM_REPORT_LIMIT_DEVICE_ID=.*/VK_VRAM_REPORT_LIMIT_DEVICE_ID=$id/" "$gfx"
+echo "steam-gfx-env: VK_VRAM_REPORT_LIMIT_DEVICE_ID=$id (Venus)" >&2

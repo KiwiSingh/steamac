@@ -1,0 +1,98 @@
+From 4db69c42bf4188d9dc587fb6b505a9978d6ea9e6 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sat, 3 Oct 2026 21:08:09 +0300
+Subject: [PATCH 9/9] virtio/gpu(macos): signal Venus fences from
+ virglrenderer's sync thread
+
+Every Venus context fence hung on macOS: in the guest the first Vulkan
+client blocked forever in drm_syncobj_timeline_wait (virtio-gpu-irq-fence
+showed 'fence 0 15': no fence ever signaled), and later clients sat in D
+state in virtio_gpu_queue_fenced_ctrl_buf once the fenced descriptors had
+filled the control queue.
+
+libkrun asked virglrenderer for VIRGLRENDERER_USE_ASYNC_FENCE_CB but not
+VIRGLRENDERER_THREAD_SYNC. The render-server proxy only creates its fence
+pipe and per-context sync thread under THREAD_SYNC
+(proxy_context_init_fence_eventfd); without it fences are retired only by
+virgl_renderer_poll(), which libkrun never calls (and whose poll fd is -1
+in this mode). Request THREAD_SYNC alongside ASYNC_FENCE_CB, as muvm does.
+Standalone check against the steamac virglrenderer: with ASYNC_FENCE_CB
+alone a context fence never calls write_context_fence; with THREAD_SYNC it
+does within milliseconds.
+
+Also never park a fenced command whose fence the renderer refused: it
+would never signal and its descriptor would be lost. Answer it at once,
+still flagged as fenced so the guest retires its own fence.
+---
+ src/devices/src/virtio/gpu/virtio_gpu.rs | 12 ++++++++++--
+ src/devices/src/virtio/gpu/worker.rs     | 11 +++++++++--
+ 2 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index 3bd644b..48e0b7a 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -311,14 +311,22 @@ impl VirtioGpu {
+     ) -> Option<Rutabaga> {
+         // virglrenderer only runs Venus behind its render server (built in thread
+         // mode on macOS), and libkrun never polls the renderer, so fences must be
+-        // signaled from virglrenderer's own threads.
++        // signaled from virglrenderer's own threads: ASYNC_FENCE_CB calls back
++        // from a per-context sync thread, which virglrenderer only creates
++        // (together with the render server's fence pipe) under THREAD_SYNC.
++        // Without THREAD_SYNC every context fence would wait for a
++        // virgl_renderer_poll() that never comes.
+         #[cfg(target_os = "macos")]
+         let virgl_flags = {
++            const VIRGLRENDERER_THREAD_SYNC: u32 = 1 << 1;
+             const VIRGLRENDERER_VENUS: u32 = 1 << 6;
+             const VIRGLRENDERER_USE_ASYNC_FENCE_CB: u32 = 1 << 8;
+             const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
+             if virgl_flags & VIRGLRENDERER_VENUS != 0 {
+-                virgl_flags | VIRGLRENDERER_RENDER_SERVER | VIRGLRENDERER_USE_ASYNC_FENCE_CB
++                virgl_flags
++                    | VIRGLRENDERER_RENDER_SERVER
++                    | VIRGLRENDERER_THREAD_SYNC
++                    | VIRGLRENDERER_USE_ASYNC_FENCE_CB
+             } else {
+                 virgl_flags
+             }
+diff --git a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+index 3bd8841..ae6fe80 100644
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -450,6 +450,7 @@ impl Worker {
+                     let mut ctx_id = 0;
+                     let mut flags = 0;
+                     let mut ring_idx = 0;
++                    let mut fence_created = false;
+                     if let Some(_cmd) = gpu_cmd {
+                         let ctrl_hdr = ctrl_hdr.unwrap();
+                         if ctrl_hdr.flags & VIRTIO_GPU_FLAG_FENCE != 0 {
+@@ -465,7 +466,10 @@ impl Worker {
+                                 ring_idx,
+                             };
+                             gpu_response = match virtio_gpu.create_fence(fence) {
+-                                Ok(_) => gpu_response,
++                                Ok(_) => {
++                                    fence_created = true;
++                                    gpu_response
++                                }
+                                 Err(fence_resp) => {
+                                     warn!("create_fence {fence_id} -> {fence_resp:?}");
+                                     fence_resp
+@@ -481,7 +485,10 @@ impl Worker {
+                         Err(e) => debug!("ctrl queue response encode error: {e:?}"),
+                     }
+ 
+-                    if flags & VIRTIO_GPU_FLAG_FENCE != 0 {
++                    // A fence the renderer refused will never signal: answer now
++                    // (still flagged, so the guest retires its fence) instead of
++                    // parking the descriptor forever and wedging the queue.
++                    if fence_created {
+                         let ring = match flags & VIRTIO_GPU_FLAG_INFO_RING_IDX {
+                             0 => VirtioGpuRing::Global,
+                             _ => VirtioGpuRing::ContextSpecific { ctx_id, ring_idx },
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,360 @@
+#!/bin/sh
+# steamac boot stage: PID 1 of work/out/initramfs.cpio.gz (static busybox ash).
+#
+# Replaces, for the libkrun VM, everything that sits between the kernel and
+# systemd on a real Steam Frame:
+#   - Valve U-Boot / SPL A/B slot selection (splctl BOOT_ORDER/BOOT_x_LEFT),
+#   - the stock mkinitcpio hooks `partsets`, `factory_reset`, `etc_overlay`
+#     (work/frame/initrd/hooks/*, reproduced here line by line where it matters).
+# and adds the VM adaptations that must not touch the pristine rootfs:
+#   - read-only /usr overlay with the steamac layer (vdb) on top,
+#   - synthesized /proc/cmdline (root=, rauc.slot=, steamos.efi=) bind-mounted
+#     over the real one, because the launcher's cmdline cannot know the slot,
+#   - os-release VARIANT_ID=steamdeck (bind mount, per booted slot),
+#   - no-op /boot/kernelsetup.sh (bind mount),
+#   - runtime unit masks in /run/systemd/{system,user} from the layer's list.
+#
+# A/B state ("bootenv") lives on the esp partition at /steamac/bootenv and has
+# exactly the semantics of the Frame's splctl legacy U-Boot environment
+# (observed by tracing the stock /usr/bin/splctl, see guest/layer/usr/bin/splctl):
+#     BOOT_ORDER=A B       first entry = primary (splctl get-primary)
+#     BOOT_A_LEFT=3        remaining boot attempts; 0 = bad (splctl get-state)
+#     BOOT_B_LEFT=3
+# Boot algorithm (RAUC U-Boot reference / Frame bootloader):
+#     for slot in BOOT_ORDER: if BOOT_<slot>_LEFT > 0: decrement, boot it.
+#     none left: reset all to 3 and boot the primary ("attempting to boot anyway").
+#   The running system resets the counter to 3 via steamos-boot.service
+#   (`steamos-bootconf set-mode booted` -> `splctl set-state <slot> good`) once
+#   graphical.target is reached; a slot that fails 3 times in a row is skipped,
+#   which is the rollback path after a bad update.
+#   If this script cannot assemble slot X (missing/corrupt partition, missing
+#   /sbin/init, partsets mismatch) it marks X bad (LEFT=0) and tries the next
+#   slot in the same boot.
+#
+# Kernel cmdline knobs (all optional):
+#   steamac.slot=A|B   one-shot boot of that slot, counters untouched
+#   steamac.shell=1    interactive shell on the console just before switch_root
+#   steamac.nomask=1   do not apply runtime unit masks
+#   steamac.layer=/dev/vdX  layer device (default: autodetect erofs disk)
+#   init=PATH          init in the new root (default /sbin/init)
+
+PATH=/bin
+export PATH
+umask 022
+
+MAX_TRIES=3
+STATE_REL=steamac/bootenv
+
+msg()  { echo "steamac-init: $*"; echo "<6>steamac-init: $*" > /dev/kmsg 2>/dev/null; }
+warn() { echo "steamac-init: WARNING: $*"; echo "<4>steamac-init: WARNING: $*" > /dev/kmsg 2>/dev/null; }
+
+shell() {
+    echo "steamac-init: $*"
+    echo "steamac-init: starting a shell; exit it to continue."
+    setsid cttyhack sh -i
+}
+
+fatal() {
+    echo "steamac-init: FATAL: $*"
+    echo "<2>steamac-init: FATAL: $*" > /dev/kmsg 2>/dev/null
+    shell "boot failed"
+    poweroff -f
+}
+
+# read-only bind mount (MS_BIND ignores MS_RDONLY, so remount explicitly)
+bind_ro() { mount -o bind "$1" "$2" && mount -o remount,bind,ro "$2"; }
+
+# ---------------------------------------------------------------- essentials
+mkdir -p /proc /sys /dev /run /tmp /esp /efi /newroot
+mount -t proc -o nosuid,nodev,noexec proc /proc
+mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev
+mount -t tmpfs -o mode=0755,nosuid,nodev run /run
+mkdir -p /run/steamac /run/udev/rules.d /run/systemd/system /run/systemd/user
+
+CMDLINE=$(cat /proc/cmdline)
+# Split at the first standalone "--": kernel parameters before, init args after.
+KARGS=; IARGS=; HAVE_DDASH=
+for _a in $CMDLINE; do
+    if [ -n "$HAVE_DDASH" ]; then IARGS="$IARGS $_a"
+    elif [ "$_a" = -- ]; then HAVE_DDASH=1
+    else KARGS="$KARGS $_a"
+    fi
+done
+getarg() { # getarg key -> value of the last key=value kernel parameter
+    _v=
+    for _a in $KARGS; do
+        case $_a in "$1="*) _v=${_a#*=} ;; esac
+    done
+    echo "$_v"
+}
+msg "kernel cmdline: $CMDLINE"
+
+# ---------------------------------------------------------------- partitions
+# Partitions are found by GPT name (PARTLABEL) from sysfs, no udev needed:
+# /sys/class/block/<dev>/uevent carries PARTNAME= and PARTUUID=.
+part_field() { # part_field <PARTLABEL> <FIELD> -> value (first match)
+    for _u in /sys/class/block/*/uevent; do
+        if grep -qx "PARTNAME=$1" "$_u"; then
+            sed -n "s/^$2=//p" "$_u"
+            return 0
+        fi
+    done
+    return 1
+}
+part_dev() { _n=$(part_field "$1" DEVNAME) && [ -n "$_n" ] && echo "/dev/$_n"; }
+
+wait_part() { # wait up to 30 s for a partition label to appear
+    _i=0
+    while ! part_dev "$1" >/dev/null; do
+        [ $_i -ge 150 ] && return 1
+        [ $_i -eq 0 ] && msg "waiting for partition '$1'..."
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    return 0
+}
+
+wait_part esp || fatal "no partition labelled 'esp' (is steamos.img attached as the first disk?)"
+ESP_DEV=$(part_dev esp)
+mount -t vfat -o rw,noatime,umask=0077 "$ESP_DEV" /esp || fatal "cannot mount esp $ESP_DEV"
+
+# ---------------------------------------------------------------- A/B state
+STATE=/esp/$STATE_REL
+load_state() {
+    BOOT_ORDER="A B"; BOOT_A_LEFT=$MAX_TRIES; BOOT_B_LEFT=$MAX_TRIES
+    if [ ! -f "$STATE" ]; then
+        warn "no A/B state at esp:/$STATE_REL, using defaults"
+        return
+    fi
+    # Parse, never source: accept only well-formed lines.
+    tr -d '\r' < "$STATE" > /tmp/bootenv
+    while IFS='=' read -r _k _v; do
+        case "$_k" in
+            BOOT_ORDER)
+                case "$_v" in "A B"|"B A") BOOT_ORDER=$_v ;; *) warn "ignoring BOOT_ORDER='$_v'" ;; esac ;;
+            BOOT_A_LEFT|BOOT_B_LEFT)
+                case "$_v" in [0-9]) eval "$_k=\$_v" ;; *) warn "ignoring $_k='$_v'" ;; esac ;;
+        esac
+    done < /tmp/bootenv
+}
+save_state() {
+    mkdir -p "${STATE%/*}"
+    {
+        echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
+        echo "BOOT_ORDER=$BOOT_ORDER"
+        echo "BOOT_A_LEFT=$BOOT_A_LEFT"
+        echo "BOOT_B_LEFT=$BOOT_B_LEFT"
+    } > "$STATE.new" && sync && mv -f "$STATE.new" "$STATE" && sync \
+        || warn "could not write $STATE"
+}
+left_of() { eval echo "\$BOOT_${1}_LEFT"; }
+set_left() { eval "BOOT_${1}_LEFT=$2"; }
+other_of() { [ "$1" = A ] && echo B || echo A; }
+
+pick_slot() { # sets SLOT, consumes one attempt; $1 = slot to exclude (optional)
+    SLOT=
+    for _s in $BOOT_ORDER; do
+        [ "$_s" = "$1" ] && continue
+        _l=$(left_of "$_s")
+        if [ "$_l" -gt 0 ]; then
+            set_left "$_s" $((_l - 1))
+            SLOT=$_s
+            msg "slot $SLOT selected (attempts left after this boot: $((_l - 1)), order '$BOOT_ORDER')"
+            return 0
+        fi
+    done
+    return 1
+}
+
+load_state
+msg "A/B state: BOOT_ORDER='$BOOT_ORDER' BOOT_A_LEFT=$BOOT_A_LEFT BOOT_B_LEFT=$BOOT_B_LEFT"
+FORCED=$(getarg steamac.slot)
+case "$FORCED" in
+    A|B) SLOT=$FORCED; msg "slot $SLOT forced by steamac.slot= (counters untouched)" ;;
+    "")  if ! pick_slot; then
+             warn "no slot has boot attempts left; resetting counters and booting the primary anyway"
+             BOOT_A_LEFT=$MAX_TRIES; BOOT_B_LEFT=$MAX_TRIES
+             pick_slot
+         fi
+         save_state ;;
+    *)   fatal "invalid steamac.slot='$FORCED'" ;;
+esac
+
+# ---------------------------------------------------------------- per slot
+# assemble_slot X: mount everything for slot X under /newroot; return 1 on a
+# slot-specific failure (caller marks the slot bad and tries the other one).
+assemble_slot() {
+    _s=$1
+    for _p in efi-$_s rootfs-$_s var-$_s; do
+        wait_part "$_p" || { warn "slot $_s: partition '$_p' not found"; return 1; }
+    done
+    EFI_DEV=$(part_dev "efi-$_s"); ROOT_DEV=$(part_dev "rootfs-$_s"); VAR_DEV=$(part_dev "var-$_s")
+
+    # -- partsets (stock hook `partsets`): efi-X:/SteamOS/partsets/* -> udev rules
+    #    so that the real udevd creates /dev/disk/by-partsets/{self,other,A,B,shared,all}/*
+    #    after switch_root (rules files survive because /run is moved, not recreated).
+    mount -t vfat -o ro "$EFI_DEV" /efi || { warn "slot $_s: cannot mount $EFI_DEV"; return 1; }
+    if [ ! -f /efi/SteamOS/partsets/self ]; then
+        warn "slot $_s: efi-$_s has no SteamOS/partsets/self"; umount /efi; return 1
+    fi
+    rm -rf /run/steamac/partsets; mkdir -p /run/steamac/partsets
+    rm -f /run/udev/rules.d/90-steamos-partsets-*.rules
+    for _f in /efi/SteamOS/partsets/*; do
+        [ -f "$_f" ] || continue
+        _set=${_f##*/}
+        tr -d '\r' < "$_f" > "/run/steamac/partsets/$_set"
+        # identical to _udev_rules() in the stock hook ("other" hidden from udisks)
+        [ "$_set" = other ] && _ud=1 || _ud=0
+        while read -r _name _uuid; do
+            [ -n "$_uuid" ] || continue
+            echo "ENV{ID_PART_ENTRY_SCHEME}==\"gpt\", ENV{ID_PART_ENTRY_UUID}==\"$_uuid\", SYMLINK+=\"disk/by-partsets/$_set/$_name\", ENV{UDISKS_IGNORE}=\"$_ud\""
+        done < "/run/steamac/partsets/$_set" > "/run/udev/rules.d/90-steamos-partsets-$_set.rules"
+    done
+    umount /efi
+    EFI_UUID=$(sed -n 's/^efi //p' /run/steamac/partsets/self)
+    _self_root=$(sed -n 's/^rootfs //p' /run/steamac/partsets/self)
+    _real_root=$(part_field "rootfs-$_s" PARTUUID)
+    _real_efi=$(part_field "efi-$_s" PARTUUID)
+    if [ -n "$_real_root" ] && { [ "$_self_root" != "$_real_root" ] || [ "$EFI_UUID" != "$_real_efi" ]; }; then
+        warn "slot $_s: efi-$_s partsets/self (rootfs $_self_root, efi $EFI_UUID) do not match the disk (rootfs $_real_root, efi $_real_efi)"
+        return 1
+    fi
+    [ -n "$EFI_UUID" ] || { warn "slot $_s: no 'efi' entry in partsets/self"; return 1; }
+
+    # -- rootfs (read-only btrfs, never written: keeps it byte-identical for RAUC/desync)
+    mount -t btrfs -o ro "$ROOT_DEV" /newroot || { warn "slot $_s: cannot mount $ROOT_DEV"; return 1; }
+    if [ ! -e "/newroot$INIT" ] && [ ! -L "/newroot$INIT" ]; then
+        warn "slot $_s: $INIT missing in rootfs-$_s"; umount /newroot; return 1
+    fi
+    return 0
+}
+
+INIT=$(getarg init); [ -n "$INIT" ] || INIT=/sbin/init
+if ! assemble_slot "$SLOT"; then
+    [ -n "$FORCED" ] && fatal "forced slot $SLOT cannot be assembled"
+    warn "slot $SLOT is unusable, marking it bad (BOOT_${SLOT}_LEFT=0)"
+    set_left "$SLOT" 0
+    BAD=$SLOT
+    pick_slot "$BAD" || fatal "slot $BAD failed and no other slot has attempts left"
+    save_state
+    assemble_slot "$SLOT" || { set_left "$SLOT" 0; save_state; fatal "both slots failed to assemble"; }
+fi
+echo "$SLOT" > /run/steamac/slot
+
+# ---------------------------------------------------------------- factory reset
+# Stock hook `factory_reset`: a *.cfg in esp:/efi/steamos/factory-reset/
+# (written by steamos-factory-reset-config) reformats var-A, var-B and home with
+# the stock mke2fs options. The rootfs's own mke2fs is used (casefold support).
+# Unlike the device we continue booting instead of rebooting (nothing but the
+# read-only rootfs and the esp is mounted at this point).
+for _cfg in /esp/efi/steamos/factory-reset/*.cfg; do
+    [ -f "$_cfg" ] || continue
+    msg "factory reset requested by ${_cfg#/esp}: formatting var-A, var-B and home"
+    mount -o bind /dev /newroot/dev && mount -t proc proc /newroot/proc || fatal "factory reset: cannot prepare chroot"
+    for _p in var-A var-B; do
+        _d=$(part_dev "$_p") && chroot /newroot /usr/bin/mke2fs -t ext4 -qF -L "$_p" "$_d" \
+            || warn "factory reset: mke2fs $_p failed"
+    done
+    _d=$(part_dev home) && chroot /newroot /usr/bin/mke2fs -t ext4 -qF -L home -O casefold -T huge -m 0 "$_d" \
+        || warn "factory reset: mke2fs home failed"
+    umount /newroot/proc; umount /newroot/dev
+    rm -rf /esp/efi/steamos
+    sync
+    break
+done
+umount /esp
+
+# ---------------------------------------------------------------- /var and /etc
+# Stock hook `etc_overlay`, same paths and options.
+mount -t ext4 "$VAR_DEV" /newroot/var || fatal "cannot mount var-$SLOT ($VAR_DEV)"
+mkdir -p /newroot/var/lib/overlays/etc/upper /newroot/var/lib/overlays/etc/work
+mount -t overlay overlay \
+    -o "index=off,metacopy=off,lowerdir=/newroot/etc,upperdir=/newroot/var/lib/overlays/etc/upper,workdir=/newroot/var/lib/overlays/etc/work" \
+    /newroot/etc || fatal "cannot mount the /etc overlay"
+
+# ---------------------------------------------------------------- steamac layer
+LAYER=/run/steamac/layer
+mkdir -p "$LAYER"
+LAYER_DEV=$(getarg steamac.layer)
+if [ -z "$LAYER_DEV" ]; then
+    for _d in /sys/class/block/*; do
+        grep -qx DEVTYPE=disk "$_d/uevent" 2>/dev/null || continue
+        # erofs superblock magic 0xE0F5E1E2 at byte 1024
+        _m=$(dd if="/dev/${_d##*/}" bs=1024 skip=1 count=1 2>/dev/null | od -An -tx1 -N4 | tr -d ' \n')
+        [ "$_m" = e2e1f5e0 ] && { LAYER_DEV=/dev/${_d##*/}; break; }
+    done
+fi
+if [ -n "$LAYER_DEV" ] && mount -t erofs -o ro "$LAYER_DEV" "$LAYER" \
+        && [ -f "$LAYER/usr/lib/steamac/layer-release" ]; then
+    msg "steamac layer $LAYER_DEV: $(cat "$LAYER/usr/lib/steamac/layer-release")"
+    # Read-only /usr overlay: layer above the pristine slot /usr.
+    mount -t overlay overlay -o "ro,lowerdir=$LAYER/usr:/newroot/usr" /newroot/usr \
+        || fatal "cannot mount the /usr overlay"
+    # Current slot: Frame bootloader/firmware flasher -> no-op (see layer file).
+    if [ -f /newroot/boot/kernelsetup.sh ]; then
+        bind_ro "$LAYER/usr/lib/steamac/kernelsetup.sh" /newroot/boot/kernelsetup.sh \
+            || warn "cannot neutralise /boot/kernelsetup.sh"
+    fi
+    HAVE_LAYER=1
+else
+    warn "steamac layer not found/mountable (dev='$LAYER_DEV'); booting the bare Frame userspace"
+    mountpoint_layer=$(grep -c " $LAYER " /proc/mounts)
+    [ "$mountpoint_layer" -gt 0 ] && umount "$LAYER"
+    HAVE_LAYER=
+fi
+
+# ---------------------------------------------------------------- os-release
+# The Frame Steam client enters VR mode for VARIANT_ID=vr. Rewrite it per boot
+# from the booted slot's own os-release (keeps BUILD_ID/VERSION_ID current after
+# updates; steamos-atomupd reads its variant from /etc/steamos-atomupd/manifest.json,
+# so the update channel stays "vr").
+_osr=/newroot/etc/os-release
+[ -f "$_osr" ] || _osr=/newroot/usr/lib/os-release
+if [ -f "$_osr" ]; then
+    { grep -v '^VARIANT_ID=' "$_osr"; echo 'VARIANT_ID="steamdeck"'; } > /run/steamac/os-release
+    for _t in /newroot/usr/lib/os-release /newroot/etc/os-release; do
+        [ -f "$_t" ] && [ ! -L "$_t" ] && bind_ro /run/steamac/os-release "$_t"
+    done
+else
+    warn "no os-release in rootfs-$SLOT"
+fi
+
+# ---------------------------------------------------------------- cmdline
+# What U-Boot would have passed ("%s %s %s init=/sbin/init rauc.slot=%c noresume
+# rootwait earlycon %s", root=PARTLABEL=rootfs-X, steamos.efi=PARTUUID=<efi-X>).
+# Consumers: splctl get-current, kernelsetup.sh, anything grepping rauc.slot=.
+# Kernel parameters go before the first standalone "--" (libkrun always appends
+# one); anything after it belongs to init and is kept verbatim at the end.
+_keep=
+for _a in $KARGS; do
+    case $_a in root=*|rauc.slot=*|steamos.efi=*|init=*) ;; *) _keep="$_keep $_a" ;; esac
+done
+echo "${_keep# } root=PARTLABEL=rootfs-$SLOT rauc.slot=$SLOT steamos.efi=PARTUUID=$EFI_UUID init=$INIT${HAVE_DDASH:+ --$IARGS}" > /run/steamac/cmdline
+
+# ---------------------------------------------------------------- unit masks
+# /run/systemd/{system,user}/<unit> -> /dev/null ("masked-runtime"): beats the
+# vendor units and the /etc enablement symlinks, lives only for this boot.
+if [ -n "$HAVE_LAYER" ] && [ "$(getarg steamac.nomask)" != 1 ]; then
+    _n=0
+    for _f in "$LAYER"/usr/lib/steamac/masks.d/*.list; do
+        [ -f "$_f" ] || continue
+        while read -r _scope _unit _rest; do
+            case "$_scope" in system|user) ;; *) continue ;; esac
+            ln -sfn /dev/null "/run/systemd/$_scope/$_unit" && _n=$((_n + 1))
+        done < "$_f"
+    done
+    msg "runtime-masked $_n units"
+fi
+
+# ---------------------------------------------------------------- switch_root
+[ "$(getarg steamac.shell)" = 1 ] && shell "steamac.shell=1: /newroot is assembled"
+
+# The synthesized cmdline is bound while /proc is still ours (the remount step
+# of bind_ro needs /proc/mounts); `mount --move` carries the submount along.
+bind_ro /run/steamac/cmdline /proc/cmdline || warn "cannot bind synthesized cmdline"
+for _m in dev proc sys run; do
+    mount -o move "/$_m" "/newroot/$_m" || fatal "cannot move /$_m"
+done
+msg "switching to rootfs-$SLOT ($ROOT_DEV), init $INIT"
+exec switch_root /newroot "$INIT"

@@ -1,0 +1,326 @@
+import AppKit
+import Carbon.HIToolbox
+import CoreGraphics
+import Foundation
+
+/// Routes key events to the guest before AppKit's key-equivalent/menu machinery (which would
+/// otherwise swallow Cmd-combos and their keyUps).
+final class SteamacApplication: NSApplication {
+    weak var router: WindowController?
+
+    override func sendEvent(_ event: NSEvent) {
+        if let router, router.handleKeyEvent(event) { return }
+        super.sendEvent(event)
+    }
+}
+
+final class WindowController: NSObject, NSWindowDelegate {
+    let window: NSWindow
+    let view: VMView
+    private let inputs: VMInputs?
+    private let mouseMode: MouseMode
+    private let baseTitle: String
+    var onCloseRequest: (() -> Void)?
+
+    private var pressedKeys = Set<UInt16>()
+    private var tabletButtons = Set<UInt16>()
+    private var mouseButtons = Set<UInt16>()
+    private var lastAbs: (Int32, Int32) = (-1, -1)
+    private var captured = false
+    private var relRemainder = (0.0, 0.0)
+    private var wheelHiRemainder = (0.0, 0.0)   // (vertical, horizontal) in 1/120 notch units
+    private var wheelLoAccum: (Int32, Int32) = (0, 0)
+    private var scanoutSize: (Int, Int)
+
+    init(title: String, width: Int, height: Int, renderer: Renderer, inputs: VMInputs?, mouseMode: MouseMode) {
+        self.inputs = inputs
+        self.mouseMode = mouseMode
+        self.baseTitle = title
+        self.scanoutSize = (width, height)
+        let rect = NSRect(x: 0, y: 0, width: width, height: height)
+        window = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                          backing: .buffered, defer: false)
+        view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
+        super.init()
+        window.title = title
+        window.contentView = view
+        window.delegate = self
+        window.collectionBehavior = [.fullScreenPrimary, .managed]
+        window.acceptsMouseMovedEvents = true
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .black
+        window.contentAspectRatio = NSSize(width: width, height: height)
+        fitToScreen(width: width, height: height)
+        window.center()
+        view.controller = self
+        updateTitle()
+    }
+
+    func show() {
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(self.view)
+        NSApp.activate()
+    }
+
+    /// Size the window so one guest pixel = one point (Retina: 2x2 physical pixels), shrunk to fit the screen.
+    private func fitToScreen(width: Int, height: Int) {
+        var size = NSSize(width: width, height: height)
+        if let vf = (window.screen ?? NSScreen.main)?.visibleFrame {
+            let chrome = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).height - size.height
+            let s = min(1, vf.width / size.width, (vf.height - chrome) / size.height)
+            size = NSSize(width: (size.width * s).rounded(.down), height: (size.height * s).rounded(.down))
+        }
+        window.setContentSize(size)
+    }
+
+    /// Guest changed mode: follow it (unless fullscreen), keep aspect.
+    func scanoutResized(width: Int, height: Int) {
+        view.contentPixelSize = CGSize(width: width, height: height)
+        guard (width, height) != scanoutSize else { return }
+        scanoutSize = (width, height)
+        window.contentAspectRatio = NSSize(width: width, height: height)
+        if !window.styleMask.contains(.fullScreen) {
+            let old = window.frame
+            fitToScreen(width: width, height: height)
+            window.setFrameTopLeftPoint(NSPoint(x: old.minX, y: old.maxY))
+        }
+        view.redraw()
+    }
+
+    func setStatus(_ status: String?) {
+        window.title = status.map { "\(baseTitle) — \($0)" } ?? baseTitle
+    }
+
+    private func updateTitle() {
+        if captured {
+            setStatus("pointer grabbed (Ctrl+Option releases)")
+        } else if inputs != nil && mouseMode == .capture {
+            setStatus("click to grab pointer")
+        } else {
+            setStatus(nil)
+        }
+    }
+
+    // MARK: NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        onCloseRequest?()
+        return false
+    }
+
+    func windowDidResignKey(_ notification: Notification) { releaseAll() }
+    func windowDidMiniaturize(_ notification: Notification) { releaseAll() }
+
+    // MARK: keyboard
+
+    /// Returns true if the event was consumed (only while our window is key).
+    func handleKeyEvent(_ e: NSEvent) -> Bool {
+        guard e.type == .keyDown || e.type == .keyUp || e.type == .flagsChanged,
+              e.window === window || (e.window == nil && window.isKeyWindow), window.isKeyWindow else { return false }
+        return processKey(e)
+    }
+
+    /// Key/flags event -> host shortcut or guest evdev key.
+    func processKey(_ e: NSEvent) -> Bool {
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        switch e.type {
+        case .keyDown:
+            if mods.contains([.control, .command]) {
+                switch Int(e.keyCode) {
+                case kVK_ANSI_F: toggleFullScreen(); return true
+                case kVK_ANSI_G: captured ? releasePointer() : grabPointer(); return true
+                default: break
+                }
+            }
+            if e.isARepeat { return true }   // guest does autorepeat
+            guard let code = Keymap.linuxKey(e.keyCode) else { return true }
+            if pressedKeys.insert(code).inserted { sendKey(code, true) }
+            return true
+        case .keyUp:
+            guard let code = Keymap.linuxKey(e.keyCode) else { return true }
+            if pressedKeys.remove(code) != nil { sendKey(code, false) }
+            return true
+        default: // flagsChanged
+            if Int(e.keyCode) == kVK_CapsLock {
+                // macOS reports the lock *state*; evdev wants a key press each time.
+                sendKey(KEY.CAPSLOCK, true)
+                sendKey(KEY.CAPSLOCK, false)
+            } else if let mask = Keymap.modifierMask(e.keyCode), let code = Keymap.linuxKey(e.keyCode) {
+                let down = (UInt(e.modifierFlags.rawValue) & mask) != 0
+                if down, pressedKeys.insert(code).inserted { sendKey(code, true) }
+                if !down, pressedKeys.remove(code) != nil { sendKey(code, false) }
+            }
+            if captured && mods.contains([.control, .option]) { releasePointer() }
+            return true
+        }
+    }
+
+    private func sendKey(_ code: UInt16, _ down: Bool) {
+        inputs?.keyboard.send([(EV.KEY, code, down ? 1 : 0)])
+    }
+
+    private func toggleFullScreen() {
+        window.toggleFullScreen(nil)
+    }
+
+    // MARK: pointer
+
+    func grabPointer() {
+        guard inputs != nil, !captured else { return }
+        releaseButtons()
+        captured = true
+        relRemainder = (0, 0)
+        CGAssociateMouseAndMouseCursorPosition(0)
+        NSCursor.hide()
+        updateTitle()
+    }
+
+    func releasePointer() {
+        guard captured else { return }
+        releaseButtons()
+        captured = false
+        CGAssociateMouseAndMouseCursorPosition(1)
+        NSCursor.unhide()
+        lastAbs = (-1, -1)
+        updateTitle()
+    }
+
+    private func releaseButtons() {
+        for b in tabletButtons { inputs?.tablet.send([(EV.KEY, b, 0)]) }
+        for b in mouseButtons { inputs?.mouse.send([(EV.KEY, b, 0)]) }
+        tabletButtons.removeAll()
+        mouseButtons.removeAll()
+    }
+
+    func releaseAll() {
+        for k in pressedKeys { sendKey(k, false) }
+        pressedKeys.removeAll()
+        releasePointer()
+        releaseButtons()
+    }
+
+    private func button(for e: NSEvent) -> UInt16 {
+        switch e.type {
+        case .leftMouseDown, .leftMouseUp: return BTN.LEFT
+        case .rightMouseDown, .rightMouseUp: return BTN.RIGHT
+        default:
+            switch e.buttonNumber {
+            case 2: return BTN.MIDDLE
+            case 3: return BTN.SIDE
+            default: return BTN.EXTRA
+            }
+        }
+    }
+
+    private func inPicture(_ e: NSEvent) -> Bool {
+        view.fitRect.contains(view.convert(e.locationInWindow, from: nil))
+    }
+
+    private func moveAbsolute(_ e: NSEvent) {
+        guard let inputs else { return }
+        let (ux, uy) = view.unitPoint(for: e)
+        let x = Int32((ux * Double(InputDevices.absMax)).rounded())
+        let y = Int32((uy * Double(InputDevices.absMax)).rounded())
+        guard (x, y) != lastAbs else { return }
+        lastAbs = (x, y)
+        inputs.tablet.send([(EV.ABS, ABS.X, x), (EV.ABS, ABS.Y, y)])
+    }
+
+    private func moveRelative(_ e: NSEvent) {
+        guard let inputs else { return }
+        let fx = Double(e.deltaX) + relRemainder.0
+        let fy = Double(e.deltaY) + relRemainder.1
+        let dx = Int32(fx.rounded(.towardZero)), dy = Int32(fy.rounded(.towardZero))
+        relRemainder = (fx - Double(dx), fy - Double(dy))
+        var ev: [(UInt16, UInt16, Int32)] = []
+        if dx != 0 { ev.append((EV.REL, REL.X, dx)) }
+        if dy != 0 { ev.append((EV.REL, REL.Y, dy)) }
+        inputs.mouse.send(ev)
+    }
+
+    func pointerMoved(_ e: NSEvent) {
+        if captured { moveRelative(e) } else { moveAbsolute(e) }
+    }
+
+    func pointerButton(_ e: NSEvent, down: Bool) {
+        guard let inputs else { return }
+        let b = button(for: e)
+        // Captured: everything on the relative mouse. Absolute mode: side/extra buttons also go
+        // there, because the tablet only advertises LEFT/RIGHT/MIDDLE (see InputDevices).
+        let viaMouse = captured || !InputDevices.tabletButtons.contains(b)
+        if viaMouse && (captured || !down || inPicture(e)) {
+            if down ? mouseButtons.insert(b).inserted : mouseButtons.remove(b) != nil {
+                inputs.mouse.send([(EV.KEY, b, down ? 1 : 0)])
+            }
+            return
+        }
+        if down {
+            guard inPicture(e) else { return }
+            if mouseMode == .capture {
+                grabPointer()   // the grabbing click itself is not forwarded
+                return
+            }
+            moveAbsolute(e)
+            if tabletButtons.insert(b).inserted { inputs.tablet.send([(EV.KEY, b, 1)]) }
+        } else {
+            if tabletButtons.remove(b) != nil { inputs.tablet.send([(EV.KEY, b, 0)]) }
+        }
+    }
+
+    func scroll(_ e: NSEvent) {
+        guard inputs != nil else { return }
+        if !captured && !inPicture(e) { return }
+        if !captured { moveAbsolute(e) }
+        // 120 = one wheel notch. Precise (trackpad) deltas are points: ~30 pt per notch.
+        let scale = e.hasPreciseScrollingDeltas ? 4.0 : 120.0
+        sendWheel(hiResY: Double(e.scrollingDeltaY) * scale, hiResX: -Double(e.scrollingDeltaX) * scale)
+    }
+
+    /// Wheel motion in 1/120-notch units (positive y = up, positive x = right), emitted as
+    /// REL_*_HI_RES plus whole REL_WHEEL/REL_HWHEEL notches.
+    func sendWheel(hiResY: Double, hiResX: Double) {
+        guard let inputs else { return }
+        let vy = hiResY + wheelHiRemainder.0
+        let vx = hiResX + wheelHiRemainder.1
+        let hy = Int32(vy.rounded(.towardZero)), hx = Int32(vx.rounded(.towardZero))
+        wheelHiRemainder = (vy - Double(hy), vx - Double(hx))
+        wheelLoAccum.0 += hy
+        wheelLoAccum.1 += hx
+        let ly = wheelLoAccum.0 / 120, lx = wheelLoAccum.1 / 120
+        wheelLoAccum.0 -= ly * 120
+        wheelLoAccum.1 -= lx * 120
+        var ev: [(UInt16, UInt16, Int32)] = []
+        if hy != 0 { ev.append((EV.REL, REL.WHEEL_HI_RES, hy)) }
+        if hx != 0 { ev.append((EV.REL, REL.HWHEEL_HI_RES, hx)) }
+        if ly != 0 { ev.append((EV.REL, REL.WHEEL, ly)) }
+        if lx != 0 { ev.append((EV.REL, REL.HWHEEL, lx)) }
+        (captured ? inputs.mouse : inputs.tablet).send(ev)
+    }
+}
+
+enum MainMenu {
+    static func install(target: AnyObject, shutdown: Selector, forceQuit: Selector,
+                        fullscreen: Selector, grab: Selector) {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(item("Shut Down Guest", shutdown, target))
+        appMenu.addItem(item("Force Quit", forceQuit, target))
+        let viewItem = NSMenuItem()
+        main.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
+        viewMenu.addItem(item("Grab Pointer (Ctrl+Cmd+G; Ctrl+Option releases)", grab, target))
+        NSApp.mainMenu = main
+    }
+
+    private static func item(_ title: String, _ action: Selector, _ target: AnyObject) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        i.target = target
+        return i
+    }
+}

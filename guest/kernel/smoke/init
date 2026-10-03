@@ -1,0 +1,47 @@
+#!/bin/busybox sh
+# steamac kernel smoke test (runs as PID 1 from a busybox initramfs under QEMU).
+/bin/busybox --install -s /bin
+mkdir -p /proc /sys /dev /tmp /mnt
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/binderfs
+
+r() { if "$@" > /dev/null 2>&1; then echo "SMOKE ok    $*"; else echo "SMOKE FAIL  $*"; fi; }
+
+echo "SMOKE kernel $(uname -r) $(uname -m)"
+echo "SMOKE virtio drivers: $(ls /sys/bus/virtio/drivers | tr '\n' ' ')"
+echo "SMOKE virtio devices bound: $(for d in /sys/bus/virtio/devices/*; do basename "$(readlink "$d/driver")"; done | tr '\n' ' ')"
+for fs in btrfs ext4 vfat overlay erofs squashfs fuse tmpfs binder tracefs autofs; do
+	r grep -qw "$fs" /proc/filesystems
+done
+r test -e /dev/dri/card0
+r test -e /dev/dri/renderD128
+r test -e /dev/fb0
+r test -e /dev/ntsync
+r test -e /dev/uhid
+r test -e /dev/uinput
+r test -e /dev/udmabuf
+r test -e /dev/dma_heap/system
+r test -e /dev/zram0
+r test -e /dev/loop-control
+r test -e /dev/mapper/control
+r test -e /dev/net/tun
+r test -e /dev/hwrng
+r test -e /dev/rtc0
+r test -e /proc/config.gz
+r mount -t binder binder /dev/binderfs
+r test -e /dev/binderfs/anbox-binder
+r test -e /dev/binderfs/anbox-hwbinder
+r test -e /dev/binderfs/anbox-vndbinder
+r mount -t tracefs tracefs /sys/kernel/tracing
+r test -e /sys/kernel/tracing/events/sched/sched_switch
+r mount -t cgroup2 cgroup2 /sys/fs/cgroup
+r grep -qw memory /sys/fs/cgroup/cgroup.controllers
+r grep -qw pids /sys/fs/cgroup/cgroup.controllers
+r test -e /sys/kernel/btf/vmlinux
+r test -d /sys/kernel/sched_ext
+r ip link show eth0
+dmesg | grep -iE 'virtio_gpu|\[drm\]|fbcon|frame buffer|gpio-keys|pl031|rtc-pl031|TSO|panic|BUG|Oops|WARNING' | sed 's/^/SMOKE dmesg /'
+echo "SMOKE done"
+poweroff -f

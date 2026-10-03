@@ -1,0 +1,75 @@
+#!/bin/bash
+# steamac: gamescope session for the libkrun VM. Replaces the Frame's
+# /usr/lib/steamos/gamescope-session (deckard-steamvr-session), which runs
+# gamescope with --backend openvr as a SteamVR overlay. Here gamescope owns the
+# virtio-gpu KMS device (card0, one connector whose preferred mode is the
+# launcher's window/display size) with the DRM backend, like a Steam Deck.
+# Output size is therefore not hard-coded: gamescope uses the connector's
+# preferred mode and sizes the nested (Steam) surface to it.
+#
+# Overrides without rebuilding the layer: /etc/steamac/gamescope-session.conf
+# (EnvironmentFile of gamescope-session.service), e.g.
+#   STEAMAC_GAMESCOPE_BACKEND=drm|sdl|wayland|headless
+#   STEAMAC_GAMESCOPE_EXTRA_ARGS="--prefer-vk-device 1af4:1050 -W 1920 -H 1080"
+#   STEAMAC_GAMESCOPE_MANGOAPP=0
+
+# Create run directory file for startup and stats sockets (stock logic)
+#   shellcheck disable=SC2030 # (broken warning)
+tmpdir="$([[ -n ${XDG_RUNTIME_DIR+x} ]] && mktemp -p "$XDG_RUNTIME_DIR" -d -t gamescope.XXXXXXX)"
+stats="${tmpdir:+$tmpdir/stats.pipe}"
+#   shellcheck disable=SC2031 # (broken warning)
+if [[ -z $tmpdir || -z ${XDG_RUNTIME_DIR+x} ]]; then
+	echo >&2 "!! Failed to find run directory in which to create stats session sockets (is \$XDG_RUNTIME_DIR set?)"
+	exit 0
+fi
+
+export GAMESCOPE_STATS="$stats"
+mkfifo -- "$stats"
+
+# Attempt to claim global session if we're the first one running (stock logic)
+linkname="gamescope-stats"
+#   shellcheck disable=SC2031 # (broken warning)
+sessionlink="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/}${linkname}"
+lockfile="$sessionlink".lck
+exec 9>"$lockfile"
+if flock -n 9 && rm -f "$sessionlink" && ln -sf "$tmpdir" "$sessionlink"; then
+	echo >&2 "Claimed global gamescope stats session at \"$sessionlink\""
+else
+	echo >&2 "!! Failed to claim global gamescope stats session"
+fi
+
+export GAMESCOPE_READY_NOTIFY_SOCKET="$NOTIFY_SOCKET"
+# Don't allow Xwayland to notify readiness to us
+unset NOTIFY_SOCKET
+
+# Make sure we unset any lingering stuff as we might confuse Gamescope/XWayland.
+source /usr/lib/steamos/gamescope-cleanup
+
+export XCURSOR_THEME=steam
+export GAMESCOPE_MANGOAPP_SOCKET_DISABLE=0
+export QT_IM_MODULE=xim
+export GTK_IM_MODULE=xim
+export QT_QPA_PLATFORMTHEME=kde
+
+GAMESCOPE_ARGS=(
+  --backend "${STEAMAC_GAMESCOPE_BACKEND:-drm}"
+  -T "$stats"
+  --cursor-hotspot 5,3 --cursor /usr/share/steamos/steamos-cursor.png
+  --cursor-scale-height 720
+  --default-touch-mode 4
+  --fade-out-duration 200
+  --hide-cursor-delay 3000
+  --max-scale 2
+  --xwayland-count 2
+)
+
+GAMESCOPE_SESSION_TARGET="${GAMESCOPE_SESSION_TARGET:-gamescope-session.target}"
+if [[ "${GAMESCOPE_SESSION_TARGET}" == "gamescope-session.target" ]]; then
+  GAMESCOPE_ARGS+=(--keep-alive --steam)
+  [[ "${STEAMAC_GAMESCOPE_MANGOAPP:-1}" == 1 ]] && GAMESCOPE_ARGS+=(--mangoapp)
+fi
+
+# shellcheck disable=SC2206 # intentional word splitting of the override
+GAMESCOPE_ARGS+=(${STEAMAC_GAMESCOPE_EXTRA_ARGS:-})
+
+exec gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready

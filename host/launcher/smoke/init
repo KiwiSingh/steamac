@@ -1,0 +1,99 @@
+#!/bin/busybox sh
+# steamac launcher smoke test /init (busybox initramfs).
+# Kernel cmdline knobs: smoke.timeout=SECONDS (default 120) -> poweroff -f afterwards
+#                       smoke.shell=1 -> interactive shell on hvc0 instead of waiting
+/bin/busybox mkdir -p /proc /sys /dev /tmp /run /etc /usr/bin /usr/sbin /sbin
+/bin/busybox --install -s
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+
+arg() { for a in $(cat /proc/cmdline); do case "$a" in "$1"=*) echo "${a#*=}"; return;; esac; done; echo "$2"; }
+TIMEOUT=$(arg smoke.timeout 120)
+
+echo "=== steamac smoke: init running on hvc0 ($(cat /sys/class/tty/console/active 2>/dev/null)) ==="
+uname -a
+echo "cmdline: $(cat /proc/cmdline)"
+echo "cpus: $(grep -c ^processor /proc/cpuinfo)  $(grep MemTotal /proc/meminfo)"
+echo "--- block devices"
+for b in /sys/block/*; do echo "${b##*/} $(cat $b/size) sectors ro=$(cat $b/ro)"; done
+echo "--- drm"
+ls /sys/class/drm
+for m in /sys/class/drm/card*-*/modes; do [ -f "$m" ] && echo "$m: $(cat $m | tr '\n' ' ')"; done
+echo "--- framebuffer"
+ls /dev/fb* 2>&1
+[ -f /sys/class/graphics/fb0/name ] && echo "fb0: $(cat /sys/class/graphics/fb0/name) $(cat /sys/class/graphics/fb0/virtual_size)"
+echo "--- input devices"
+cat /proc/bus/input/devices
+
+# fbcon: write a banner + a few lines to the framebuffer console.
+if [ -e /dev/tty1 ]; then
+    printf '\033[2J\033[H\n\n   STEAMAC SMOKE TEST: fbcon on virtio-gpu\n   kernel %s\n   %s\n\n' \
+        "$(uname -r)" "$(date)" > /dev/tty1
+    for i in 1 2 3 4 5 6; do printf '   line %s: the quick brown fox jumps over the lazy dog\n' "$i" > /dev/tty1; done
+fi
+
+# Print guest-side input events (proves host -> virtio-input delivery). The device stays open
+# on fd 3 for the whole loop: evdev only queues events for open clients.
+watch_input() {
+    exec 3< "$2"
+    while true; do
+        ev=$(dd bs=24 count=1 <&3 2>/dev/null | od -An -tu2 -w24)
+        [ -n "$ev" ] || break
+        set -- "$1" "$2" $ev
+        # fields: 8 x u16 timeval, type, code, value(lo), value(hi)
+        [ "${11}" != "0" ] && echo "input[$1] type=${11} code=${12} value=${13}"
+    done
+}
+for d in /sys/class/input/event*; do
+    name=$(cat "$d/device/name")
+    dev=/dev/input/${d##*/}
+    case "$name" in
+        gpio-keys)
+            ( dd if="$dev" bs=24 count=1 >/dev/null 2>&1
+              echo "=== steamac smoke: gpio-keys key pressed (host shutdown request) -> poweroff ==="
+              sync; poweroff -f ) &
+            ;;
+        *) watch_input "$name" "$dev" & ;;
+    esac
+done
+
+echo "--- network"
+cat > /tmp/udhcpc.sh <<'EOF'
+#!/bin/sh
+case "$1" in
+bound|renew)
+    ip addr flush dev "$interface"
+    ip addr add "$ip/${mask:-24}" dev "$interface"
+    [ -n "$router" ] && ip route add default via "${router%% *}"
+    echo "nameserver ${dns%% *}" > /etc/resolv.conf
+    echo "dhcp: $interface $ip/${mask} router ${router} dns ${dns}"
+    ;;
+esac
+EOF
+chmod +x /tmp/udhcpc.sh
+ip link set lo up
+if ip link show eth0 >/dev/null 2>&1; then
+    ip link set eth0 up
+    udhcpc -i eth0 -n -q -t 10 -T 1 -s /tmp/udhcpc.sh 2>&1
+    ping -c 2 -W 2 192.168.127.1 2>&1 | tail -2
+    if wget -q -T 5 -O /tmp/page http://example.com/; then
+        echo "internet: fetched $(wc -c < /tmp/page) bytes from http://example.com/"
+    else
+        echo "internet: wget failed"
+    fi
+else
+    echo "no eth0"
+fi
+
+echo "=== steamac smoke: ready (timeout ${TIMEOUT}s; close the window to test the power key) ==="
+if [ "$(arg smoke.shell 0)" = "1" ]; then
+    setsid -c sh </dev/hvc0 >/dev/hvc0 2>&1
+else
+    sleep "$TIMEOUT"
+    echo "=== steamac smoke: timeout -> poweroff ==="
+fi
+sync
+poweroff -f

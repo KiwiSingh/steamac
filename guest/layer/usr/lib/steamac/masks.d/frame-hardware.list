@@ -1,0 +1,69 @@
+# Units runtime-masked by the steamac initramfs on every boot
+# (/run/systemd/<scope>/<unit> -> /dev/null). Format: <system|user> <unit>.
+# Only units that drive Steam Frame / Qualcomm SM8650 hardware the VM does not
+# have, or that would fight the VM boot design. Enabled-state source: stock
+# rootfs /etc/systemd/system/*.wants and /usr/lib/systemd/{system,user}/*.wants.
+
+# --- Frame board hardware (deckard-hw-support / deckard-* packages)
+system deckard-charger.service          # PMIC/battery charger daemon (basic.target)
+system deckard-power-monitor.service    # fuel-gauge / power rail monitor (basic.target)
+system deckard-audio-setup.service      # Qualcomm ADSP/ALSA UCM audio bring-up (default.target)
+system deckard-boot-images.service      # pre-distorts U-Boot splash images for the HMD optics
+system deckard-fan-control.service      # headset fan PWM controller
+system deckard-fpga.service             # loads the display/tracking FPGA over spidev
+system deckard-fpga-resume.service      # FPGA re-init on resume (suspend.target)
+system deckard-led-control.service      # front LEDs
+system deckard-typec-logger.service     # Type-C PD controller logger
+system dsp_service.service              # Qualcomm CDSP manager (ConditionPathExists=/dev/adsp)
+system iris-driver-rebind.service       # qcom-iris video codec watchdog
+system steam-video-codec-setup.service  # symlinks /dev/video-{dec,enc}0 from vrdevice_path (iris nodes); fails in VM
+system gpu-trace.service                # Valve GPU trace capture daemon for the Adreno/msm tracepoints
+system softapmanager.service            # Wi-Fi soft-AP for PC VR streaming (wlanap); VM has no Wi-Fi
+system setubootenv.service              # writes fw_env.config for the U-Boot env partition (absent)
+system set-wifi-mac-address.service     # MAC from Frame EEPROM/persist into the WCN7850
+system set-bluetooth-mac-address.service # same for the BT controller (udev on hci0)
+system persist.mount                    # fstab PARTLABEL=syspersist (Frame factory data); would leave a 90 s device job
+
+# --- SteamVR system side (VM is a flat-screen Steam Deck-like session)
+system steamvr-program-ble.service      # flashes the BLE firmware of the Frame controllers
+system steamvr-set-kernel-thread-priorities.service # RT priorities for msm/kgsl kernel threads
+system steamvr-v4l2loopback.service     # modprobe v4l2loopback (no modules in the VM kernel)
+
+# --- USB device-mode gadget (adb / NCM to a PC); no UDC in the VM
+system adbd.service
+system adbd-pre.service
+system adbd-post.service
+system usb-gadget-init.service
+system usb-gadget.service
+system usb-gadget.target
+system usb-ncm-gadget@.service
+system usb-ncm-dnsmasq@.service
+system dev-usb\x2dffs-adb.mount
+
+# --- Kernel modules: the VM kernel has everything built in and no
+# /usr/lib/modules/<uname -r> (guest/kernel contract); the stock
+# modules-load.d list (v4l2loopback, ...) would only produce a failed unit.
+system systemd-modules-load.service
+
+# --- Telemetry: would upload VM-specific crash/journal reports to Valve.
+system steamos-log-submitter.service
+
+# --- SteamVR user session (Requires/PartOf chains of the stock VR session;
+# the steamac gamescope-session.{service,target} no longer reference them)
+user steamvr.service
+user steamvr-logs.service
+user steamvr-proxmicmute.service
+user steamvr-v4l2cam.service
+user steamvr-nested-desktop.service
+
+# Deliberately NOT masked:
+#  steamos-boot.service  - marks the booted slot good (splctl set-state X good);
+#                          it is the commit step of the A/B scheme.
+#  efi.mount, esp.mount  - /efi,/esp automounts via /dev/disk/by-partsets/*, which
+#                          exist (initramfs udev rules); steamos-boot needs /efi.
+#  systemd-repart        - only definition is repart.d/90-home.conf (Type=home):
+#                          grows the last partition (home) into free space if the
+#                          host enlarges steamos.img; never creates/moves others.
+#  iwd, bluetooth        - idle without hardware; NetworkManager is configured for
+#                          the iwd backend (iwd-config-path=auto) and would log
+#                          D-Bus activation failures if iwd were masked.

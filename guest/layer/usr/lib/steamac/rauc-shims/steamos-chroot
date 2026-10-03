@@ -1,0 +1,26 @@
+#!/bin/bash
+# steamac: PATH shim used only by /usr/lib/rauc/post-install.sh (wrapper).
+# Forwards to the stock /usr/bin/steamos-chroot, but when the chrooted command
+# is steamos-finalize-install / holo-finalize-install it appends
+# --no-boot-install, so the new slot's Frame firmware hook /boot/kernelsetup.sh
+# is not run inside the chroot (see the flow analysis in post-install.sh).
+# Valve's holo-post-update-shutdown runs the very same chroot command with
+# --no-boot-install already. Every other invocation passes through untouched.
+set -euo pipefail
+
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == -- ]]; then
+        cmd=${args[i + 1]:-}
+        case ${cmd##*/} in
+            steamos-finalize-install|holo-finalize-install)
+                if [[ " ${args[*]:i+1} " != *" --no-boot-install "* ]]; then
+                    args+=(--no-boot-install)
+                    echo "steamac: running '$cmd' with --no-boot-install (no Frame bootloader/firmware in the VM)" >&2
+                fi
+                ;;
+        esac
+        break
+    fi
+done
+exec /usr/bin/steamos-chroot "${args[@]}"

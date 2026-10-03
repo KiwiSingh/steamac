@@ -1,0 +1,5 @@
+module CKrun [system] {
+    header "shim.h"
+    link "krun"
+    export *
+}

@@ -1,0 +1,38 @@
+From: steamac <steamac@localhost>
+Subject: [PATCH] drm/virtio: align host-visible blob placement to blob_alignment
+
+Linux 7.2 (commits 7b5121c3374e, 47248e0d8264, 6bd7e82e2653) added
+VIRTIO_GPU_F_BLOB_ALIGNMENT and rejects blob sizes that are not a multiple of
+blob_alignment, but virtio_gpu_vram_map() still places the node in
+host_visible_mm with drm_mm_insert_node(), i.e. without any alignment. The
+offset passed in RESOURCE_MAP_BLOB is therefore only guaranteed to be aligned
+as long as every node ever inserted had an aligned size. Make the placement
+honour blob_alignment explicitly so the host (libkrun on macOS, which maps the
+blob with hv_vm_map() at 16K granularity) always gets an aligned offset.
+
+Equivalent in intent to libkrunfw 0023-virtgpu-mixed-page-size.patch, but driven
+by the negotiated blob_alignment instead of a hard-coded 64K.
+---
+--- a/drivers/gpu/drm/virtio/virtgpu_vram.c
++++ b/drivers/gpu/drm/virtio/virtgpu_vram.c
+@@ -160,8 +160,18 @@ static int virtio_gpu_vram_map(struct virtio_gpu_object *bo)
+ 		return -EINVAL;
+ 
+ 	spin_lock(&vgdev->host_visible_lock);
+-	ret = drm_mm_insert_node(&vgdev->host_visible_mm, &vram->vram_node,
+-				 bo->base.base.size);
++	/*
++	 * The host maps every blob into the host-visible region at the node
++	 * offset. Hosts with larger pages (16K on Apple silicon) need that
++	 * offset aligned to blob_alignment, not only the size. The region
++	 * base is itself host-page aligned, so aligning the absolute address
++	 * aligns the offset.
++	 */
++	ret = drm_mm_insert_node_generic(&vgdev->host_visible_mm,
++					 &vram->vram_node, bo->base.base.size,
++					 vgdev->has_blob_alignment ?
++					 vgdev->blob_alignment : 0,
++					 0, DRM_MM_INSERT_BEST);
+ 	spin_unlock(&vgdev->host_visible_lock);
+ 
+ 	if (ret)

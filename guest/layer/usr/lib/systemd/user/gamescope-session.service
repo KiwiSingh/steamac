@@ -1,0 +1,35 @@
+# steamac: full replacement of the stock deckard-steamvr-session unit.
+# Differences from stock: no PartOf=steamvr.service (SteamVR is masked in the
+# VM), optional /etc/steamac/gamescope-session.conf overrides, and the steamac
+# /usr/lib/steamos/gamescope-session (DRM backend instead of OpenVR).
+[Unit]
+Description=Gamescope Session (steamac VM)
+Before=graphical-session.target
+PartOf=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+RefuseManualStart=yes
+# The XDG desktop portal frontend relies on the value of $XDG_CURRENT_DESKTOP to
+# decide which backends to load, so its startup should be delayed until after
+# the session is running.
+Before=xdg-desktop-portal.service
+
+[Service]
+Slice=session.slice
+# The DRM backend opens the KMS device and builds Vulkan pipelines over Venus,
+# which takes longer than the stock 5 s on first start.
+TimeoutStartSec=60
+TimeoutStopSec=10
+ExecStart=/usr/lib/steamos/gamescope-session
+Type=notify
+NotifyAccess=all
+
+# Make Steam's srt-logger write to the journal with it's own prefixes
+Environment=SRT_LOG_TO_JOURNAL=1
+
+# Mesa variables (steamac: Venus/zink, see /usr/share/deckard/mesavars.sh)
+EnvironmentFile=/usr/share/deckard/mesavars.sh
+EnvironmentFile=-/etc/steamac/gamescope-session.conf
+
+# Xwayland runs in -core mode and dumps core on SIGTERM, hence mixed.
+KillMode=mixed
