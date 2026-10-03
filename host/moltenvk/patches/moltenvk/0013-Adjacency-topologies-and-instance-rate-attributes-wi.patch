@@ -1,7 +1,7 @@
 From 573264774899acc8806c4978e739917d7c08145b Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:20:56 +0300
-Subject: [PATCH 13/20] Adjacency topologies and instance-rate attributes with
+Subject: [PATCH 13/21] Adjacency topologies and instance-rate attributes with
  geometry shaders
 
 - Pipelines with a geometry shader and a *_WITH_ADJACENCY topology set the matching input

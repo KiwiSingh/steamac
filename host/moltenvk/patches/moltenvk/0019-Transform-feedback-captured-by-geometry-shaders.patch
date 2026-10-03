@@ -1,7 +1,7 @@
 From 31168df5563359f02700a6e24b6080a3c9c398dd Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
-Subject: [PATCH 19/20] Transform feedback captured by geometry shaders
+Subject: [PATCH 19/21] Transform feedback captured by geometry shaders
 
 Transform feedback was a stub: the bound buffer was recorded but never bound to any shader
 stage, Begin/End only toggled a flag, counter buffers were ignored, and geometry shaders with

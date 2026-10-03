@@ -1,7 +1,7 @@
 From 6df55708da962734cbc2bce80ac5454e5350221b Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 00:59:15 +0300
-Subject: [PATCH 18/20] Include the patch revision in the pipeline cache UUID
+Subject: [PATCH 18/21] Include the patch revision in the pipeline cache UUID
 
 The pipeline cache UUID only contained the MoltenVK git revision, the GPU and the argument
 buffer mode, so pipeline caches written by a build with other patches on the same MoltenVK

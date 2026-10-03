@@ -1,7 +1,7 @@
 From 29e7394eb389d24dea849904cd50dcf0485835e9 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:01:11 +0300
-Subject: [PATCH 06/20] Set geometry-shader draw info after the strip flag is
+Subject: [PATCH 06/21] Set geometry-shader draw info after the strip flag is
  known
 
 The mesh-shader geometry draw path passed DrawInfo to the object stage with

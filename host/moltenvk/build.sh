@@ -224,6 +224,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         capture via count pass + scan + write pass); VS/TES capture fails pipeline creation"
 	echo "  0020 = steamac: pipeline cache entries whose MSL does not compile are dropped instead of"
 	echo "         failing vkCreatePipelineCache"
+	echo "  0021 = steamac: GS pipelines without a fragment shader get an empty fragment function (or"
+	echo "         rasterization off with static discard); Metal aborted the process otherwise"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"

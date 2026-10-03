@@ -18,6 +18,9 @@
  *                       with VK_ERROR_FEATURE_NOT_PRESENT
  * Counter buffers: a second Begin resumes at the counter written by End; a bound range too small
  * for all primitives records only the primitives that fit, and the counter stops there.
+ * Geometry-shader pipelines without a fragment shader (Metal mesh pipelines need a fragment function
+ * when they rasterize, and assert otherwise): a depth-only pass (v.vert + zink_passthrough.geom,
+ * D32_SFLOAT only, depth read back) and dynamic rasterizer discard.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,6 +86,9 @@ static VkBuffer buffer(VkDeviceSize size, VkBufferUsageFlags usage, void **map)
 	return b;
 }
 
+/* Next pipeline: depth-only (D32_SFLOAT attachment, no color attachment), dynamic rasterizer discard. */
+static int depth_only, dynamic_discard;
+
 static VkResult pipeline(const char *vs, const char *gs, int fragment, int discard, VkPrimitiveTopology topology,
                          VkPipeline *out)
 {
@@ -113,11 +119,18 @@ static VkResult pipeline(const char *vs, const char *gs, int fragment, int disca
 		.attachmentCount = 1, .pAttachments = &cba };
 	VkFormat cf = VK_FORMAT_R8G8B8A8_UNORM;
 	VkPipelineRenderingCreateInfo ri = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1, .pColorAttachmentFormats = &cf };
+		.colorAttachmentCount = depth_only ? 0 : 1, .pColorAttachmentFormats = &cf,
+		.depthAttachmentFormat = depth_only ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_UNDEFINED };
+	VkPipelineDepthStencilStateCreateInfo dss = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE, .depthCompareOp = VK_COMPARE_OP_LESS };
+	VkDynamicState dyn = VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE;
+	VkPipelineDynamicStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = dynamic_discard ? 1 : 0, .pDynamicStates = &dyn };
 	VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
 		.stageCount = n, .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
 		.pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
-		.pColorBlendState = &cb, .layout = layout };
+		.pDepthStencilState = depth_only ? &dss : NULL, .pColorBlendState = depth_only ? NULL : &cb,
+		.pDynamicState = &ds, .layout = layout };
 	*out = VK_NULL_HANDLE;
 	return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, out);
 }
@@ -405,6 +418,116 @@ int main(int argc, char **argv)
 		snprintf(msg, sizeof(msg), "so_vs.vert (vertex shader transform feedback) fails cleanly (VkResult %d, want %d)", r,
 		         VK_ERROR_FEATURE_NOT_PRESENT);
 		check(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_INITIALIZATION_FAILED, msg);
+	}
+
+	/* 7. Depth-only pass with a geometry shader and no fragment shader (shadow maps): rasterizes,
+	 *    writes depth 0.5 where v.vert's triangles are. */
+	{
+		depth_only = 1;
+		VkPipeline p;
+		VkResult r = pipeline("v.vert.spv", "zink_passthrough.geom.spv", 0, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, &p);
+		depth_only = 0;
+		snprintf(msg, sizeof(msg), "create v.vert + zink_passthrough.geom, no fragment shader, depth only (VkResult %d)", r);
+		check(r == VK_SUCCESS, msg);
+		if (r == VK_SUCCESS) {
+			VkImageCreateInfo dci2 = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+				.format = VK_FORMAT_D32_SFLOAT, .extent = { W, H, 1 }, .mipLevels = 1, .arrayLayers = 1,
+				.samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+				.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT };
+			VkImage dimg;
+			CK(vkCreateImage(dev, &dci2, NULL, &dimg));
+			VkMemoryRequirements dmr;
+			vkGetImageMemoryRequirements(dev, dimg, &dmr);
+			VkMemoryAllocateInfo dai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = dmr.size,
+				.memoryTypeIndex = mem_type(dmr.memoryTypeBits, 0) };
+			VkDeviceMemory dmem;
+			CK(vkAllocateMemory(dev, &dai, NULL, &dmem));
+			CK(vkBindImageMemory(dev, dimg, dmem, 0));
+			VkImageViewCreateInfo dvci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = dimg,
+				.viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+				.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 } };
+			VkImageView dview;
+			CK(vkCreateImageView(dev, &dvci, NULL, &dview));
+			float *rb;
+			VkBuffer rbuf = buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, (void **)&rb);
+			VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+				.commandBufferCount = 1 };
+			VkCommandBuffer cmd;
+			CK(vkAllocateCommandBuffers(dev, &ai, &cmd));
+			VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+			CK(vkBeginCommandBuffer(cmd, &bi));
+			VkImageMemoryBarrier ib = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = dimg,
+				.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 } };
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
+			                     0, NULL, 0, NULL, 1, &ib);
+			VkRenderingAttachmentInfo datt = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dview,
+				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = { .depthStencil = { 1.0f, 0 } } };
+			VkRenderingInfo rinfo = { VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { W, H } },
+				.layerCount = 1, .pDepthAttachment = &datt };
+			vkCmdBeginRendering(cmd, &rinfo);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+			vkCmdDraw(cmd, 3, 1, 0, 0);	/* left half: v.vert's first triangle */
+			vkCmdEndRendering(cmd);
+			ib.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			ib.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+			ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+			                     NULL, 0, NULL, 1, &ib);
+			VkBufferImageCopy region = { .imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 },
+				.imageExtent = { W, H, 1 } };
+			vkCmdCopyImageToBuffer(cmd, dimg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rbuf, 1, &region);
+			VkMemoryBarrier hb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_HOST_READ_BIT };
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &hb, 0, NULL, 0,
+			                     NULL);
+			CK(vkEndCommandBuffer(cmd));
+			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd };
+			CK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+			CK(vkQueueWaitIdle(queue));
+			float inside = rb[2 * W + 2], outside = rb[2 * W + 13];
+			snprintf(msg, sizeof(msg), "depth-only GS draw without fragment shader: depth %.3f inside (want 0.5), %.3f outside (want 1)",
+			         inside, outside);
+			check(inside == 0.5f && outside == 1.0f, msg);
+		}
+	}
+
+	/* 8. Dynamic rasterizer discard, geometry shader, no fragment shader: draws with discard on and off
+	 *    (capturing with discard on). */
+	{
+		dynamic_discard = 1;
+		VkPipeline p;
+		VkResult r = pipeline("so.vert.spv", "so_points.geom.spv", 0, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, &p);
+		dynamic_discard = 0;
+		snprintf(msg, sizeof(msg), "create so.vert + so_points.geom, no fragment shader, dynamic rasterizer discard (VkResult %d)", r);
+		check(r == VK_SUCCESS, msg);
+		if (r == VK_SUCCESS) {
+			PFN_vkCmdSetRasterizerDiscardEnable set_discard =
+				(PFN_vkCmdSetRasterizerDiscardEnable)vkGetDeviceProcAddr(dev, "vkCmdSetRasterizerDiscardEnable");
+			uint8_t *xb;
+			VkBuffer xbuf = buffer(1024, xfb_usage, (void **)&xb);
+			memset(xb, 0xcd, 1024);
+			VkDeviceSize off = 0;
+			VkCommandBuffer cmd = begin_cmd();
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+			set_discard(cmd, VK_FALSE);
+			vkCmdDraw(cmd, 3, 1, 0, 0);
+			set_discard(cmd, VK_TRUE);
+			bind_xfb(cmd, 0, 1, &xbuf, &off, NULL);
+			begin_xfb(cmd, 0, 0, NULL, NULL);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			end_xfb(cmd, 0, 0, NULL, NULL);
+			end_cmd(cmd);
+			int ok = 1;
+			for (uint32_t k = 0; k < 6; k++)
+				ok &= points_vertex_ok(xb + 40 * k, k / 3, k % 3);
+			check(ok, "dynamic rasterizer discard: draws with discard off and on, 6 records captured");
+		}
 	}
 
 	if (fails) {

@@ -1,7 +1,7 @@
 From 4ca60f75ddc1cfeb22269de01bebeb4d87ab92a8 Mon Sep 17 00:00:00 2001
 From: Edward Li <vk.edward.li@gmail.com>
 Date: Sun, 21 Jun 2026 02:44:17 +0800
-Subject: [PATCH 01/20] Emulate reversed-depth viewports on affected AMD Mac
+Subject: [PATCH 01/21] Emulate reversed-depth viewports on affected AMD Mac
  GPUs
 
 Avoid passing reversed depth ranges directly to Metal on AMD Mac2 GPUs that do not support Metal 3.

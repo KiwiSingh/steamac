@@ -1,7 +1,7 @@
 From 3b7281ef990fb3c56f8ab24d029a108e2b472a25 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 00:59:15 +0300
-Subject: [PATCH 17/20] Allocate implicit buffer indices around the vertex
+Subject: [PATCH 17/21] Allocate implicit buffer indices around the vertex
  buffers actually used
 
 Implicit buffers (buffer sizes, dynamic and texture offsets, view range, output buffers,
