@@ -23,7 +23,27 @@ enum Supervisor {
     nonisolated(unsafe) private static var childPid: pid_t = 0
     nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
 
+    /// Remove /tmp/steamac-<pid> run dirs whose launcher is gone (left behind by kill -9).
+    /// Only our own directories qualify; a pid that is alive (even if reused) is left alone.
+    private static func sweepStaleRunDirs() {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: "/tmp") else { return }
+        var removed: [String] = []
+        for name in entries where name.hasPrefix("steamac-") {
+            guard let pid = pid_t(name.dropFirst("steamac-".count)), pid > 0 else { continue }
+            let path = "/tmp/" + name
+            var st = stat()
+            guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == getuid() else { continue }
+            guard kill(pid, 0) == -1 && errno == ESRCH else { continue }
+            if (try? fm.removeItem(atPath: path)) != nil { removed.append(path) }
+        }
+        if !removed.isEmpty {
+            log("removed stale run dir\(removed.count == 1 ? "" : "s") of dead launchers: \(removed.joined(separator: ", "))")
+        }
+    }
+
     static func run(_ o: Options) -> Never {
+        sweepStaleRunDirs()
         // sun_path is 104 bytes on macOS: keep the run dir short.
         let dir = "/tmp/steamac-\(getpid())"
         try? FileManager.default.removeItem(atPath: dir)
