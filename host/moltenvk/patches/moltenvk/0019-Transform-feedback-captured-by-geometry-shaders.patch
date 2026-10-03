@@ -1,4 +1,4 @@
-From f97bb457ed19fba5513894a015f89a3916b31d4c Mon Sep 17 00:00:00 2001
+From 31168df5563359f02700a6e24b6080a3c9c398dd Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
 Subject: [PATCH 19/20] Transform feedback captured by geometry shaders
@@ -26,19 +26,19 @@ draw).
 ---
  MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm      | 85 ++++++++++++++++---
  MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm | 52 ++++++++----
- MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h | 20 ++++-
+ MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h | 21 ++++-
  .../MoltenVK/Commands/MVKCommandBuffer.mm     | 14 +++
  .../Commands/MVKCommandEncodingPool.h         |  8 ++
  .../Commands/MVKCommandEncodingPool.mm        | 14 +++
- ...KCommandPipelineStateFactoryShaderSource.h | 59 +++++++++++++
+ ...KCommandPipelineStateFactoryShaderSource.h | 60 +++++++++++++
  .../Commands/MVKCommandResourceFactory.h      |  6 ++
  .../Commands/MVKCommandResourceFactory.mm     |  8 ++
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.h      |  1 +
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm     | 12 ++-
  MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h    |  9 +-
- MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 32 ++++++-
+ MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 35 +++++++-
  MoltenVK/MoltenVK/Utility/MVKFoundation.h     |  1 +
- 14 files changed, 284 insertions(+), 37 deletions(-)
+ 14 files changed, 288 insertions(+), 38 deletions(-)
 
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
 index 1215fbf1..6f2e4a0e 100644
@@ -165,7 +165,7 @@ index 1215fbf1..6f2e4a0e 100644
                  } else {
                      MVKRenderSubpass* subpass = cmdEncoder->getSubpass();
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm b/MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm
-index 947888a9..b51be4dc 100644
+index 947888a9..2e0f705b 100644
 --- a/MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm
 +++ b/MoltenVK/MoltenVK/Commands/MVKCmdRendering.mm
 @@ -610,7 +610,21 @@ void mvkPopulateFromOrFillAscending(Vec& dst, const uint32_t* pSrc, size_t count
@@ -174,9 +174,9 @@ index 947888a9..b51be4dc 100644
  void MVKCmdBeginTransformFeedback::encode(MVKCommandEncoder* cmdEncoder) {
 -	cmdEncoder->_transformFeedbackEnabled = true;
 +	// Session state (see MVKCommandEncoder::_xfbSession): bound sizes, start offsets 0 or from the counters.
-+	const MVKMTLBufferAllocation* session = cmdEncoder->getTempMTLBuffer(16 * sizeof(uint32_t), false);
++	const MVKMTLBufferAllocation* session = cmdEncoder->getTempMTLBuffer(20 * sizeof(uint32_t), false);
 +	uint32_t* state = (uint32_t*)session->getContents();
-+	memset(state, 0, 16 * sizeof(uint32_t));
++	memset(state, 0, 20 * sizeof(uint32_t));
 +	for (uint32_t b = 0; b < kMVKMaxTransformFeedbackBuffers; b++) {
 +		const auto& binding = cmdEncoder->_xfbBindings[b];
 +		state[b] = binding.mtlBuffer ? (uint32_t)std::min<VkDeviceSize>(binding.size, UINT32_MAX) : 0;
@@ -248,10 +248,10 @@ index 947888a9..b51be4dc 100644
  	}
  }
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
-index 4226a574..477ef4f2 100644
+index 4226a574..2201d8ff 100644
 --- a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
 +++ b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
-@@ -508,9 +508,23 @@ public:
+@@ -508,9 +508,24 @@ public:
  	/** Indicates whether the current draw is an indexed draw. */
  	bool _isIndexedDraw;
  
@@ -269,7 +269,8 @@ index 4226a574..477ef4f2 100644
 +	/**
 +	 * Transform feedback session state while transform feedback is active (null otherwise), in uints:
 +	 * bound size of each buffer at 0, current byte offset of each buffer at 4, stride of each buffer
-+	 * at 8, mask of the buffers the geometry shader writes at 12 (see SPIRV-Cross emit_mesh_wrapper()).
++	 * at 8, mask of the buffers the geometry shader writes at 12, byte offset of each buffer at the
++	 * start of the current draw at 16 (see SPIRV-Cross emit_mesh_wrapper()).
 +	 */
 +	const MVKMTLBufferAllocation* _xfbSession = nullptr;
 +
@@ -376,10 +377,10 @@ index 3ab084ef..ad4da505 100644
      [_mtlDrawIndexedCopyIndexBufferComputePipelineState[1] release];
      _mtlDrawIndexedCopyIndexBufferComputePipelineState[0] = nil;
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCommandPipelineStateFactoryShaderSource.h b/MoltenVK/MoltenVK/Commands/MVKCommandPipelineStateFactoryShaderSource.h
-index 59beff64..82ccd72e 100644
+index 59beff64..f04d3627 100644
 --- a/MoltenVK/MoltenVK/Commands/MVKCommandPipelineStateFactoryShaderSource.h
 +++ b/MoltenVK/MoltenVK/Commands/MVKCommandPipelineStateFactoryShaderSource.h
-@@ -307,6 +307,65 @@ typedef struct {
+@@ -307,6 +307,66 @@ typedef struct {
  // Converts Vulkan indirect draws (VkDrawIndirectCommand or VkDrawIndexedIndirectCommand) for a
  // geometry-shader (object + mesh) pipeline: mesh threadgroups = primitives x instances, and the
  // DrawInfo the object stage reads (index buffer at firstIndex, base vertex, base instance).
@@ -437,6 +438,7 @@ index 59beff64..82ccd72e 100644
 +	if (lid == 0) {
 +		uint w = atomic_load_explicit(&written, memory_order_relaxed);
 +		for (uint b = 0; b < 4; b++) {
++			session[16 + b] = session[4 + b];	// Where this draw writes
 +			if (used & (1u << b)) { session[4 + b] += w * session[8 + b]; }
 +		}
 +	}
@@ -546,7 +548,7 @@ index 48366721..ccefc9aa 100644
  	MVKShaderModule* _vertexModule = nullptr;
  	MVKShaderModule* _tessCtlModule = nullptr;
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-index 7f7ab8c9..5023b2b8 100644
+index 7f7ab8c9..90c859f5 100644
 --- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 +++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 @@ -1710,6 +1710,11 @@ static void setDepthClipConfig(SPIRVToMSLConversionConfiguration& shaderConfig,
@@ -561,7 +563,17 @@ index 7f7ab8c9..5023b2b8 100644
  	plDesc.rasterizationEnabled = !funcRslts.isRasterizationDisabled;
  	populateResourceUsage(_stageResources[kMVKShaderStageVertex], shaderConfig, funcRslts, spv::ExecutionModelVertex);
  	_stageResources[kMVKShaderStageVertex].implicitBuffers.needed.set(MVKImplicitBuffer::EmulatedReversedDepthViewport, shaderConfig.options.mslOptions.emulate_reversed_depth_viewport);
-@@ -1928,6 +1933,16 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -1868,7 +1873,8 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+ 	shaderConfig.options.mslOptions.shader_output_buffer_index = implicit[MVKImplicitBuffer::Output];
+ 	shaderConfig.options.mslOptions.view_mask_buffer_index = implicit[MVKImplicitBuffer::ViewRange];
+ 	shaderConfig.options.mslOptions.capture_output_to_buffer = false;
+-	shaderConfig.options.mslOptions.disable_rasterization = !_isRasterizing;
++	// The vertex shader feeds the geometry shader (object stage), never the rasterizer.
++	shaderConfig.options.mslOptions.disable_rasterization = false;
+ 	shaderConfig.options.mslOptions.for_mesh_pipeline = true;
+ 	shaderConfig.options.mslOptions.msl_version = getPhysicalDevice()->getMetalFeatures()->mslVersion;
+ 	shaderConfig.options.shouldFlipVertexY = false;
+@@ -1928,6 +1934,16 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
  
  	if ( !setGeometryInputPrimitiveType(shaderConfig) ) { return false; }
  
@@ -578,7 +590,7 @@ index 7f7ab8c9..5023b2b8 100644
  	addPrevStageOutputToShaderConversionConfig(shaderConfig, vertexOutputs);
  
  	MVKMTLFunction func = getMTLFunction(shaderConfig, pGeometrySS, pGeometryFB, _geometryModule, "Geometry");
-@@ -1935,6 +1950,12 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -1935,6 +1951,12 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
  	if ( !mtlFunc ) { return false; }
  
  	auto& funcRslts = func.shaderConversionResults;
@@ -591,7 +603,7 @@ index 7f7ab8c9..5023b2b8 100644
  	populateResourceUsage(_stageResources[kMVKShaderStageGeometry], shaderConfig, funcRslts, spv::ExecutionModelGeometry);
  	_layout->populateBindOperations(_stageResources[kMVKShaderStageGeometry].bindScript, shaderConfig, spv::ExecutionModelGeometry);
  
-@@ -2063,6 +2084,10 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -2063,6 +2085,10 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
  	if ( !mtlFunc ) { return false; }
  
  	auto& funcRslts = func.shaderConversionResults;
@@ -602,7 +614,7 @@ index 7f7ab8c9..5023b2b8 100644
  	plDesc.rasterizationEnabled = !funcRslts.isRasterizationDisabled;
  	populateResourceUsage(_stageResources[kMVKShaderStageTessEval], shaderConfig, funcRslts, spv::ExecutionModelTessellationEvaluation);
  	_stageResources[kMVKShaderStageTessEval].implicitBuffers.needed.set(MVKImplicitBuffer::EmulatedReversedDepthViewport, shaderConfig.options.mslOptions.emulate_reversed_depth_viewport);
-@@ -3331,6 +3356,9 @@ void serialize(Archive & archive, CompilerMSL::Options& opt) {
+@@ -3331,6 +3357,9 @@ void serialize(Archive & archive, CompilerMSL::Options& opt) {
  				opt.shader_patch_input_buffer_index,
  				opt.draw_info_index,
  				opt.xfb_buffer_index,
@@ -612,7 +624,7 @@ index 7f7ab8c9..5023b2b8 100644
  				opt.texture_offset_buffer_index,
  				opt.reversed_depth_viewport_buffer_index,
  				opt.depth_clip_state_buffer_index,
-@@ -3703,11 +3731,11 @@ void mvkValidateCeralArchiveDefinitions() {
+@@ -3703,11 +3732,11 @@ void mvkValidateCeralArchiveDefinitions() {
  	missingBytes += mvkValidateCerealArchiveSize<SPIRV_CROSS_NAMESPACE::MSLConstexprSampler>();
  	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVWorkgroupSizeDimension>(3);
  	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVEntryPoint>(20);						// Contains string

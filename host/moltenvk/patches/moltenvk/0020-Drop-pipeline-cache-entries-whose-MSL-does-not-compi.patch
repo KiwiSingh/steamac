@@ -1,4 +1,4 @@
-From e0b1bbcfdcd52440cfebf630e3f60a470a68b532 Mon Sep 17 00:00:00 2001
+From 03320755d2cf0bd1037e62d44bee6568d183125a Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
 Subject: [PATCH 20/20] Drop pipeline cache entries whose MSL does not compile
@@ -12,10 +12,10 @@ cannot recover from. Drop such entries instead: the shaders are converted again 
  2 files changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-index 5023b2b8..9140c9c8 100644
+index 90c859f5..f8b82407 100644
 --- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 +++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-@@ -3285,7 +3285,13 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -3286,7 +3286,13 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
  					// Add the shader library to the staging cache.
  					MVKShaderLibraryCache* slCache = getShaderLibraryCache(smKey);
  					addPerformanceInterval(getPerformanceStats().pipelineCache.readPipelineCache, startTime);
