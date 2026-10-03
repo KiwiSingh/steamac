@@ -1,7 +1,7 @@
 From 40a3b4b1439628081325cb993000af3fd970ff79 Mon Sep 17 00:00:00 2001
 From: Anshul Noori <anshulnoori@gmail.com>
 Date: Mon, 24 Aug 2026 23:38:28 +0000
-Subject: [PATCH 2/4] feat: implement VK_EXT_depth_clip_enable
+Subject: [PATCH 02/14] feat: implement VK_EXT_depth_clip_enable
 
 steamac: backport of KhronosGroup/MoltenVK PR #2712 (commit dc89e437,
 https://github.com/KhronosGroup/MoltenVK/pull/2712) onto utmapp/MoltenVK

@@ -1,7 +1,7 @@
 From 85ca1b91c715e99558762f12716843e048c4e37c Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 20:22:42 +0300
-Subject: [PATCH 7/9] virtio/gpu(macos): map Venus blobs through
+Subject: [PATCH 07/10] virtio/gpu(macos): map Venus blobs through
  virglrenderer's shm fds
 
 v1.19.6 on macOS depends on slp's virglrenderer fork (0.10.4e-krunkit):

@@ -5,9 +5,13 @@
 #   host/virglrenderer/build.sh clean  drop the source/build tree (next build is from scratch)
 #
 # Source: UTM's virglrenderer fork (github.com/utmapp/virglrenderer, branch macos-next) at its
-# head 5d26f605, UTM's own pin (utmapp/UTM scripts/sources VIRGLRENDERER_COMMIT). It is
-# upstream virglrenderer main (base 9ae1fb1c, 2026-07-20; venus-protocol for vk.xml 1.4.343)
-# plus osy's macOS Venus work: VK_EXT_external_memory_dma_buf, VK_KHR_external_memory_fd,
+# head 5d26f605 (UTM's own pin, utmapp/UTM scripts/sources VIRGLRENDERER_COMMIT), merged with
+# upstream virglrenderer main at UPSTREAM_COMMIT (aafa9bd2, 2026-09-28: venus-protocol 1.1.3
+# cf6c62da, the vkr object-id / blob-storage / pNext validation fixes, vrend-less builds).
+# The fork sits on upstream 9ae1fb1c (2026-07-20) and is 48 upstream commits behind; the guest's
+# Mesa 26.3 speaks venus-protocol 1.1.3. The merge is redone on every build with a fixed
+# identity and its five conflicts are resolved by merge-resolve.py (see its header). The fork
+# adds osy's macOS Venus work: VK_EXT_external_memory_dma_buf, VK_KHR_external_memory_fd,
 # VK_EXT_image_drm_format_modifier (LINEAR only) and VK_KHR_external_fence_fd are emulated
 # for the guest; every host-visible or exportable allocation (device-local included) is POSIX
 # shm imported into the driver with VK_EXT_external_memory_host and handed to the VMM as a
@@ -26,7 +30,10 @@ set -eu
 
 REPO=https://github.com/utmapp/virglrenderer.git
 COMMIT=5d26f605f50f8e22002ec6db5fb775e1992d4e96
+UPSTREAM_REPO=https://gitlab.freedesktop.org/virgl/virglrenderer.git
+UPSTREAM_COMMIT=aafa9bd234a43c31004ec768ce000b21cf7b99ca
 PYYAML_VERSION=6.0.3
+MAKO_VERSION=1.3.10
 BREW_DEPS="libepoxy meson ninja pkgconf"
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -59,21 +66,36 @@ if [ ! -d "$src/.git" ]; then
 	git -C "$src" remote add origin "$REPO"
 fi
 if ! git -C "$src" cat-file -e "$COMMIT^{commit}" 2> /dev/null; then
-	git -C "$src" fetch -q --depth 1 origin "$COMMIT"
+	git -C "$src" fetch -q origin "$COMMIT"
 fi
+if ! git -C "$src" cat-file -e "$UPSTREAM_COMMIT^{commit}" 2> /dev/null; then
+	git -C "$src" fetch -q "$UPSTREAM_REPO" "$UPSTREAM_COMMIT"
+fi
+git -C "$src" merge --abort 2> /dev/null || true
 git -C "$src" checkout -q -f --detach "$COMMIT"
 git -C "$src" clean -q -fdx
+export GIT_AUTHOR_NAME=steamac GIT_AUTHOR_EMAIL=steamac@local GIT_COMMITTER_NAME=steamac \
+	GIT_COMMITTER_EMAIL=steamac@local GIT_AUTHOR_DATE=2026-10-03T00:00:00Z \
+	GIT_COMMITTER_DATE=2026-10-03T00:00:00Z
+if ! git -C "$src" merge -q --no-ff --no-edit "$UPSTREAM_COMMIT" > /dev/null 2>&1; then
+	(cd "$src" && python3 "$here/merge-resolve.py")
+	git -C "$src" commit -q --no-edit
+fi
+if git -C "$src" grep -qE '^(<<<<<<<|>>>>>>>) ' -- '*.c' '*.h' '*.build'; then
+	echo "unresolved merge conflict markers" >&2
+	exit 1
+fi
 for p in "$here"/patches/*.patch; do
 	[ -e "$p" ] || continue
 	echo ">> applying $(basename "$p")"
 	git -C "$src" apply --whitespace=nowarn "$p"
 done
 
-# --- build-time python (src/gallium needs PyYAML)
+# --- build-time python (src/gallium needs PyYAML, venus-protocol 1.1.3 needs Mako)
 if [ ! -x "$work/venv/bin/python3" ]; then
 	python3 -m venv "$work/venv"
 fi
-"$work/venv/bin/pip" -q install "pyyaml==$PYYAML_VERSION"
+"$work/venv/bin/pip" -q install "pyyaml==$PYYAML_VERSION" "mako==$MAKO_VERSION"
 
 # --- the steamac MoltenVK as the `vulkan` dependency
 mkdir -p "$work/pkgconfig"

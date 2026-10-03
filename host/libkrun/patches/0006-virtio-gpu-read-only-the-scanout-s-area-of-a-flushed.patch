@@ -1,7 +1,7 @@
 From c1dc7894c8767e4b7db09b569045eb5f568d2a76 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 20:15:31 +0300
-Subject: [PATCH 6/9] virtio/gpu: read only the scanout's area of a flushed
+Subject: [PATCH 06/10] virtio/gpu: read only the scanout's area of a flushed
  resource
 
 Port of libkrun PR #879 (Willie Abrams, f3e24c63) to v1.19.6.

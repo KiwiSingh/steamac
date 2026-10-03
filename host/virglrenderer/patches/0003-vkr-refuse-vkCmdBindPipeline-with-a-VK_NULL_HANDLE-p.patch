@@ -1,0 +1,42 @@
+From 1fd52834fcdbf9d6cc4dad546503bf1210795d7a Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sat, 3 Oct 2026 00:00:00 +0000
+Subject: [PATCH 3/3] vkr: refuse vkCmdBindPipeline with a VK_NULL_HANDLE
+ pipeline
+
+A pipeline id the host does not know fails the object lookup and sets the
+decoder fatal, but id 0 decodes to VK_NULL_HANDLE without an error.  The
+guest gets there after a failed pipeline creation (the host drops failed
+pipelines in vkr_pipeline_add_array) and MoltenVK dereferences the null
+pipeline in MVKCmdBindGraphicsPipeline, taking down the VMM.  Set the
+context fatal instead.
+---
+ src/venus/vkr_command_buffer.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 766c5c71..3e16ce48 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -142,9 +142,20 @@ vkr_dispatch_vkEndCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindPipeline(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdBindPipeline *args)
+ {
++   /* An unknown pipeline id already failed the lookup, but VK_NULL_HANDLE
++    * decodes to no object without an error.  The guest gets there after a
++    * pipeline creation failed (vkr_pipeline_add_array drops the object), and
++    * the driver must not see it: MoltenVK dereferences the pipeline.
++    */
++   if (!args->pipeline) {
++      vkr_log("vkCmdBindPipeline with VK_NULL_HANDLE pipeline");
++      vkr_context_set_fatal(dispatch->data);
++      return;
++   }
++
+    VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
+ }
+ 

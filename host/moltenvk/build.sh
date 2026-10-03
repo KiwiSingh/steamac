@@ -32,9 +32,10 @@
 #                                             work/build/host-moltenvk/src/Package/Release/MoltenVK/include)
 #   MOLTENVK.txt                              provenance + enabled features
 # The dylib is first staged in work/build/host-moltenvk/stage and verified there: the probe in
-# probe/ (fails when a feature steamac depends on is missing) and the gamescope compute-pipeline
-# repro in repro/ (all of gamescope 3.16.28's cs_*.comp pipelines + a pixel check). Only then is
-# it installed, by temp file + rename (a running VM may have the old dylib mapped).
+# probe/ (fails when a feature steamac depends on is missing) and the repros in repro/ (all of
+# gamescope 3.16.28's cs_*.comp pipelines + a pixel check; zink-style geometry shaders + pixel
+# checks; draws with a VK_NULL_HANDLE pipeline bound). Only then is it installed, by temp file +
+# rename (a running VM may have the old dylib mapped).
 set -eu
 
 MVK_REPO=https://github.com/utmapp/MoltenVK.git
@@ -131,8 +132,8 @@ if grep -q 'MVK-BUILD-ERROR' "$probe_log"; then
 	exit 1
 fi
 
-# --- gamescope compute pipelines (argument buffers on, MoltenVK's default)
-echo ">> repro: gamescope 3.16.28 compute pipelines"
+# --- repros: gamescope compute pipelines, geometry shaders, null pipeline binds
+echo ">> repro: gamescope compute pipelines, geometry shaders, null pipeline binds"
 repro_log=$work/repro.log
 "$here/repro/run.sh" "$stage/lib" > "$repro_log" 2>&1 || { cat "$repro_log"; exit 1; }
 grep -v '^\[mvk-info\]\|^	' "$repro_log"
@@ -185,6 +186,26 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         gamescope's s_ycbcr_samplers[16] (same bug in KhronosGroup/MoltenVK main)"
 	echo "  0004 = steamac: nullDescriptor -> image size/levels/samples queries on null descriptors"
 	echo "         return 0 (was only with robustImageAccess2; Metal reports 1 mip level for nil)"
+	echo "  0005 = steamac: vkCmdBindPipeline(VK_NULL_HANDLE) (Venus replays it when host pipeline"
+	echo "         creation failed) skips draws/dispatches instead of crashing the process"
+	echo "  0006 = steamac: GS draw info (list/strip) was passed to Metal before it was filled in"
+	echo "  0007 = steamac: geometry shaders on line lists / line strips (was 'Unsupported topology')"
+	echo "  0008 = steamac: indirect and indexed-indirect draws with geometry shaders (GPU conversion"
+	echo "         to mesh threadgroups), firstVertex/vertexOffset/firstInstance for GS draws"
+	echo "  0009 = upstream 2da7c3cb: linear color formats renderable again on Apple GPUs (the fork"
+	echo "         read renderLinearTextures before it was initialised: linear tiling lost"
+	echo "         COLOR_ATTACHMENT/BLEND/BLIT_DST, breaking zink rendering into linear dma-bufs)"
+	echo "  0010 = steamac: depth/stencil formats no longer report HOST_IMAGE_TRANSFER (their images"
+	echo "         need private memory; with HOST_TRANSFER memoryTypeBits was 0, so zink could not"
+	echo "         allocate any depth/stencil renderbuffer: GL FBOs incomplete, CEF/Skia no stencil)"
+	echo "  0011 = steamac: GS object stage fetches vertices with the bound (dynamic) strides; zink's"
+	echo "         provoking-vertex GS on every draw with dynamic stride read vertex 0 (all black)"
+	echo "  0012 = steamac: LINEAR images use the row pitch of a chained"
+	echo "         VkImageDrmFormatModifierExplicitCreateInfoEXT (virglrenderer dma-buf imports)"
+	echo "  0013 = steamac: GS with *_WITH_ADJACENCY topologies (zink GL_QUADS: second triangle was"
+	echo "         missing) and per-instance vertex attributes (glamor instanced rectangles)"
+	echo "  0014 = steamac: GS input primitive from the shader (dynamic topology: zink pipelines with a"
+	echo "         static TRIANGLE_FAN failed), triangle fans assembled by the GS object stage"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -193,11 +214,32 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         elements passed to functions, padding of multiplanar bindings, constant gather"
 	echo "         component); needed by gamescope's compute shaders"
 	echo "  0004 = steamac: MSL option null_descriptor (zero image queries on nil textures)"
+	echo "  0005 = steamac: gl_PrimitiveIDIn / gl_PrimitiveID in the mesh-emulated geometry stage"
+	echo "         (zink's passthrough GS failed to compile)"
+	echo "  0006 = steamac: GS input primitive assembly (list primitives > 0 read wrong vertices;"
+	echo "         strip winding)"
+	echo "  0007 = steamac: robustBufferAccess2 on arrays of uniform/storage buffers (zink UBO arrays"
+	echo "         did not compile), interface blocks no longer treated as buffers, GS wrappers pass"
+	echo "         arrays of discrete buffers per element"
+	echo "  0008 = steamac: variables named 'sampler'/'array' (MSL type names) are renamed (glamor)"
+	echo "  0009 = steamac: base vertex / base instance in the GS object stage"
+	echo "  0010 = steamac: an input builtin declared by several variables (zink gl_PrimitiveIDIn)"
+	echo "         becomes one entry point argument"
+	echo "  0011 = steamac: GS object stage vertex strides come from DrawInfo (dynamic strides)"
+	echo "  0012 = steamac: vertex->geometry payload by builtin/location (GS may read any subset of"
+	echo "         the vertex outputs; gl_in[] block inputs of glslang/DXVK geometry shaders work)"
+	echo "  0013 = steamac: adjacency input topologies (incl. triangle-strip-adjacency vertex order)"
+	echo "         and instance-rate attribute fetch in the GS object stage"
+	echo "  0014 = steamac: triangle fans in the GS object stage"
+	echo
+	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); vertex outputs are"
+	echo "  limited to 32 locations, 8 clip and 8 cull distances; indirect GS draws are converted on"
+	echo "  the GPU but drawCount comes from the CPU (no vkCmdDrawIndirectCount with GS)."
 	echo
 	echo "Not included: KhronosGroup/MoltenVK PR #2812 (indexed/indirect GS mesh draws). It is part of"
 	echo "  a different geometry-shader implementation (stacked on PR #2786, rebase of #1815/#1943 with"
-	echo "  its own SPIRV-Cross fork) and does not apply to the utmapp geometry-shaders branch."
-	echo "  Indirect draws with a geometry shader therefore stay unsupported (fork MVKCmdDraw.mm)."
+	echo "  its own SPIRV-Cross fork) and does not apply to the utmapp geometry-shaders branch;"
+	echo "  steamac patch 0008 implements indirect GS draws for this branch instead."
 	echo
 	echo "Build: ./fetchDependencies --macos --spirv-cross-root <patched SPIRV-Cross>;"
 	echo "  make macos; lipo -thin arm64 (UTM's recipe)."
@@ -210,7 +252,7 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "Probe (host/moltenvk/probe, $(sysctl -n machdep.cpu.brand_string), macOS $(sw_vers -productVersion)):"
 	sed 's/^/  /' "$probe_log"
 	echo
-	echo "gamescope 3.16.28 compute pipelines (host/moltenvk/repro, Metal argument buffers on):"
+	echo "Repros (host/moltenvk/repro, Metal argument buffers on):"
 	grep -v '^\[mvk-info\]\|^	' "$repro_log" | sed 's/^/  /'
 } > "$out/MOLTENVK.txt"
 

@@ -1,7 +1,7 @@
 From 177f2037e42a22a65305befd042b9453be478b1c Mon Sep 17 00:00:00 2001
 From: Willie Abrams <willie@pobox.com>
 Date: Mon, 28 Sep 2026 09:59:12 -0500
-Subject: [PATCH 5/9] virtio/input: report the full size of
+Subject: [PATCH 05/10] virtio/input: report the full size of
  VIRTIO_INPUT_CFG_ABS_INFO
 
 The ABS_INFO reply set the config size to size_of::<InputDeviceIds>()

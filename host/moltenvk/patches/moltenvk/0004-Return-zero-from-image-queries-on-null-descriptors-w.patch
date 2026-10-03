@@ -1,7 +1,7 @@
 From 9f345fa779a3fd8f4e72b30dfe667453ffa4573e Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 21:21:40 +0300
-Subject: [PATCH 4/4] Return zero from image queries on null descriptors when
+Subject: [PATCH 04/14] Return zero from image queries on null descriptors when
  nullDescriptor is enabled
 
 Pass VK_EXT_robustness2 nullDescriptor to SPIRV-Cross (new MSL option

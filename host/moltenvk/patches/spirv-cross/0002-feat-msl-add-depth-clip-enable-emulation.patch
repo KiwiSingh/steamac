@@ -1,7 +1,7 @@
 From 28989fcfcab28ed7e2c337659a0a42cbdb21f95e Mon Sep 17 00:00:00 2001
 From: Anshul Noori <anshulnoori@gmail.com>
 Date: Sat, 3 Oct 2026 20:32:56 +0300
-Subject: [PATCH 2/4] feat(msl): add depth clip enable emulation
+Subject: [PATCH 02/14] feat(msl): add depth clip enable emulation
 
 Backport of KhronosGroup/SPIRV-Cross 0706157e (SPIRV-Cross PR #2666,
 library part only; tests dropped) onto utmapp/SPIRV-Cross 939b40b3 for

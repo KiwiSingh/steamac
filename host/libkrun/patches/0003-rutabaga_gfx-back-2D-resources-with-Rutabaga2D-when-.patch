@@ -1,7 +1,7 @@
 From 6c0dc283d322c5664e9fe3e13b36fb79a8c1cd9b Mon Sep 17 00:00:00 2001
 From: Willie Abrams <willie@pobox.com>
 Date: Mon, 28 Sep 2026 10:02:15 -0500
-Subject: [PATCH 3/9] rutabaga_gfx: back 2D resources with Rutabaga2D when
+Subject: [PATCH 03/10] rutabaga_gfx: back 2D resources with Rutabaga2D when
  virglrenderer has no GL
 
 When virglrenderer runs Venus only (VIRGLRENDERER_NO_VIRGL, as krunkit

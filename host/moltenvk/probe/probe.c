@@ -113,6 +113,44 @@ int main(void)
 	int ext_m6 = has_ext(ext, en, VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
 	int ext_lson = has_ext(ext, en, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME);
 
+	/* Linear-tiled color formats must be renderable: zink/glamor render into linear dma-buf
+	 * (scanout) images, and virglrenderer passes the host's linear tiling features through. */
+	const VkFormatFeatureFlags linear_render = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+		VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+	const VkFormat scanout_formats[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM,
+		VK_FORMAT_A2R10G10B10_UNORM_PACK32, VK_FORMAT_A2B10G10R10_UNORM_PACK32 };
+	int linear_renderable = 1;
+	for (size_t i = 0; i < sizeof(scanout_formats) / sizeof(scanout_formats[0]); i++) {
+		VkFormatProperties fp;
+		vkGetPhysicalDeviceFormatProperties(pd, scanout_formats[i], &fp);
+		printf("(info) format %d linearTilingFeatures 0x%08x\n", scanout_formats[i], fp.linearTilingFeatures);
+		if ((fp.linearTilingFeatures & linear_render) != linear_render)
+			linear_renderable = 0;
+	}
+
+	/* Depth/stencil formats zink uses for GL renderbuffers: S8_UINT (GL_STENCIL_INDEX8) and
+	 * D32_SFLOAT_S8_UINT (GL_DEPTH24_STENCIL8, D24S8 is not supported on Apple GPUs) must be
+	 * depth/stencil attachments. They must not report HOST_IMAGE_TRANSFER: their images live in
+	 * private memory, so a HOST_TRANSFER image would have no memory type (zink allocates
+	 * renderbuffers with HOST_TRANSFER whenever the format reports it). */
+	const VkFormat zs_formats[] = { VK_FORMAT_S8_UINT, VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT,
+		VK_FORMAT_D32_SFLOAT_S8_UINT };
+	int s8_attachment = 0, d32s8_attachment = 0, zs_no_host_transfer = 1;
+	for (size_t i = 0; i < sizeof(zs_formats) / sizeof(zs_formats[0]); i++) {
+		VkFormatProperties3 fp3 = { .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3 };
+		VkFormatProperties2 fp2 = { .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &fp3 };
+		vkGetPhysicalDeviceFormatProperties2(pd, zs_formats[i], &fp2);
+		printf("(info) format %d optimalTilingFeatures 0x%llx\n", zs_formats[i],
+		       (unsigned long long)fp3.optimalTilingFeatures);
+		int att = (fp3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+		if (zs_formats[i] == VK_FORMAT_S8_UINT)
+			s8_attachment = att;
+		if (zs_formats[i] == VK_FORMAT_D32_SFLOAT_S8_UINT)
+			d32s8_attachment = att;
+		if (fp3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT)
+			zs_no_host_transfer = 0;
+	}
+
 	struct { const char *name; int value; int required; } rows[] = {
 		{ "geometryShader",                 f->geometryShader, 1 },
 		{ "shaderCullDistance",             f->shaderCullDistance, 1 },
@@ -122,6 +160,10 @@ int main(void)
 		{ "transformFeedback",              ext_xfb && xfb.transformFeedback, 0 },
 		{ "maintenance5",                   ext_m5 && m5.maintenance5, 1 },
 		{ "maintenance6",                   ext_m6 && m6.maintenance6, 1 },
+		{ "linearColorAttachment",          linear_renderable, 1 },
+		{ "S8_UINT DS attachment",          s8_attachment, 1 },
+		{ "D32_SFLOAT_S8_UINT DS attachment", d32s8_attachment, 1 },
+		{ "depth/stencil no host transfer", zs_no_host_transfer, 1 },
 		{ "KHR_load_store_op_none",         ext_lson, 0 },
 		{ "scalarBlockLayout",              v12.scalarBlockLayout, 0 },
 		{ "subgroupSizeControl",            v13.subgroupSizeControl, 0 },

@@ -1,14 +1,21 @@
 #!/bin/sh
-# Host reproduction of gamescope's compute pipelines on the built MoltenVK (no VM needed).
+# Host reproductions of guest workloads on the built MoltenVK (no VM needed).
 #
 #   host/moltenvk/repro/run.sh [libdir]
 #
-# Fetches gamescope 3.16.28 (pinned), compiles src/shaders/cs_*.comp with glslang exactly
-# like gamescope's meson build (glslangValidator -V), builds gamescope_cs.c against
-# libMoltenVK in [libdir] (default work/out/host/lib) and runs it: every pipeline variant
-# must compile and cs_composite_blit must write the expected pixels from s_samplers[0]
-# and from the Y'CbCr (NV12) array s_ycbcr_samplers[0]. Metal argument buffers stay at
-# MoltenVK's default (on).
+# 1. gamescope_cs.c: fetches gamescope 3.16.28 (pinned), compiles src/shaders/cs_*.comp with
+#    glslang like gamescope's meson build (glslangValidator -V) and creates every pipeline
+#    variant; cs_composite_blit must write the expected pixels from s_samplers[0] and from
+#    the Y'CbCr (NV12) array s_ycbcr_samplers[0]. Metal argument buffers stay on (default).
+# 2. geometry.c: shaders/ (zink-style passthrough geometry shader with gl_PrimitiveIDIn,
+#    list and strip draws) and draws/dispatches with a VK_NULL_HANDLE pipeline bound (what
+#    Venus replays when host pipeline creation failed).
+# 3. depth_stencil.c: depth/stencil images with the usages zink gives GL renderbuffers (with
+#    and without HOST_TRANSFER): every accepted usage must be allocatable and read back the
+#    cleared depth/stencil values.
+# 4. linear_pitch.c: LINEAR image with VkImageDrmFormatModifierExplicitCreateInfoEXT rowPitch
+#    (virglrenderer dma-buf imports): layouts, memory size and pixel data use that pitch.
+# All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
 set -eu
 
 GAMESCOPE_REPO=https://github.com/ValveSoftware/gamescope.git
@@ -22,6 +29,7 @@ libdir=${1:-$root/work/out/host/lib}
 inc=$root/work/build/host-moltenvk/src/Package/Release/MoltenVK/include
 
 brew list --versions glslang > /dev/null 2>&1 || brew install glslang
+brew list --versions spirv-tools > /dev/null 2>&1 || brew install spirv-tools
 mkdir -p "$work"
 
 src=$work/gamescope
@@ -45,3 +53,24 @@ done
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/gamescope_cs.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/gamescope_cs"
 MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv"
+
+gspv=$work/geometry-spv
+rm -rf "$gspv"
+mkdir -p "$gspv"
+for s in "$here"/shaders/*.vert "$here"/shaders/*.geom "$here"/shaders/*.frag; do
+	glslangValidator -V --quiet "$s" -o "$gspv/$(basename "$s").spv"
+done
+for s in "$here"/shaders/*.spvasm; do
+	spirv-as --target-env vulkan1.0 "$s" -o "$gspv/$(basename "$s" .spvasm).spv"
+done
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/geometry.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/geometry"
+MVK_CONFIG_LOG_LEVEL=1 "$work/geometry" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/depth_stencil.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/depth_stencil"
+MVK_CONFIG_LOG_LEVEL=1 "$work/depth_stencil"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/linear_pitch.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/linear_pitch"
+MVK_CONFIG_LOG_LEVEL=1 "$work/linear_pitch"

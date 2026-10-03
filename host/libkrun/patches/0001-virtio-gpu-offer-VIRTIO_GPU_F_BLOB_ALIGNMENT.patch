@@ -1,7 +1,7 @@
 From fbbeb6577281056a566a1447aa2101f827ccc13d Mon Sep 17 00:00:00 2001
 From: steamac <steamac@local>
 Date: Sat, 3 Oct 2026 20:01:20 +0300
-Subject: [PATCH 1/9] virtio/gpu: offer VIRTIO_GPU_F_BLOB_ALIGNMENT
+Subject: [PATCH 01/10] virtio/gpu: offer VIRTIO_GPU_F_BLOB_ALIGNMENT
 
 Backport of libkrun main 51367cf (PR #886, Willie Abrams) to v1.19.6.
 Blob alignment = host page size (16 KiB on Apple silicon). Drops the

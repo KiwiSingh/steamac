@@ -1,0 +1,99 @@
+From e84d260a5098183fa851e2d7775357671f8a2b44 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sat, 3 Oct 2026 00:00:00 +0000
+Subject: [PATCH] virgl_fence: share the fence table between proxy and
+ in-process server
+
+With render-server-mode=thread the render server runs inside the VMM and
+both sides use the same process-global fence table: virgl_renderer_init
+creates it for the proxy and render_state_init creates it again (leaking
+the first and re-initializing the lock under the proxy) when the server
+gets its first context.  When the server's last context went away,
+render_state_fini destroyed it, and the next proxy_context_destroy
+(virgl_fence_retire on its unretired timeline fences) dereferenced the NULL
+table and took down the VMM (SIGSEGV in _mesa_hash_table_u64_search on the
+gpu worker thread), e.g. when a Venus context died and the whole gamescope
+session exited with it.
+
+Reference count the table, one reference per virgl_fence_table_init, and
+initialize its lock once for the life of the process.
+---
+ src/virgl_fence.c | 44 ++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/src/virgl_fence.c b/src/virgl_fence.c
+index 801c8053..68e8532a 100644
+--- a/src/virgl_fence.c
++++ b/src/virgl_fence.c
+@@ -28,6 +28,20 @@ static struct virgl_fence last_signalled_fence = { .fd = -1 };
+ static struct hash_table_u64 *virgl_fence_table;
+ static mtx_t virgl_fence_table_lock;
+ 
++/* The table is process global but has two owners when the render server runs
++ * in threads inside the VMM: the proxy side (virgl_renderer_init) and the
++ * render server (render_state_init, while it has contexts).  Each owner holds
++ * a reference; the lock lives for the whole process so that neither owner
++ * re-initializes it under the other.
++ */
++static once_flag virgl_fence_table_lock_once = ONCE_FLAG_INIT;
++static uint32_t virgl_fence_table_refs;
++
++static void virgl_fence_table_lock_init(void)
++{
++   mtx_init(&virgl_fence_table_lock, mtx_plain);
++}
++
+ static void virgl_fence_table_cleanup_cb(struct hash_entry *entry)
+ {
+    struct virgl_fence *fence = entry->data;
+@@ -39,28 +53,42 @@ static void virgl_fence_table_cleanup_cb(struct hash_entry *entry)
+ void
+ virgl_fence_table_cleanup(void)
+ {
++   call_once(&virgl_fence_table_lock_once, virgl_fence_table_lock_init);
++   mtx_lock(&virgl_fence_table_lock);
++   if (!virgl_fence_table_refs || --virgl_fence_table_refs) {
++      mtx_unlock(&virgl_fence_table_lock);
++      return;
++   }
++
+    _mesa_hash_table_u64_destroy(virgl_fence_table,
+                                 virgl_fence_table_cleanup_cb);
+ 
+    virgl_fence_table = NULL;
+ 
+-   mtx_destroy(&virgl_fence_table_lock);
+-
+    if (last_signalled_fence.fd >= 0)
+       close(last_signalled_fence.fd);
++   last_signalled_fence.fd = -1;
++   mtx_unlock(&virgl_fence_table_lock);
+ }
+ 
+ int
+ virgl_fence_table_init(void)
+ {
+-   virgl_fence_table = _mesa_hash_table_u64_create(NULL);
+-   if (!virgl_fence_table)
+-      return -ENOMEM;
++   call_once(&virgl_fence_table_lock_once, virgl_fence_table_lock_init);
+ 
+-   mtx_init(&virgl_fence_table_lock, mtx_plain);
++   mtx_lock(&virgl_fence_table_lock);
++   if (!virgl_fence_table_refs) {
++      virgl_fence_table = _mesa_hash_table_u64_create(NULL);
++      if (!virgl_fence_table) {
++         mtx_unlock(&virgl_fence_table_lock);
++         return -ENOMEM;
++      }
+ 
+-   last_signalled_fence.id = 0;
+-   last_signalled_fence.fd = -1;
++      last_signalled_fence.id = 0;
++      last_signalled_fence.fd = -1;
++   }
++   virgl_fence_table_refs++;
++   mtx_unlock(&virgl_fence_table_lock);
+ 
+    return 0;
+ }

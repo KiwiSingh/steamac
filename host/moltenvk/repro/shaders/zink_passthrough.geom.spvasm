@@ -1,0 +1,91 @@
+; Geometry shader shaped like zink's passthrough GS (nir_create_passthrough_gs): every
+; output of the previous stage is passed through, gl_PrimitiveIDIn is forwarded to
+; gl_PrimitiveID, builtins are plain (non-block) variables and names are NIR varying slots.
+; Assemble with: spirv-as --target-env vulkan1.0 zink_passthrough.geom.spvasm -o zink_passthrough.geom.spv
+               OpCapability Geometry
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Geometry %main "main" %var0_in %var1_in %pos_in %primid_in %var0_out %var1_out %pos_out %primid_out
+               OpExecutionMode %main Triangles
+               OpExecutionMode %main Invocations 1
+               OpExecutionMode %main OutputTriangleStrip
+               OpExecutionMode %main OutputVertices 3
+               OpName %main "main"
+               OpName %var0_in "VARYING_SLOT_VAR0"
+               OpName %var1_in "VARYING_SLOT_VAR1"
+               OpName %pos_in "VARYING_SLOT_POS"
+               OpName %primid_in "VARYING_SLOT_PRIMITIVE_ID"
+               OpName %var0_out "VARYING_SLOT_VAR0"
+               OpName %var1_out "VARYING_SLOT_VAR1"
+               OpName %pos_out "VARYING_SLOT_POS"
+               OpName %primid_out "VARYING_SLOT_PRIMITIVE_ID"
+               OpDecorate %var0_in Location 0
+               OpDecorate %var1_in Location 1
+               OpDecorate %pos_in BuiltIn Position
+               OpDecorate %primid_in BuiltIn PrimitiveId
+               OpDecorate %var0_out Location 0
+               OpDecorate %var1_out Location 1
+               OpDecorate %pos_out BuiltIn Position
+               OpDecorate %primid_out BuiltIn PrimitiveId
+       %void = OpTypeVoid
+     %fn_void = OpTypeFunction %void
+        %int = OpTypeInt 32 1
+       %uint = OpTypeInt 32 0
+      %float = OpTypeFloat 32
+     %v4float = OpTypeVector %float 4
+      %uint_3 = OpConstant %uint 3
+       %int_0 = OpConstant %int 0
+       %int_1 = OpConstant %int 1
+       %int_2 = OpConstant %int 2
+     %arr_v4 = OpTypeArray %v4float %uint_3
+  %p_in_arr = OpTypePointer Input %arr_v4
+   %p_in_v4 = OpTypePointer Input %v4float
+  %p_in_int = OpTypePointer Input %int
+  %p_out_v4 = OpTypePointer Output %v4float
+ %p_out_int = OpTypePointer Output %int
+    %var0_in = OpVariable %p_in_arr Input
+    %var1_in = OpVariable %p_in_arr Input
+     %pos_in = OpVariable %p_in_arr Input
+  %primid_in = OpVariable %p_in_int Input
+   %var0_out = OpVariable %p_out_v4 Output
+   %var1_out = OpVariable %p_out_v4 Output
+    %pos_out = OpVariable %p_out_v4 Output
+ %primid_out = OpVariable %p_out_int Output
+       %main = OpFunction %void None %fn_void
+      %entry = OpLabel
+         %id = OpLoad %int %primid_in
+         %a0 = OpAccessChain %p_in_v4 %var0_in %int_0
+         %b0 = OpAccessChain %p_in_v4 %var1_in %int_0
+         %c0 = OpAccessChain %p_in_v4 %pos_in %int_0
+        %la0 = OpLoad %v4float %a0
+        %lb0 = OpLoad %v4float %b0
+        %lc0 = OpLoad %v4float %c0
+               OpStore %var0_out %la0
+               OpStore %var1_out %lb0
+               OpStore %pos_out %lc0
+               OpStore %primid_out %id
+               OpEmitVertex
+         %a1 = OpAccessChain %p_in_v4 %var0_in %int_1
+         %b1 = OpAccessChain %p_in_v4 %var1_in %int_1
+         %c1 = OpAccessChain %p_in_v4 %pos_in %int_1
+        %la1 = OpLoad %v4float %a1
+        %lb1 = OpLoad %v4float %b1
+        %lc1 = OpLoad %v4float %c1
+               OpStore %var0_out %la1
+               OpStore %var1_out %lb1
+               OpStore %pos_out %lc1
+               OpStore %primid_out %id
+               OpEmitVertex
+         %a2 = OpAccessChain %p_in_v4 %var0_in %int_2
+         %b2 = OpAccessChain %p_in_v4 %var1_in %int_2
+         %c2 = OpAccessChain %p_in_v4 %pos_in %int_2
+        %la2 = OpLoad %v4float %a2
+        %lb2 = OpLoad %v4float %b2
+        %lc2 = OpLoad %v4float %c2
+               OpStore %var0_out %la2
+               OpStore %var1_out %lb2
+               OpStore %pos_out %lc2
+               OpStore %primid_out %id
+               OpEmitVertex
+               OpEndPrimitive
+               OpReturn
+               OpFunctionEnd
