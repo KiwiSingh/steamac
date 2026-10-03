@@ -206,6 +206,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         missing) and per-instance vertex attributes (glamor instanced rectangles)"
 	echo "  0014 = steamac: GS input primitive from the shader (dynamic topology: zink pipelines with a"
 	echo "         static TRIANGLE_FAN failed), triangle fans assembled by the GS object stage"
+	echo "  0015 = steamac: GS object stage vertex attributes read with their memory type (SCALED/NORM"
+	echo "         formats such as glamor's R16G16_SSCALED were read as float bits)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -231,8 +233,11 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0013 = steamac: adjacency input topologies (incl. triangle-strip-adjacency vertex order)"
 	echo "         and instance-rate attribute fetch in the GS object stage"
 	echo "  0014 = steamac: triangle fans in the GS object stage"
+	echo "  0015 = steamac: GS object stage vertex attribute conversion (8/16-bit SCALED/NORM types,"
+	echo "         SNORM normalization, fill of missing components)"
 	echo
-	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); vertex outputs are"
+	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
+	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"
 	echo "  limited to 32 locations, 8 clip and 8 cull distances; indirect GS draws are converted on"
 	echo "  the GPU but drawCount comes from the CPU (no vkCmdDrawIndirectCount with GS)."
 	echo

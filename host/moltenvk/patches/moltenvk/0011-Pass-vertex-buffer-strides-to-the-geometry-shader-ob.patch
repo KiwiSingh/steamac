@@ -1,7 +1,7 @@
 From 08ec8c07ff55d6e54c42df62d1d5401eff6443c4 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:03:22 +0300
-Subject: [PATCH 11/14] Pass vertex buffer strides to the geometry-shader
+Subject: [PATCH 11/15] Pass vertex buffer strides to the geometry-shader
  object stage
 
 The geometry-shader (mesh) path fetched vertices with the stride compiled into the

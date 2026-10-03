@@ -23,7 +23,7 @@
  *                                  rectangles); vinst + f without GS as reference
  *   ladj + ladj + f                LINE_LIST_WITH_ADJACENCY, GS emitting two triangles (zink GL_QUADS)
  *   tsadj + tsadj + f              TRIANGLE_STRIP_WITH_ADJACENCY, 2 triangles (strip adjacency order)
- *   vfmt + zink_passthrough + f    GS with SSCALED / SNORM 16-bit positions and UNORM8 colors (glamor's
+ *   vfmt + zink_passthrough + f    GS with SSCALED16 / SNORM16 / SNORM8 positions and UNORM8 colors (glamor's
  *                                  GL_SHORT vertices); vfmt + f without GS as reference
  *   ladj + zink_passthrough + fprim  TRIANGLE_FAN with a GS (zink GL_TRIANGLE_FAN), static and with a
  *                                  TRIANGLE_LIST pipeline + dynamic TRIANGLE_FAN topology
@@ -319,7 +319,9 @@ int main(int argc, char **argv)
 	CK(vkCreateBuffer(dev, &argbci, NULL, &indirect_buf));
 	CK(vkCreateBuffer(dev, &argbci, NULL, &index_buf));
 	CK(vkCreateBuffer(dev, &argbci, NULL, &vertex_buf));
-	CK(vkCreateBuffer(dev, &argbci, NULL, &fmt_buf));
+	VkBufferCreateInfo fmtbci = argbci;
+	fmtbci.size = 256;
+	CK(vkCreateBuffer(dev, &fmtbci, NULL, &fmt_buf));
 	VkBuffer arg_bufs[4] = { indirect_buf, index_buf, vertex_buf, fmt_buf };
 	void *arg_maps[4];
 	for (int k = 0; k < 4; k++) {
@@ -341,8 +343,7 @@ int main(int argc, char **argv)
 	const float instance_offsets[3][2] = { { 0, 0 }, { 1, 0 }, { -9, -9 } };
 	memcpy((char *)arg_maps[2] + 96, instance_offsets, sizeof(instance_offsets));
 	/* Format buffer: v.vert's six positions, 8 bytes per vertex: position at 0, (0, 128, 0, 255) at 4.
-	 * Offset 0: R16G16_SSCALED (-1/0/1); offset 48: R16G16_SNORM (+-32767); offset 96 (16 bytes per
-	 * pair of vertices is not enough room, so R8G8_SNORM shares the layout): R8G8_SNORM (+-127). */
+	 * Offset 0: R16G16_SSCALED (-1/0/1); offset 48: R16G16_SNORM (+-32767); offset 96: R8G8_SNORM (+-127). */
 	{
 		static const int p[6][2] = { { -1, -1 }, { 0, -1 }, { -1, 1 }, { 0, -1 }, { 1, -1 }, { 0, 1 } };
 		uint8_t *fb = arg_maps[3];
@@ -352,8 +353,11 @@ int main(int argc, char **argv)
 			memcpy(fb + v * 8, s16, 4);
 			memcpy(fb + 48 + v * 8, n16, 4);
 			const uint8_t c[4] = { 0, 128, 0, 255 };
+			int8_t n8[2] = { (int8_t)(p[v][0] * 127), (int8_t)(p[v][1] * 127) };
+			memcpy(fb + 96 + v * 8, n8, 2);
 			memcpy(fb + v * 8 + 4, c, 4);
 			memcpy(fb + 48 + v * 8 + 4, c, 4);
+			memcpy(fb + 96 + v * 8 + 4, c, 4);
 		}
 	}
 
@@ -417,6 +421,8 @@ int main(int argc, char **argv)
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 128, 0, 255 }, { 0, 128, 0, 255 } }, 0, 0, DRAW_SSCALED16 },
 		{ "vfmt.vert.spv", "zink_passthrough.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 128, 0, 255 }, { 0, 128, 0, 255 } }, 0, 0, DRAW_SNORM16 },
+		{ "vfmt.vert.spv", "zink_passthrough.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
+		  { { 2, 2 }, { 10, 2 } }, { { 0, 128, 0, 255 }, { 0, 128, 0, 255 } }, 0, 0, DRAW_SNORM8 },
 		{ "vfmt.vert.spv", NULL, "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 128, 0, 255 }, { 0, 128, 0, 255 } }, 0, 0, DRAW_SSCALED16 },
 	};
@@ -431,6 +437,7 @@ int main(int argc, char **argv)
 			dynamic_topology = tests[t].draw_mode == DRAW_DYNAMIC_FAN;
 			if (tests[t].draw_mode == DRAW_SSCALED16) vertex_input = VI_SSCALED16;
 			if (tests[t].draw_mode == DRAW_SNORM16) vertex_input = VI_SNORM16;
+			if (tests[t].draw_mode == DRAW_SNORM8) vertex_input = VI_SNORM8;
 			p = graphics(tests[t].vs, tests[t].gs, tests[t].fs, tests[t].topology, layout);
 			if (!p) {
 				printf("%-4s render %s + %s + %s: pipeline creation failed\n", verdict_fail, tests[t].vs,
@@ -489,8 +496,9 @@ int main(int argc, char **argv)
 			break;
 		}
 		case DRAW_SSCALED16:
-		case DRAW_SNORM16: {
-			VkDeviceSize off = tests[t].draw_mode == DRAW_SNORM16 ? 48 : 0;
+		case DRAW_SNORM16:
+		case DRAW_SNORM8: {
+			VkDeviceSize off = tests[t].draw_mode == DRAW_SNORM16 ? 48 : tests[t].draw_mode == DRAW_SNORM8 ? 96 : 0;
 			vkCmdBindVertexBuffers(cmd, 0, 1, &fmt_buf, &off);
 			vkCmdDraw(cmd, tests[t].vertex_count, 1, 0, 0);
 			break;
@@ -551,7 +559,8 @@ int main(int argc, char **argv)
 			                         "2 instances, per-instance offset attribute",
 			                         "pipeline TRIANGLE_LIST + dynamic TRIANGLE_FAN",
 			                         "R16G16_SSCALED positions, R8G8B8A8_UNORM colors",
-			                         "R16G16_SNORM positions, R8G8B8A8_UNORM colors" }[tests[t].draw_mode]);
+			                         "R16G16_SNORM positions, R8G8B8A8_UNORM colors",
+			                         "R8G8_SNORM positions, R8G8B8A8_UNORM colors" }[tests[t].draw_mode]);
 		if (!tests[t].known_limitation)
 			fails += !ok;
 		if (p)

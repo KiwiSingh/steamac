@@ -1,7 +1,7 @@
 From 068e642aed1a6b0159f832a3076c721b7f3097f1 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:21:11 +0300
-Subject: [PATCH 09/14] MSL: Base vertex and base instance in the
+Subject: [PATCH 09/15] MSL: Base vertex and base instance in the
  geometry-shader object stage
 
 The object stage of the geometry-shader emulation ignored firstVertex /

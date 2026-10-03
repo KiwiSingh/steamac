@@ -1,7 +1,7 @@
 From 9db8bbfd2c8565ab96f542cfdd28637d3855d908 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:13:31 +0300
-Subject: [PATCH 12/14] MSL: Location-based vertex payload between the
+Subject: [PATCH 12/15] MSL: Location-based vertex payload between the
  GS-emulation stages
 
 The payload between the object stage (vertex shader) and the mesh stage (geometry shader)

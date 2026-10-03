@@ -1,7 +1,7 @@
 From f2e891aead8e6159697e6f9d73d1abb968c7f053 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:07:50 +0300
-Subject: [PATCH 07/14] Support line topologies for geometry shaders
+Subject: [PATCH 07/15] Support line topologies for geometry shaders
 
 The geometry-shader emulation only accepted triangle, triangle strip and
 point topologies; line lists and line strips (zink uses geometry shaders on

@@ -1,7 +1,7 @@
 From 9ae67be952e07cf5eb0f719e2e55a25f4bc1d8ea Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:07:50 +0300
-Subject: [PATCH 07/14] MSL: Fix robust buffer access and mesh wrappers for
+Subject: [PATCH 07/15] MSL: Fix robust buffer access and mesh wrappers for
  arrays of buffers
 
 zink declares uniform buffers as arrays of blocks indexed dynamically

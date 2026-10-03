@@ -1,7 +1,7 @@
 From 441282af132f8e34e6f3f4ff23e721e75a8c7550 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 22:25:07 +0300
-Subject: [PATCH 08/14] Support indirect draws and base vertex/instance with
+Subject: [PATCH 08/15] Support indirect draws and base vertex/instance with
  geometry shaders
 
 vkCmdDrawIndirect and vkCmdDrawIndexedIndirect with a geometry-shader (mesh)
