@@ -27,6 +27,12 @@ final class VM {
     let ctx: UInt32
     private(set) var shutdownFd: Int32 = -1
     private(set) var running = false
+    private let displayId: UInt32
+    /// Boot EDID; its mm-per-pixel is reused for every resize (constant DPI).
+    let edid: EdidSize.Result
+    private var displaySize: (Int, Int, Int, Int)   // px w, h, mm w, h
+    /// Largest guest display side libkrun's EDID detailed timing can describe.
+    static let maxDisplaySide = 4095
 
     init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
          inputs: VMInputs?, netSocket: String?) throws {
@@ -57,14 +63,16 @@ final class VM {
         // GPU: Venus only (no virgl GL), host-visible shm window for blobs.
         let flags = o.gpuFlags ?? (STEAMAC_VIRGL_VENUS | STEAMAC_VIRGL_NO_VIRGL)
         try krun("krun_set_gpu_options2", krun_set_gpu_options2(ctx, flags, UInt64(o.shmMiB) << 20))
-        let did = UInt32(try krun("krun_add_display", krun_add_display(ctx, UInt32(o.displayWidth), UInt32(o.displayHeight))))
+        displayId = UInt32(try krun("krun_add_display", krun_add_display(ctx, UInt32(o.displayWidth), UInt32(o.displayHeight))))
+        let did = displayId
         try krun("krun_display_set_refresh_rate", krun_display_set_refresh_rate(ctx, did, UInt32(o.refreshRate)))
         // EDID physical size (drives the guest UI scale; libkrun's default of 300 DPI makes Steam ~2x).
-        let edid = EdidSize.resolve(o)
+        edid = EdidSize.resolve(o)
         try krun("krun_display_set_physical_size",
                  krun_display_set_physical_size(ctx, did, UInt16(clamping: edid.widthMM), UInt16(clamping: edid.heightMM)))
+        displaySize = (o.displayWidth, o.displayHeight, edid.widthMM, edid.heightMM)
         log("display: \(o.displayWidth)x\(o.displayHeight) px → \(edid.widthMM)x\(edid.heightMM) mm (\(edid.source));"
-            + " EDID is fixed for this boot")
+            + " follows the window size at this DPI")
         var backend = display.makeCBackend()
         try krun("krun_set_display_backend", krun_set_display_backend(ctx, &backend, MemoryLayout<krun_display_backend>.size))
 
@@ -96,6 +104,20 @@ final class VM {
         t.stackSize = 16 << 20
         t.qualityOfService = .userInteractive
         t.start()
+    }
+
+    /// Ask the guest to switch its display to `width`x`height` px at the boot DPI (any thread;
+    /// libkrun regenerates the EDID and sends a display-change notification). No-op if unchanged.
+    func resizeDisplay(width: Int, height: Int) {
+        let (wmm, hmm) = edid.millimetres(width, height)
+        guard (width, height, wmm, hmm) != displaySize else { return }
+        let r = krun_display_resize(ctx, displayId, UInt32(width), UInt32(height), UInt16(clamping: wmm), UInt16(clamping: hmm))
+        if r < 0 {
+            log("display: resize to \(width)x\(height) failed: \(r) (\(String(cString: strerror(-r))))")
+            return
+        }
+        displaySize = (width, height, wmm, hmm)
+        log("display: resized to \(width)x\(height) px (\(wmm)×\(hmm) mm, same DPI)")
     }
 
     /// Press the guest power key (gpio-keys, KEY_RESTART in libkrun 1.19.6's FDT; systemd-logind

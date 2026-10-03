@@ -8,7 +8,8 @@
 #   host/libkrun/test/resize-test.sh [OUTDIR]   (default work/scratch/resize-test)
 #
 # Env: SSH_PORT (default 2230), SIZES ("1600x1000 1024x640"), BOOT_WAIT (s, default 600),
-# SETTLE (s after each resize, default 20), KEEP_CLONE=1 keeps the cloned disk.
+# SETTLE (s after each resize, default 45: the Steam UI may restart its GPU process on a
+# mode change), KEEP_CLONE=1 keeps the cloned disk.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,7 +19,7 @@ dir=${1:-$root/work/scratch/resize-test}
 port=${SSH_PORT:-2230}
 sizes=${SIZES:-1600x1000 1024x640}
 boot_wait=${BOOT_WAIT:-600}
-settle=${SETTLE:-20}
+settle=${SETTLE:-45}
 
 mkdir -p "$dir"
 run=$(mktemp -d /tmp/krun-resize.XXXXXX)
@@ -63,34 +64,46 @@ g() {
 		-o ConnectTimeout=5 steamos@127.0.0.1 "$@"
 }
 
-# The X display gamescope gives Steam, and its auth file, from the Steam process.
-xenv='pid=$(pgrep -u steamos -x steam | head -1);
-	eval "$(tr "\0" "\n" < /proc/$pid/environ | grep -E "^(DISPLAY|XAUTHORITY)=" | sed "s/^/export /")"'
+# One guest query for the report; a failure (e.g. Steam restarting) is noted, not fatal.
+q() {
+	g "$1" || echo "(failed: $?)"
+}
 
 report() { # label
 	{
 		echo "=== $1"
 		echo "--- /sys/class/drm/card0-Virtual-1/modes (first 3)"
-		g 'head -3 /sys/class/drm/card0-Virtual-1/modes'
-		echo "--- xrandr (Steam's X display)"
-		g "$xenv; xrandr --current 2>&1 | head -4"
+		q 'head -3 /sys/class/drm/card0-Virtual-1/modes'
+		# Steam's X display is gamescope's first Xwayland (:0, no access control).
+		echo "--- xrandr (DISPLAY=:0)"
+		q 'DISPLAY=:0 xrandr --current 2>&1 | head -4'
 		echo "--- gamescope mode selection"
-		g 'echo steamos | sudo -S -p "" journalctl -b --no-pager -o short-monotonic 2>/dev/null |
+		q 'echo steamos | sudo -S -p "" journalctl -b --no-pager -o short-monotonic 2>/dev/null |
 			grep -E "drm: (selecting mode|selecting connector)|Got change event for KMS" | tail -6'
+		echo "--- Steam UI scale (last webhelper ThreadSetForceDeviceScaleFactors)"
+		q 'grep ThreadSetForceDeviceScaleFactors ~/.local/share/Steam/logs/webhelper.txt | tail -1'
 	} >> "$dir/report.txt" 2>&1
 	echo "dump $dir/$1.png" >&3
 	sleep 2
 }
 
+# Frames the display backend presented so far (dumps report the count).
+frames() {
+	echo "dump $run/probe.png" >&3
+	sleep 1
+	sed -n 's/.*frame #\([0-9]*\).*/\1/p' "$dir/harness.log" | tail -1
+}
+
 echo "waiting for the Steam UI (up to ${boot_wait}s)"
 t=0
-until g "$xenv"' && [ -n "$DISPLAY" ] && pgrep -u steamos -f steamwebhelper > /dev/null' 2> /dev/null; do
+until [ "$(frames)" -ge 300 ] 2> /dev/null &&
+	g 'pgrep -u steamos -f steamwebhelper > /dev/null' 2> /dev/null; do
 	sleep 10
-	t=$((t + 10))
+	t=$((t + 11))
 	kill -0 "$vm_pid" || { echo "VM exited"; exit 1; }
 	[ "$t" -lt "$boot_wait" ] || { echo "no Steam UI after ${boot_wait}s"; exit 1; }
 done
-sleep 60 # Steam UI load
+sleep 30 # Steam UI load
 : > "$dir/report.txt"
 report 1280x800
 

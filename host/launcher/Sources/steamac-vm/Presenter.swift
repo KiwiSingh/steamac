@@ -28,11 +28,14 @@ final class Presenter: DisplaySink {
         DispatchQueue.main.async { [weak self] in self?.onScanoutResize?(g.width, g.height) }
     }
 
+    /// A guest mode switch is disable_scanout (x2) followed by configure_scanout 10-80 ms later:
+    /// keep showing the last frame (scaled) through it, and only blank if the scanout stays off.
     func scanoutDisabled(_ s: Scanout) {
         guard s.id == 0 else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.renderer.dropTexture()
-            self?.view?.redraw()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, !self.scanout.enabled else { return }
+            self.renderer.dropTexture()
+            self.view?.redraw()
         }
     }
 

@@ -3,7 +3,7 @@ import CKrun
 import Darwin
 import Foundation
 
-let options: Options
+var options: Options
 do {
     options = try Options.parse(CommandLine.arguments)
 } catch {
@@ -19,6 +19,14 @@ if options.selftestDisplay { SelfTest.run(options) }
 if options.selftestOverlay { OverlaySelfTest.run(options) }
 // The process the user runs supervises one VM process per boot (see Supervisor).
 if !Supervisor.isChild { Supervisor.run(options) }
+
+// After a guest reboot, boot at the size the window had (the guest display followed it).
+if let f = Supervisor.windowFrame, !f.isEmpty, !options.headless {
+    let content = NSWindow.contentRect(forFrameRect: NSRectFromString(f), styleMask: [.titled, .closable, .miniaturizable, .resizable])
+    let maxSide = VM.maxDisplaySide & ~1
+    options.displayWidth = min(maxSide, max(Int(WindowController.minGuestSize.width), Int(content.width) & ~1))
+    options.displayHeight = min(maxSide, max(Int(WindowController.minGuestSize.height), Int(content.height) & ~1))
+}
 
 // MARK: VM process (one boot)
 
@@ -120,15 +128,15 @@ do {
     // SIGUSR1: dump the guest's last frame (and, with a window, what the window shows:
     // <name>-window.png = Metal drawable, <name>-overlay.png = drawable + overlay at 2x).
     var windowController: WindowController?
-    onSignal(SIGUSR1) {
+    func dumpFrames(to path: String, done: (() -> Void)? = nil) {
         do {
-            try display.dumpPNG(to: options.frameDumpPath)
-            log("frame dumped to \(options.frameDumpPath)")
+            try display.dumpPNG(to: path)
+            log("frame dumped to \(path)")
         } catch {
             log("frame dump failed: \(error)")
         }
-        guard let wc = windowController else { return }
-        let base = (options.frameDumpPath as NSString).deletingPathExtension
+        guard let wc = windowController else { done?(); return }
+        let base = (path as NSString).deletingPathExtension
         wc.captureWindow { drawable, composite in
             do {
                 if let drawable { try PNG.write(drawable, to: base + "-window.png") }
@@ -137,8 +145,10 @@ do {
             } catch {
                 log("window dump failed: \(error)")
             }
+            done?()
         }
     }
+    onSignal(SIGUSR1) { dumpFrames(to: options.frameDumpPath) }
 
     log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.displayWidth)x\(options.displayHeight)"
         + " cmdline=\"\(options.cmdline)\"" + (Supervisor.bootNumber > 1 ? " (boot #\(Supervisor.bootNumber))" : ""))
@@ -168,6 +178,7 @@ do {
     lifecycle.window = wc
     wc.onCloseRequest = { lifecycle.requestShutdown() }
     wc.attach(progress: progress)
+    wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     MainMenu.install(target: lifecycle, shutdown: #selector(Lifecycle.menuShutdown),
                      forceQuit: #selector(Lifecycle.menuForceQuit),
                      fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
@@ -177,6 +188,10 @@ do {
     wc.overlay.show()
     gamepad?.start()
     if let d = options.inputSelftestDelay { InputSelfTest.schedule(after: d, window: wc, gamepad: gamepad) }
+    if let d = options.resizeSelftestDelay {
+        ResizeSelfTest.start(after: d, window: wc, display: display, progress: progress,
+                             base: (options.frameDumpPath as NSString).deletingPathExtension, dump: dumpFrames)
+    }
     console.start()
     vm.start()
     withExtendedLifetime((presenter, gamepad, activity, progressPort)) { app.run() }

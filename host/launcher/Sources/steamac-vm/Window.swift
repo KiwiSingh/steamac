@@ -35,12 +35,21 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var wheelHiRemainder = (0.0, 0.0)   // (vertical, horizontal) in 1/120 notch units
     private var wheelLoAccum: (Int32, Int32) = (0, 0)
     private var scanoutSize: (Int, Int)
+    /// Guest display should become (width, height) px: the window's content size in points.
+    var onGuestSizeRequest: ((Int, Int) -> Void)?
+    private var requestedGuestSize: (Int, Int)
+    private var guestResizeWork: DispatchWorkItem?
+    private var inFullScreenTransition = false
+    static let minGuestSize = NSSize(width: 800, height: 500)
+    /// Settle time after the last size change before the guest is asked to switch modes.
+    static let guestResizeDebounce: TimeInterval = 0.25
 
     init(title: String, width: Int, height: Int, renderer: Renderer, inputs: VMInputs?, mouseMode: MouseMode) {
         self.inputs = inputs
         self.mouseMode = mouseMode
         self.baseTitle = title
         self.scanoutSize = (width, height)
+        self.requestedGuestSize = (width, height)
         let rect = NSRect(x: 0, y: 0, width: width, height: height)
         let screen = WindowController.targetScreen()
         window = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -55,7 +64,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
-        window.contentAspectRatio = NSSize(width: width, height: height)
+        window.contentMinSize = WindowController.minGuestSize
         fitToScreen(width: width, height: height)
         window.center()
         view.controller = self
@@ -94,19 +103,52 @@ final class WindowController: NSObject, NSWindowDelegate {
                                                                   screen: window.screen ?? NSScreen.main))
     }
 
-    /// Guest changed mode: follow it (unless fullscreen), keep aspect.
+    /// The guest switched its scanout size. The window does not follow (the guest follows the
+    /// window); frames of any size are scaled to fit, so old-size frames bridge the switch.
     func scanoutResized(width: Int, height: Int) {
         view.contentPixelSize = CGSize(width: width, height: height)
-        guard (width, height) != scanoutSize else { return }
         scanoutSize = (width, height)
-        window.contentAspectRatio = NSSize(width: width, height: height)
-        if !window.styleMask.contains(.fullScreen) {
-            let old = window.frame
-            fitToScreen(width: width, height: height)
-            window.setFrameTopLeftPoint(NSPoint(x: old.minX, y: old.maxY))
-        }
         view.redraw()
     }
+
+    /// Guest size for the current window: content size in points (one guest pixel per point),
+    /// rounded down to even, clamped to [minGuestSize, VM.maxDisplaySide].
+    func guestSizeForWindow() -> (Int, Int) {
+        let s = view.bounds.size
+        let maxSide = VM.maxDisplaySide & ~1
+        let w = min(maxSide, max(Int(WindowController.minGuestSize.width), Int(s.width) & ~1))
+        let h = min(maxSide, max(Int(WindowController.minGuestSize.height), Int(s.height) & ~1))
+        return (w, h)
+    }
+
+    /// Debounced: never during a live drag or a fullscreen transition (the last frame is scaled
+    /// meanwhile); fires once the size has been stable for `guestResizeDebounce`.
+    private func scheduleGuestResize() {
+        guestResizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.window.inLiveResize, !self.inFullScreenTransition else { return }
+            let size = self.guestSizeForWindow()
+            guard size != self.requestedGuestSize else { return }
+            self.requestedGuestSize = size
+            self.onGuestSizeRequest?(size.0, size.1)
+        }
+        guestResizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + WindowController.guestResizeDebounce, execute: work)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) { scheduleGuestResize() }
+
+    /// Programmatic / zoom-button resizes (no live resize session).
+    func windowDidResize(_ notification: Notification) {
+        if !window.inLiveResize && !inFullScreenTransition { scheduleGuestResize() }
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+    func windowWillExitFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+    func windowDidEnterFullScreen(_ notification: Notification) { inFullScreenTransition = false; scheduleGuestResize() }
+    func windowDidExitFullScreen(_ notification: Notification) { inFullScreenTransition = false; scheduleGuestResize() }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
+    func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
 
     func setStatus(_ status: String?) {
         window.title = status.map { "\(baseTitle) — \($0)" } ?? baseTitle

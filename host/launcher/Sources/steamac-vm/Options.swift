@@ -37,6 +37,7 @@ struct Options {
     var selftestDisplay = false
     var selftestOut: String?
     var inputSelftestDelay: Double?
+    var resizeSelftestDelay: Double?
 
     static let usage = """
     usage: steamac-vm --kernel PATH [--initrd PATH] [--cmdline STR] --disk PATH[:ro] ...
@@ -53,14 +54,16 @@ struct Options {
       --disk PATH[:ro]     raw virtio-blk disk; repeatable, order = vda, vdb, ...
       --cpus N             vCPUs (default 8)
       --mem MiB            guest RAM (default 16384)
-      --display WxH        virtio-gpu display size (default 1280x800)
+      --display WxH        initial virtio-gpu display size (default 1280x800); afterwards the guest
+                           display follows the window: content size in points = guest pixels (even,
+                           min 800x500, max 4094), applied when a resize / fullscreen switch ends
       --refresh HZ         EDID refresh rate (default 60)
       --dpi N              EDID pixel density instead of the default physical size (below)
-      --display-mm WxH     EDID physical size in millimetres (overrides --dpi)
+      --display-mm WxH     EDID physical size in millimetres at the initial size (overrides --dpi)
                            Default: the window's real size on the host monitor (initial content size
                            in points x the screen's mm/point), so guest UIs come out at real-world size;
-                           96 dpi-equivalent when headless or the monitor reports no size. The EDID is
-                           fixed at boot (resizing / fullscreen later only scales the picture).
+                           96 dpi-equivalent when headless or the monitor reports no size. Resizes keep
+                           this DPI (physical size = new size x the same mm per pixel).
       --headless           no window and no input devices; SIGUSR1 dumps the latest frame
       --log FILE           also append the hvc0 console to FILE
       --no-net             no virtio-net / gvproxy
@@ -80,6 +83,9 @@ struct Options {
                            close the window (guest power key) 4 s later
       --selftest-overlay   drive the FX boot/shutdown overlay with synthetic console and fx.progress
                            input and write window captures at several progress points
+      --resize-selftest S  S seconds after Steam is ready, resize the window 1600x1000 -> fullscreen ->
+                           windowed -> 1280x800, wait for the guest's new scanout each time and dump
+                           frames to <--frame-dump>-resize-N-*.png
 
     Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G grab pointer, Ctrl+Option release pointer.
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
@@ -151,6 +157,10 @@ struct Options {
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true
+            case "--resize-selftest":
+                let v = try value(a)
+                guard let d = Double(v), d >= 0 else { throw OptionError("--resize-selftest: seconds") }
+                o.resizeSelftestDelay = d
             case "--input-selftest":
                 let v = try value(a)
                 guard let d = Double(v), d >= 0 else { throw OptionError("--input-selftest: seconds") }
