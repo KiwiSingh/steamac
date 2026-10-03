@@ -1,7 +1,7 @@
 From ad2525121ac2bba46513d46c0de61dfbcec3fb47 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:30:20 +0300
-Subject: [PATCH 21/21] Geometry-shader pipelines without a fragment shader
+Subject: [PATCH 21/22] Geometry-shader pipelines without a fragment shader
 
 Metal asserts (aborting the process) when a mesh render pipeline that rasterizes has no fragment
 function: 'Mesh Render Pipeline Descriptor Validation: fragmentFunction must not be nil'. A

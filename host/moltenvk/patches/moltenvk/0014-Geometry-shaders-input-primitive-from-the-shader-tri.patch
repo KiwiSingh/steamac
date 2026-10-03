@@ -1,7 +1,7 @@
 From 1c9b959128f19dedf5505fd9576c3a087a8670c7 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:33:33 +0300
-Subject: [PATCH 14/21] Geometry shaders: input primitive from the shader,
+Subject: [PATCH 14/22] Geometry shaders: input primitive from the shader,
  triangle fans
 
 Geometry-shader pipelines took the input primitive from the pipeline's topology, which with

@@ -226,6 +226,10 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         failing vkCreatePipelineCache"
 	echo "  0021 = steamac: GS pipelines without a fragment shader get an empty fragment function (or"
 	echo "         rasterization off with static discard); Metal aborted the process otherwise"
+	echo "  0022 = steamac: Metal objects of destroyed memory/buffers/images/views released (and removed"
+	echo "         from the residency set) after the queues' in-flight command buffers complete"
+	echo "         (semaphores signal before completion; DXVK frees chunks then: InvalidResource);"
+	echo "         batched: one empty marker command buffer per queue per 2 ms of destroys"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"

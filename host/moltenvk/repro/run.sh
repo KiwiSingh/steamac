@@ -20,6 +20,8 @@
 #    buffer offsets/sizes, counter buffers), buffer contents checked.
 # 6. zero_init.c: compute shaders with zero-initialized workgroup memory (literal and
 #    specialization-constant workgroup sizes), read back after a dispatch dirtied the memory.
+# 7. free_after_signal.c: memory freed after a timeline semaphore signalled while the command buffer
+#    that signalled it still runs (DXVK; Heroes Olden Era device loss).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -92,3 +94,8 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/zero_init.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/zero_init"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/zero_init" "$gspv"
+
+glslangValidator -V --quiet -x "$here/shaders/busy.comp" -o "$work/busy.comp.inc"
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$work" -I"$inc" "$here/free_after_signal.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/free_after_signal"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/free_after_signal"

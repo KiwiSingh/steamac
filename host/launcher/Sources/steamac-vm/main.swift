@@ -179,6 +179,7 @@ do {
                               renderer: renderer, inputs: inputs, mouseMode: options.mouseMode)
     if let f = Supervisor.windowFrame, !f.isEmpty { wc.window.setFrame(NSRectFromString(f), display: false) }
     presenter.view = wc.view
+    PerfStats.shared?.attach(view: wc.view)
     wc.view.metalLayer.framebufferOnly = false   // SIGUSR1 can read back the presented drawable
     windowController = wc
     presenter.onScanoutResize = { [weak wc] w, h in wc?.scanoutResized(width: w, height: h) }

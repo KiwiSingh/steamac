@@ -155,7 +155,7 @@ final class Renderer {
               let cb = queue.makeCommandBuffer() else { return }
         if let perf {
             perf.waitedForDrawable(ms: (CACurrentMediaTime() - t0) * 1000)
-            drawable.addPresentedHandler { d in perf.shown(at: d.presentedTime, flushedAt: flushedAt) }
+            cb.addCompletedHandler { _ in perf.rendered(flushedAt: flushedAt) }
         }
         encode(into: drawable.texture, commandBuffer: cb)
         if let capture = captureNextDraw, !layer.framebufferOnly {

@@ -1,0 +1,9 @@
+#version 450
+// Long-running dispatch for free_after_signal.c.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer B { uint v[]; } b;
+void main() {
+  uint x = gl_GlobalInvocationID.x;
+  for (uint i = 0u; i < 2000000u; i++) x = x * 1664525u + 1013904223u;
+  b.v[gl_LocalInvocationIndex] = x;
+}

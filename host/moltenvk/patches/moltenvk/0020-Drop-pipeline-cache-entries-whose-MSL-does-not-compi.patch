@@ -1,7 +1,7 @@
 From b3b13ad28d698759733992050db998dac1aeb92e Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
-Subject: [PATCH 20/21] Drop pipeline cache entries whose MSL does not compile
+Subject: [PATCH 20/22] Drop pipeline cache entries whose MSL does not compile
 
 Pipeline cache initial data whose MSL did not compile (written by a build with other shader
 conversion) made vkCreatePipelineCache fail with VK_ERROR_INITIALIZATION_FAILED, which Venus
