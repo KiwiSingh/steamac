@@ -22,8 +22,9 @@
 #   include/libkrun.h, include/libkrun_display.h, include/libkrun_input.h
 # Binaries using it need an rpath to work/out/host/lib (it also loads
 # @rpath/libvirglrenderer.1.dylib and @rpath/libMoltenVK.dylib from there) and the
-# com.apple.security.hypervisor entitlement. The smoke test in test/ is built, signed and
-# run at the end.
+# com.apple.security.hypervisor entitlement. The virtio-gpu unit tests run after the build,
+# the smoke test in test/ is built, signed and run at the end. test/resize-test.sh is a
+# separate live check of krun_display_resize on a clone of the guest disk.
 # Installed files are written next to their destination and renamed over it (new inode),
 # never rewritten in place: a running VM may have the dylib mapped.
 set -eu
@@ -83,6 +84,10 @@ done
 	# shellcheck disable=SC2086
 	make $MAKE_FLAGS
 	make PREFIX="$out" libkrun.pc
+	# Unit tests of the patched virtio-gpu code (EDID/display resize, blob scanouts).
+	cd src/devices
+	RUSTFLAGS="-L native=$out/lib -C link-args=-Wl,-rpath,$out/lib" \
+		cargo test -q --features gpu --lib -- virtio::gpu
 )
 
 # --- install (temp file + rename for every output)

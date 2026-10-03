@@ -1,6 +1,7 @@
 // Configuration-path smoke test for work/out/host/lib/libkrun.1.dylib: every call the
 // launcher makes before krun_start_enter() must succeed with the GPU/input build.
 // It never starts a VM.
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,6 +143,14 @@ int main(void)
           krun_set_gpu_options2(ctx, VIRGLRENDERER_VENUS | VIRGLRENDERER_NO_VIRGL, 1ULL << 33),
           0);
     check("krun_add_display(1280x800) [display id]", krun_add_display(ctx, 1280, 800), 0);
+    check("krun_display_resize(0, 1600x1000, 423x265 mm)",
+          krun_display_resize(ctx, 0, 1600, 1000, 423, 265), 0);
+    check("krun_display_resize(display 1) [no such display]",
+          krun_display_resize(ctx, 1, 1600, 1000, 423, 265), -EINVAL);
+    check("krun_display_resize(4096x1000) [too wide]",
+          krun_display_resize(ctx, 0, 4096, 1000, 423, 265), -EINVAL);
+    check("krun_display_resize(unknown ctx)",
+          krun_display_resize(ctx + 1000, 0, 1600, 1000, 423, 265), -ENODEV);
 
     struct krun_display_backend display = {
         .features = KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER,
