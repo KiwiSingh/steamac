@@ -1,7 +1,7 @@
 From a2dacab16741fd57f917ad073cb847405b77813b Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sat, 3 Oct 2026 23:07:11 +0300
-Subject: [PATCH 12/15] Honor the explicit LINEAR row pitch of imported dma-buf
+Subject: [PATCH 12/16] Honor the explicit LINEAR row pitch of imported dma-buf
  images
 
 virglrenderer creates host VK_IMAGE_TILING_LINEAR images for dma-buf imports and keeps

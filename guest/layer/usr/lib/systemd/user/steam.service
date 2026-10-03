@@ -8,7 +8,10 @@
 #    VM may have fewer than 8 of them;
 #  - /usr/lib/steamac/steam-gfx-env points the stock 4 GiB VRAM report limit
 #    at the Venus device instead of the Adreno device ID.
-# Everything else (bootstrap, health check, RUNSTEAM.sh) is stock.
+#  - RUNSTEAM.sh is copied with cp -f instead of cp -u: the steamac version
+#    (public client branch, no -deckard/-vrgamepadui; see that file) must
+#    replace the copy from the Frame steam.tar.zst even when that is newer.
+# Everything else (bootstrap, health check) is stock.
 [Unit]
 Description=Steam Launcher
 PartOf=graphical-session.target
@@ -51,7 +54,7 @@ EnvironmentFile=/usr/share/deckard/mesavars.sh
 ExecStartPre=/bin/bash -c "mkdir -p ${XDG_RUNTIME_DIR}/steam/env"
 ExecStartPre=/bin/bash -c "cp -f /usr/share/deckard/steam_launch_wrapper_env_defaults.txt ${XDG_RUNTIME_DIR}/steam/env/gfx.txt"
 ExecStartPre=-/usr/share/deckard/steam-health-check --track-started
-ExecStartPre=/bin/bash -c "cp -u /usr/share/deckard/RUNSTEAM.sh %h/.local/share/Steam/"
+ExecStartPre=/bin/bash -c "cp -f /usr/share/deckard/RUNSTEAM.sh %h/.local/share/Steam/"
 ExecStartPre=-/usr/lib/steamac/steam-gfx-env
 ExecStart=/usr/share/deckard/select_steam.sh RUNSTEAM.sh
 ExecStopPost=-/usr/share/deckard/steam-health-check --track-stopped

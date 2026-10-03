@@ -1,7 +1,7 @@
 From b1dc323f9be66dfe794f1523894ff4582abd6fd0 Mon Sep 17 00:00:00 2001
 From: squidbus <175574877+squidbus@users.noreply.github.com>
 Date: Sat, 9 May 2026 17:14:07 -0700
-Subject: [PATCH 09/15] Prevent null dereference in MVKPixelFormats
+Subject: [PATCH 09/16] Prevent null dereference in MVKPixelFormats
 
 (cherry picked from commit 2da7c3cb62b30794d279a5c895bee17de0d98aab)
 ---

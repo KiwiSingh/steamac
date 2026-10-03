@@ -1,0 +1,946 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 00:40:00 +0300
+Subject: [PATCH 12/12] virtio/gpu: resize displays at runtime
+
+Add krun_display_resize(ctx, display, width, height, width_mm, height_mm),
+so a host window can drive the guest display size. Before krun_start_enter
+it edits the configuration; afterwards (any thread) it queues the change on
+a DisplayControl that krun_start_enter registers per context (under the
+CTX_MAP lock, so a context is always in one of the two maps) and shares
+with the virtio-gpu device.
+
+The GPU worker owns the display list: a request writes the control queue's
+eventfd, and the worker applies every queued resize before processing
+commands (a burst collapses into one notification), sets
+VIRTIO_GPU_EVENT_DISPLAY in events_read and raises a configuration change
+interrupt. Linux then fetches GET_EDID + GET_DISPLAY_INFO again and sends a
+DRM hotplug event. events_clear writes are handled; a display event raised
+after the driver's last events_read survives its clear (the newer
+interrupt re-runs the driver's handler, which must still see it).
+
+The generated EDID follows the new size (preferred detailed timing at the
+configured refresh, the given physical size). Large modes that overflow the
+16-bit pixel clock with the default blanking now get CVT reduced blanking,
+and the clock is clamped instead of wrapping; the screen size in cm no
+longer wraps either. Sizes the detailed timing cannot describe (> 4095) are
+rejected.
+
+Scanouts are untouched: the guest keeps its old framebuffer until it sets
+one of the new size, which reconfigures the display backend with the new
+display size through the existing path.
+---
+ include/libkrun.h                        |  36 ++++
+ src/devices/src/virtio/gpu/device.rs     |  24 ++-
+ src/devices/src/virtio/gpu/display.rs    | 306 ++++++++++++++++++++++++++++++-
+ src/devices/src/virtio/gpu/edid.rs       |  40 +++-
+ src/devices/src/virtio/gpu/virtio_gpu.rs |  22 ++-
+ src/devices/src/virtio/gpu/worker.rs     |  28 ++-
+ src/libkrun/src/lib.rs                   | 101 +++++++++-
+ src/vmm/src/builder.rs                   |  11 +-
+ src/vmm/src/resources.rs                 |   9 +-
+ 9 files changed, 559 insertions(+), 18 deletions(-)
+
+diff --git a/include/libkrun.h b/include/libkrun.h
+index 5c62ef0..2271e40 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -726,6 +726,42 @@ int32_t krun_display_set_dpi(uint32_t ctx_id, uint32_t display_id, uint32_t dpi)
+  */
+ int32_t krun_display_set_physical_size(uint32_t ctx_id, uint32_t display_id, uint16_t width_mm, uint16_t height_mm);
+ 
++/**
++ * Change the size of a display, also while the VM runs.
++ *
++ * Sets the display to "width" x "height" pixels and regenerates its EDID: the preferred
++ * detailed timing becomes the new size at the configured refresh rate, with "width_mm" x
++ * "height_mm" as the physical size (replacing a size set with krun_display_set_dpi() or
++ * krun_display_set_physical_size()). To keep the guest's UI scale while resizing, scale the
++ * physical size with the pixel size.
++ *
++ * Before krun_start_enter() this changes the configuration. Afterwards it may be called from
++ * any thread: the request is queued for the virtio-gpu device, which applies it and notifies
++ * the guest driver (VIRTIO_GPU_EVENT_DISPLAY + configuration change interrupt; Linux then
++ * re-reads the display info and EDID and sends a DRM hotplug event). Requests queued before
++ * the device handles them are applied in order with a single notification, so the guest only
++ * sees the last size of a burst. Requesting the current size and physical size again is a
++ * no-op for the guest. The guest switches its mode on its own; until then it keeps scanning
++ * out at the old size.
++ *
++ * Arguments:
++ *  "ctx_id"      - the configuration context ID.
++ *  "display_id"  - the ID of the display (range: 0 to KRUN_MAX_DISPLAYS - 1)
++ *  "width"       - new width in pixels, 1..4095 (EDID detailed timing limit)
++ *  "height"      - new height in pixels, 1..4095
++ *  "width_mm"    - physical width in millimeters, 0..4095 (0: unknown)
++ *  "height_mm"   - physical height in millimeters, 0..4095 (0: unknown)
++ *
++ * Returns:
++ *  Zero if the change was applied (before start) or queued (running VM), or a negative error number:
++ *  -ENODEV  no such context, or the context has no virtio-gpu (krun_set_gpu_options*())
++ *  -EINVAL  no such display, a size out of range, or the display has a fixed EDID
++ *           (krun_display_set_edid())
++ *  -ENOTSUP libkrun was built without GPU support
++ */
++int32_t krun_display_resize(uint32_t ctx_id, uint32_t display_id, uint32_t width, uint32_t height,
++                            uint16_t width_mm, uint16_t height_mm);
++
+ /**
+  * Configure refresh rate for a display
+  *
+diff --git a/src/devices/src/virtio/gpu/device.rs b/src/devices/src/virtio/gpu/device.rs
+index 3437c1f..cc0f8d4 100644
+--- a/src/devices/src/virtio/gpu/device.rs
++++ b/src/devices/src/virtio/gpu/device.rs
+@@ -1,5 +1,6 @@
+ use std::io::Write;
+ use std::os::fd::RawFd;
++use std::sync::Arc;
+ 
+ #[cfg(target_os = "macos")]
+ use crossbeam_channel::Sender;
+@@ -13,7 +14,7 @@ use super::defs;
+ use super::defs::uapi;
+ use super::defs::uapi::virtio_gpu_config;
+ use super::worker::{spawn_cursor_drain, Worker};
+-use crate::virtio::display::DisplayInfo;
++use crate::virtio::display::{DisplayControl, DisplayInfo};
+ use crate::virtio::InterruptTransport;
+ use krun_display::DisplayBackend;
+ #[cfg(target_os = "macos")]
+@@ -44,6 +45,7 @@ pub struct Gpu {
+     export_table: Option<ExportTable>,
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
++    display_control: Arc<DisplayControl>,
+     blob_alignment: u32,
+ }
+ 
+@@ -53,6 +55,7 @@ impl Gpu {
+         render_server_fd: Option<RawFd>,
+         displays: Box<[DisplayInfo]>,
+         display_backend: DisplayBackend<'static>,
++        display_control: Arc<DisplayControl>,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+     ) -> super::Result<Gpu> {
+         Ok(Gpu {
+@@ -67,6 +70,7 @@ impl Gpu {
+             export_table: None,
+             displays,
+             display_backend,
++            display_control,
+             // Blobs are mapped into the guest in host pages, which can be
+             // larger than the guest's (16 KiB on Apple silicon).
+             blob_alignment: unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32,
+@@ -169,7 +173,12 @@ impl VirtioDevice for Gpu {
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+         let config = virtio_gpu_config {
+-            events_read: 0,
++            // Only an actual read of events_read counts as the driver seeing them.
++            events_read: if offset < 4 {
++                self.display_control.read_events()
++            } else {
++                0
++            },
+             events_clear: 0,
+             num_scanouts: self.displays.len() as u32,
+             num_capsets: 5,
+@@ -190,6 +199,11 @@ impl VirtioDevice for Gpu {
+     }
+ 
+     fn write_config(&mut self, offset: u64, data: &[u8]) {
++        // events_clear is the only writable field.
++        if let (4, Ok(clear)) = (offset, <[u8; 4]>::try_from(data)) {
++            self.display_control.clear_events(u32::from_le_bytes(clear));
++            return;
++        }
+         warn!(
+             "gpu: guest driver attempted to write device config (offset={:x}, len={:x})",
+             offset,
+@@ -217,6 +231,10 @@ impl VirtioDevice for Gpu {
+         };
+ 
+         spawn_cursor_drain(cursor_q, mem.clone(), interrupt.clone());
++        match control_q.event.try_clone() {
++            Ok(waker) => self.display_control.set_waker(waker),
++            Err(e) => error!("virtio_gpu: no display resize wakeups: {e:?}"),
++        }
+         let worker = Worker::new(
+             control_q,
+             mem.clone(),
+@@ -229,6 +247,7 @@ impl VirtioDevice for Gpu {
+             self.export_table.take(),
+             self.displays.clone(),
+             self.display_backend,
++            self.display_control.clone(),
+         );
+         worker.run();
+ 
+@@ -260,6 +279,7 @@ mod tests {
+             None,
+             Box::new([]),
+             NoopDisplayBackend::into_display_backend(None),
++            Arc::new(DisplayControl::new(&[])),
+             #[cfg(target_os = "macos")]
+             crossbeam_channel::unbounded().0,
+         )
+diff --git a/src/devices/src/virtio/gpu/display.rs b/src/devices/src/virtio/gpu/display.rs
+index 5bc6b17..da58617 100644
+--- a/src/devices/src/virtio/gpu/display.rs
++++ b/src/devices/src/virtio/gpu/display.rs
+@@ -1,7 +1,11 @@
++use std::sync::{Mutex, MutexGuard};
++
+ use super::edid::EdidInfo;
++use crossbeam_channel::{unbounded, Receiver, Sender};
+ use krun_display::{
+     DisplayBackendBasicFramebuffer, DisplayBackendError, DisplayBackendNew, Rect, ResourceFormat,
+ };
++use utils::eventfd::EventFd;
+ use virtio_bindings::virtio_gpu::VIRTIO_GPU_MAX_SCANOUTS;
+ 
+ #[derive(Clone, Debug)]
+@@ -44,7 +48,7 @@ impl Default for EdidParams {
+     }
+ }
+ 
+-#[derive(Debug, Copy, Clone)]
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+ pub enum PhysicalSize {
+     Dpi(u32),
+     DimensionsMillimeters(u16, u16),
+@@ -58,6 +62,165 @@ impl DisplayInfo {
+             edid: DisplayInfoEdid::Generated(EdidParams::default()),
+         }
+     }
++
++    /// Applies a runtime resize: the new size, and the new physical size in the
++    /// generated EDID. Returns whether anything the guest can see changed.
++    pub fn resize(&mut self, resize: &DisplayResize) -> Result<bool, DisplayResizeError> {
++        resize.check()?;
++        let DisplayInfoEdid::Generated(params) = &mut self.edid else {
++            return Err(DisplayResizeError::FixedEdid);
++        };
++        let physical_size = PhysicalSize::DimensionsMillimeters(resize.width_mm, resize.height_mm);
++        let changed = self.width != resize.width
++            || self.height != resize.height
++            || params.physical_size != physical_size;
++        self.width = resize.width;
++        self.height = resize.height;
++        params.physical_size = physical_size;
++        Ok(changed)
++    }
++}
++
++/// The largest width, height (pixels) and physical size (mm) a generated EDID
++/// can describe: its detailed timing descriptor has 12-bit fields.
++pub const MAX_RESIZE_DIMENSION: u32 = 4095;
++
++/// A display size change requested at runtime (krun_display_resize).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct DisplayResize {
++    pub display_id: u32,
++    pub width: u32,
++    pub height: u32,
++    pub width_mm: u16,
++    pub height_mm: u16,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DisplayResizeError {
++    /// Zero size, or larger than MAX_RESIZE_DIMENSION.
++    InvalidSize,
++    /// No display with this id.
++    InvalidDisplay,
++    /// The display has a caller-provided EDID (krun_display_set_edid), which
++    /// cannot follow a new size.
++    FixedEdid,
++}
++
++impl DisplayResize {
++    fn check(&self) -> Result<(), DisplayResizeError> {
++        let fits = |v: u32| (1..=MAX_RESIZE_DIMENSION).contains(&v);
++        if !fits(self.width)
++            || !fits(self.height)
++            || u32::from(self.width_mm) > MAX_RESIZE_DIMENSION
++            || u32::from(self.height_mm) > MAX_RESIZE_DIMENSION
++        {
++            return Err(DisplayResizeError::InvalidSize);
++        }
++        Ok(())
++    }
++}
++
++/// VIRTIO_GPU_EVENT_DISPLAY: the display configuration changed, the driver
++/// should fetch it again (virtio spec, GPU device configuration layout).
++pub const VIRTIO_GPU_EVENT_DISPLAY: u32 = 1 << 0;
++
++#[derive(Default)]
++struct DisplayEvents {
++    /// `events_read` of the device configuration.
++    pending: u32,
++    /// Number of display events raised so far.
++    raised: u64,
++    /// `raised` when the driver last read `events_read`.
++    seen: u64,
++}
++
++/// Runtime display changes of a running VM. Requests come from any host thread
++/// and are queued; the GPU worker applies them between control commands, so
++/// the display list is only ever touched by the worker, then raises
++/// VIRTIO_GPU_EVENT_DISPLAY with a configuration change interrupt.
++pub struct DisplayControl {
++    /// Per display: whether its EDID is generated (and so can follow a resize).
++    resizable: Box<[bool]>,
++    sender: Sender<DisplayResize>,
++    receiver: Receiver<DisplayResize>,
++    /// The control queue's eventfd once the device is active; written to wake
++    /// the worker, which waits on it.
++    waker: Mutex<Option<EventFd>>,
++    events: Mutex<DisplayEvents>,
++}
++
++impl DisplayControl {
++    pub fn new(displays: &[DisplayInfo]) -> Self {
++        let (sender, receiver) = unbounded();
++        Self {
++            resizable: displays
++                .iter()
++                .map(|d| matches!(d.edid, DisplayInfoEdid::Generated(_)))
++                .collect(),
++            sender,
++            receiver,
++            waker: Mutex::new(None),
++            events: Mutex::default(),
++        }
++    }
++
++    /// Queues a resize for the GPU worker. Before the device is activated the
++    /// request waits in the queue and is applied before the first command.
++    pub fn request_resize(&self, resize: DisplayResize) -> Result<(), DisplayResizeError> {
++        match self.resizable.get(resize.display_id as usize) {
++            None => return Err(DisplayResizeError::InvalidDisplay),
++            Some(false) => return Err(DisplayResizeError::FixedEdid),
++            Some(true) => resize.check()?,
++        }
++        // Cannot fail: self holds a receiver.
++        let _ = self.sender.send(resize);
++        if let Some(waker) = self.waker.lock().unwrap().as_ref() {
++            if let Err(e) = waker.write(1) {
++                error!("Failed to wake the gpu worker for a display resize: {e:?}");
++            }
++        }
++        Ok(())
++    }
++
++    pub(crate) fn set_waker(&self, waker: EventFd) {
++        *self.waker.lock().unwrap() = Some(waker);
++    }
++
++    pub(crate) fn requests(&self) -> Receiver<DisplayResize> {
++        self.receiver.clone()
++    }
++
++    fn events(&self) -> MutexGuard<'_, DisplayEvents> {
++        self.events.lock().unwrap()
++    }
++
++    /// Marks a display change for the driver; the caller then raises the
++    /// configuration change interrupt.
++    pub(crate) fn raise_display_event(&self) {
++        let mut events = self.events();
++        events.pending |= VIRTIO_GPU_EVENT_DISPLAY;
++        events.raised += 1;
++    }
++
++    /// `events_read`, as read by the driver.
++    pub(crate) fn read_events(&self) -> u32 {
++        let mut events = self.events();
++        events.seen = events.raised;
++        events.pending
++    }
++
++    /// A driver write to `events_clear`. A display event raised after the
++    /// driver's last `events_read` stays pending: the driver acknowledges what
++    /// it read, and the interrupt of the newer event makes it read again.
++    pub(crate) fn clear_events(&self, clear: u32) {
++        let mut events = self.events();
++        let keep = if events.raised != events.seen {
++            VIRTIO_GPU_EVENT_DISPLAY
++        } else {
++            0
++        };
++        events.pending &= !(clear & !keep);
++    }
+ }
+ 
+ pub const MAX_DISPLAYS: usize = VIRTIO_GPU_MAX_SCANOUTS as usize;
+@@ -100,3 +263,144 @@ impl DisplayBackendBasicFramebuffer for NoopDisplayBackend {
+         Err(DisplayBackendError::InvalidScanoutId)
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// The preferred mode in an EDID: (width, height, refresh Hz, width mm, height mm).
++    fn preferred_mode(edid: &[u8]) -> (u32, u32, f64, u16, u16) {
++        assert_eq!(edid.len(), 128);
++        assert_eq!(edid.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)), 0);
++        let dtd = &edid[54..72];
++        let clock_hz = u16::from_le_bytes([dtd[0], dtd[1]]) as f64 * 10_000.0;
++        let hi = |lsb: u8, msb: u8| u32::from(lsb) | (u32::from(msb) << 8);
++        let width = hi(dtd[2], dtd[4] >> 4);
++        let hblank = hi(dtd[3], dtd[4] & 0xf);
++        let height = hi(dtd[5], dtd[7] >> 4);
++        let vblank = hi(dtd[6], dtd[7] & 0xf);
++        let width_mm = hi(dtd[12], dtd[14] >> 4) as u16;
++        let height_mm = hi(dtd[13], dtd[14] & 0xf) as u16;
++        let refresh = clock_hz / f64::from((width + hblank) * (height + vblank));
++        (width, height, refresh, width_mm, height_mm)
++    }
++
++    fn resize(width: u32, height: u32, width_mm: u16, height_mm: u16) -> DisplayResize {
++        DisplayResize {
++            display_id: 0,
++            width,
++            height,
++            width_mm,
++            height_mm,
++        }
++    }
++
++    #[test]
++    fn resize_regenerates_edid() {
++        let mut display = DisplayInfo::new(1280, 800);
++        assert_eq!(display.resize(&resize(1280, 800, 339, 212)), Ok(true));
++        assert_eq!(display.resize(&resize(1280, 800, 339, 212)), Ok(false));
++        let (w, h, hz, wmm, hmm) = preferred_mode(&display.edid_bytes());
++        assert_eq!((w, h, wmm, hmm), (1280, 800, 339, 212));
++        assert!((hz - 60.0).abs() < 0.5, "{hz} Hz");
++
++        assert_eq!(display.resize(&resize(1600, 1000, 423, 265)), Ok(true));
++        assert_eq!((display.width, display.height), (1600, 1000));
++        let edid = display.edid_bytes();
++        let (w, h, hz, wmm, hmm) = preferred_mode(&edid);
++        assert_eq!((w, h, wmm, hmm), (1600, 1000, 423, 265));
++        assert!((hz - 60.0).abs() < 0.5, "{hz} Hz");
++        // Screen size in cm.
++        assert_eq!((edid[21], edid[22]), (42, 26));
++    }
++
++    #[test]
++    fn large_modes_keep_the_refresh_rate() {
++        let mut display = DisplayInfo::new(1280, 800);
++        // Does not fit the pixel clock with the default blanking.
++        display.resize(&resize(4095, 2304, 1083, 610)).unwrap();
++        let (w, h, hz, ..) = preferred_mode(&display.edid_bytes());
++        assert_eq!((w, h), (4095, 2304));
++        assert!((hz - 60.0).abs() < 0.5, "{hz} Hz");
++        // Does not fit even with reduced blanking: clamped clock, lower refresh.
++        display.resize(&resize(4095, 4095, 4095, 4095)).unwrap();
++        let (w, h, hz, wmm, hmm) = preferred_mode(&display.edid_bytes());
++        assert_eq!((w, h, wmm, hmm), (4095, 4095, 4095, 4095));
++        assert!(hz > 30.0 && hz < 60.0, "{hz} Hz");
++    }
++
++    #[test]
++    fn resize_rejects_what_the_edid_cannot_describe() {
++        let mut display = DisplayInfo::new(1280, 800);
++        for bad in [
++            resize(0, 800, 339, 212),
++            resize(1280, 0, 339, 212),
++            resize(4096, 800, 339, 212),
++            resize(1280, 800, 4096, 212),
++        ] {
++            assert_eq!(display.resize(&bad), Err(DisplayResizeError::InvalidSize));
++        }
++        assert_eq!((display.width, display.height), (1280, 800));
++
++        display.edid = DisplayInfoEdid::Provided(Box::new([0; 128]));
++        assert_eq!(
++            display.resize(&resize(1600, 1000, 423, 265)),
++            Err(DisplayResizeError::FixedEdid)
++        );
++    }
++
++    #[test]
++    fn control_validates_and_queues() {
++        let mut fixed = DisplayInfo::new(800, 600);
++        fixed.edid = DisplayInfoEdid::Provided(Box::new([0; 128]));
++        let control = DisplayControl::new(&[DisplayInfo::new(1280, 800), fixed]);
++        let requests = control.requests();
++
++        let ok = resize(1600, 1000, 423, 265);
++        assert_eq!(control.request_resize(ok), Ok(()));
++        let fixed = DisplayResize {
++            display_id: 1,
++            ..ok
++        };
++        assert_eq!(
++            control.request_resize(fixed),
++            Err(DisplayResizeError::FixedEdid)
++        );
++        let missing = DisplayResize {
++            display_id: 2,
++            ..ok
++        };
++        assert_eq!(
++            control.request_resize(missing),
++            Err(DisplayResizeError::InvalidDisplay)
++        );
++        let zero = resize(0, 1000, 423, 265);
++        assert_eq!(
++            control.request_resize(zero),
++            Err(DisplayResizeError::InvalidSize)
++        );
++
++        assert_eq!(requests.try_iter().collect::<Vec<_>>(), [ok]);
++    }
++
++    #[test]
++    fn display_event_survives_a_stale_clear() {
++        let control = DisplayControl::new(&[DisplayInfo::new(1280, 800)]);
++        assert_eq!(control.read_events(), 0);
++
++        control.raise_display_event();
++        assert_eq!(control.read_events(), VIRTIO_GPU_EVENT_DISPLAY);
++        control.clear_events(VIRTIO_GPU_EVENT_DISPLAY);
++        assert_eq!(control.read_events(), 0);
++
++        // Raised again while the driver handles the previous event: its clear
++        // must not drop the new one.
++        control.raise_display_event();
++        assert_eq!(control.read_events(), VIRTIO_GPU_EVENT_DISPLAY);
++        control.raise_display_event();
++        control.clear_events(VIRTIO_GPU_EVENT_DISPLAY);
++        assert_eq!(control.read_events(), VIRTIO_GPU_EVENT_DISPLAY);
++        control.clear_events(VIRTIO_GPU_EVENT_DISPLAY);
++        assert_eq!(control.read_events(), 0);
++    }
++}
+diff --git a/src/devices/src/virtio/gpu/edid.rs b/src/devices/src/virtio/gpu/edid.rs
+index 218636b..59e5125 100644
+--- a/src/devices/src/virtio/gpu/edid.rs
++++ b/src/devices/src/virtio/gpu/edid.rs
+@@ -25,6 +25,12 @@ const DEFAULT_HORIZONTAL_FRONT_PORCH: u16 = 64;
+ const DEFAULT_VERTICAL_FRONT_PORCH: u16 = 1;
+ const DEFAULT_HORIZONTAL_SYNC_PULSE: u16 = 192;
+ const DEFAULT_VERTICAL_SYNC_PULSE: u16 = 3;
++// CVT reduced blanking, for modes whose pixel clock does not fit otherwise.
++const REDUCED_HORIZONTAL_BLANKING: u16 = 160;
++const REDUCED_HORIZONTAL_FRONT_PORCH: u16 = 48;
++const REDUCED_HORIZONTAL_SYNC_PULSE: u16 = 32;
++// Largest pixel clock (10 kHz units) the detailed timing holds, rounded down to 100 kHz.
++const MAX_PIXEL_CLOCK: u64 = 65530;
+ const MILLIMETERS_PER_INCH: f32 = 25.4;
+ 
+ #[derive(Copy, Clone)]
+@@ -55,7 +61,7 @@ impl EdidInfo {
+             PhysicalSize::DimensionsMillimeters(width, height) => (width, height),
+         };
+ 
+-        Self {
++        let mut info = Self {
+             width,
+             height,
+             refresh_rate: params.refresh_rate,
+@@ -67,15 +73,37 @@ impl EdidInfo {
+             vertical_sync: DEFAULT_VERTICAL_SYNC_PULSE,
+             width_millimeters,
+             height_millimeters,
++        };
++        // The pixel clock field is 16 bits of 10 kHz. Modes that do not fit with
++        // the default blanking get CVT reduced blanking (160 pixels).
++        if info.wanted_pixel_clock() > MAX_PIXEL_CLOCK {
++            info.horizontal_blanking = REDUCED_HORIZONTAL_BLANKING;
++            info.horizontal_front = REDUCED_HORIZONTAL_FRONT_PORCH;
++            info.horizontal_sync = REDUCED_HORIZONTAL_SYNC_PULSE;
+         }
++        info
++    }
++
++    /// Pixel clock in 10 kHz units for the refresh rate, rounded to 100 kHz.
++    fn wanted_pixel_clock(&self) -> u64 {
++        let htotal = u64::from(self.width) + u64::from(self.horizontal_blanking);
++        let vtotal = u64::from(self.height) + u64::from(self.vertical_blanking);
++        let clock = u64::from(self.refresh_rate) * htotal * vtotal / 10000;
++        (clock + 5) / 10 * 10
++    }
++
++    /// The pixel clock stored in the EDID: clamped to the field, which lowers
++    /// the refresh rate of modes too large for it even with reduced blanking.
++    fn pixel_clock(&self) -> u16 {
++        self.wanted_pixel_clock().min(MAX_PIXEL_CLOCK) as u16
+     }
+ 
+     pub fn width_centimeters(&self) -> u8 {
+-        (self.width_millimeters / 10) as u8
++        (self.width_millimeters / 10).min(u8::MAX.into()) as u8
+     }
+ 
+     pub fn height_centimeters(&self) -> u8 {
+-        (self.height_millimeters / 10) as u8
++        (self.height_millimeters / 10).min(u8::MAX.into()) as u8
+     }
+ 
+     pub fn bytes(self) -> Box<[u8]> {
+@@ -148,11 +176,7 @@ fn populate_detailed_timing(edid_block: &mut [u8], info: &EdidInfo) {
+     //    if flags & DBLSCAN: refresh /= 2
+     //    if vscan > 1: refresh /= vscan
+     //
+-    let htotal = info.width + (info.horizontal_blanking as u32);
+-    let vtotal = info.height + (info.vertical_blanking as u32);
+-    let mut clock: u16 = ((info.refresh_rate * htotal * vtotal) / 10000) as u16;
+-    // Round to nearest 10khz.
+-    clock = ((clock + 5) / 10) * 10;
++    let clock = info.pixel_clock();
+     edid_block[0..2].copy_from_slice(&clock.to_le_bytes());
+ 
+     let width_lsb: u8 = (info.width & 0xFF) as u8;
+diff --git a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+index 48e0b7a..ef9e9af 100644
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -42,7 +42,7 @@ use utils::worker_message::WorkerMessage;
+ use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+ 
+ use super::{GpuError, Result};
+-use crate::virtio::display::DisplayInfo;
++use crate::virtio::display::{DisplayInfo, DisplayResize, DisplayResizeError};
+ use crate::virtio::fs::ExportTable;
+ use crate::virtio::gpu::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+ use crate::virtio::{InterruptTransport, VirtioShmRegion};
+@@ -853,6 +853,26 @@ impl VirtioGpu {
+         Ok(OkEdid(display.edid_bytes()))
+     }
+ 
++    /// Changes a display's size and EDID. The scanout keeps its resource until
++    /// the driver sets one of the new size, which reconfigures the backend.
++    pub fn resize_display(
++        &mut self,
++        resize: &DisplayResize,
++    ) -> std::result::Result<bool, DisplayResizeError> {
++        let display = self
++            .displays
++            .get_mut(resize.display_id as usize)
++            .ok_or(DisplayResizeError::InvalidDisplay)?;
++        let changed = display.resize(resize)?;
++        if changed {
++            info!(
++                "display {}: {}x{} px, {}x{} mm",
++                resize.display_id, resize.width, resize.height, resize.width_mm, resize.height_mm
++            );
++        }
++        Ok(changed)
++    }
++
+     /// Copies data to host resource from the attached iovecs. Can also be used to flush caches.
+     pub fn transfer_write(
+         &mut self,
+diff --git a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+index ae6fe80..88c0502 100644
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -22,7 +22,7 @@ use super::protocol::{
+     virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry, GpuCommand, GpuResponse, VirtioGpuResult,
+ };
+ use super::virtio_gpu::VirtioGpu;
+-use crate::virtio::display::DisplayInfo;
++use crate::virtio::display::{DisplayControl, DisplayInfo};
+ use crate::virtio::fs::ExportTable;
+ use crate::virtio::gpu::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
+ use crate::virtio::gpu::virtio_gpu::VirtioGpuRing;
+@@ -43,6 +43,7 @@ pub struct Worker {
+     export_table: Option<ExportTable>,
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
++    display_control: Arc<DisplayControl>,
+ }
+ 
+ /// Clones a queue eventfd so we have our own file description, set to blocking mode.
+@@ -102,6 +103,7 @@ impl Worker {
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+         display_backend: DisplayBackend<'static>,
++        display_control: Arc<DisplayControl>,
+     ) -> Self {
+         Self {
+             control_evt: blocking_eventfd(&control_q.event),
+@@ -116,6 +118,7 @@ impl Worker {
+             export_table,
+             displays,
+             display_backend,
++            display_control,
+         }
+     }
+ 
+@@ -140,11 +143,21 @@ impl Worker {
+             self.display_backend,
+         );
+ 
++        // Resizes requested before the driver started: nothing to signal, it
++        // has not asked for the display configuration yet.
++        self.apply_display_resizes(&mut virtio_gpu);
++
+         loop {
+             if let Err(e) = self.control_evt.read() {
+                 error!("Failed to read control_evt: {e:?}");
+                 continue;
+             }
++            if self.apply_display_resizes(&mut virtio_gpu) {
++                self.display_control.raise_display_event();
++                if let Err(e) = self.interrupt.try_signal_config_change() {
++                    error!("Error signaling display change: {e:?}");
++                }
++            }
+             if self.process_queue(&mut virtio_gpu, &self.control_queue.clone()) {
+                 if let Err(e) = self.interrupt.try_signal_used_queue() {
+                     error!("Error signaling queue: {e:?}");
+@@ -153,6 +166,19 @@ impl Worker {
+         }
+     }
+ 
++    /// Applies every queued display resize (a live window resize queues many);
++    /// returns whether the guest-visible configuration changed.
++    fn apply_display_resizes(&self, virtio_gpu: &mut VirtioGpu) -> bool {
++        let mut changed = false;
++        for resize in self.display_control.requests().try_iter() {
++            match virtio_gpu.resize_display(&resize) {
++                Ok(c) => changed |= c,
++                Err(e) => error!("display resize {resize:?} failed: {e:?}"),
++            }
++        }
++        changed
++    }
++
+     fn process_gpu_command(
+         &mut self,
+         virtio_gpu: &mut VirtioGpu,
+diff --git a/src/libkrun/src/lib.rs b/src/libkrun/src/lib.rs
+index a797fd1..1a485b4 100644
+--- a/src/libkrun/src/lib.rs
++++ b/src/libkrun/src/lib.rs
+@@ -65,9 +65,13 @@ use vmm::vmm_config::vsock::VsockDeviceConfig;
+ use aws_nitro::enclave::NitroEnclave;
+ 
+ #[cfg(feature = "gpu")]
+-use devices::virtio::display::{DisplayInfoEdid, PhysicalSize, MAX_DISPLAYS};
++use devices::virtio::display::{
++    DisplayControl, DisplayInfoEdid, DisplayResize, DisplayResizeError, PhysicalSize, MAX_DISPLAYS,
++};
+ #[cfg(feature = "input")]
+ use krun_input::{InputConfigBackend, InputEventProviderBackend};
++#[cfg(feature = "gpu")]
++use std::sync::Arc;
+ 
+ // Value returned on success. We use libc's errors otherwise.
+ const KRUN_SUCCESS: i32 = 0;
+@@ -1868,6 +1872,93 @@ pub extern "C" fn krun_display_set_dpi(_ctx_id: u32, _display_id: u32, _dpi: u32
+     -libc::ENOTSUP
+ }
+ 
++/// Display controls of started VMs (krun_start_enter consumed their ContextConfig).
++#[cfg(feature = "gpu")]
++static DISPLAY_CONTROLS: Lazy<Mutex<HashMap<u32, Arc<DisplayControl>>>> =
++    Lazy::new(|| Mutex::new(HashMap::new()));
++
++/// A started context's entry in DISPLAY_CONTROLS, removed when krun_start_enter returns.
++#[cfg(feature = "gpu")]
++struct DisplayControlRegistration(u32);
++
++#[cfg(feature = "gpu")]
++impl DisplayControlRegistration {
++    fn new(ctx_id: u32, ctx_cfg: &mut ContextConfig) -> Self {
++        if ctx_cfg.gpu_virgl_flags.is_some() {
++            let control = Arc::new(DisplayControl::new(&ctx_cfg.vmr.displays));
++            DISPLAY_CONTROLS
++                .lock()
++                .unwrap()
++                .insert(ctx_id, control.clone());
++            ctx_cfg.vmr.display_control = Some(control);
++        }
++        Self(ctx_id)
++    }
++}
++
++#[cfg(feature = "gpu")]
++impl Drop for DisplayControlRegistration {
++    fn drop(&mut self) {
++        DISPLAY_CONTROLS.lock().unwrap().remove(&self.0);
++    }
++}
++
++#[cfg(feature = "gpu")]
++#[no_mangle]
++pub extern "C" fn krun_display_resize(
++    ctx_id: u32,
++    display_id: u32,
++    width: u32,
++    height: u32,
++    width_mm: u16,
++    height_mm: u16,
++) -> i32 {
++    let resize = DisplayResize {
++        display_id,
++        width,
++        height,
++        width_mm,
++        height_mm,
++    };
++    // Lock order: CTX_MAP, then DISPLAY_CONTROLS (as in krun_start_enter).
++    let mut ctx_map = CTX_MAP.lock().unwrap();
++    let result = if let Some(cfg) = ctx_map.get_mut(&ctx_id) {
++        // Not started yet: change the configuration.
++        if cfg.gpu_virgl_flags.is_none() {
++            return -libc::ENODEV;
++        }
++        match cfg.vmr.displays.get_mut(display_id as usize) {
++            Some(display) => display.resize(&resize).map(|_| ()),
++            None => Err(DisplayResizeError::InvalidDisplay),
++        }
++    } else {
++        match DISPLAY_CONTROLS.lock().unwrap().get(&ctx_id) {
++            Some(control) => control.request_resize(resize),
++            None => return -libc::ENODEV,
++        }
++    };
++    match result {
++        Ok(()) => KRUN_SUCCESS,
++        Err(e) => {
++            debug!("krun_display_resize({ctx_id}, {resize:?}): {e:?}");
++            -libc::EINVAL
++        }
++    }
++}
++
++#[cfg(not(feature = "gpu"))]
++#[no_mangle]
++pub extern "C" fn krun_display_resize(
++    _ctx_id: u32,
++    _display_id: u32,
++    _width: u32,
++    _height: u32,
++    _width_mm: u16,
++    _height_mm: u16,
++) -> i32 {
++    -libc::ENOTSUP
++}
++
+ #[allow(clippy::missing_safety_doc)]
+ #[no_mangle]
+ pub unsafe extern "C" fn krun_set_snd_device(ctx_id: u32, enable: bool) -> i32 {
+@@ -2892,10 +2983,16 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
+         }
+     };
+ 
+-    let mut ctx_cfg = match CTX_MAP.lock().unwrap().remove(&ctx_id) {
++    let mut ctx_map = CTX_MAP.lock().unwrap();
++    let mut ctx_cfg = match ctx_map.remove(&ctx_id) {
+         Some(ctx_cfg) => ctx_cfg,
+         None => return -libc::ENOENT,
+     };
++    // Registered while CTX_MAP is still locked, so krun_display_resize always
++    // finds the context in one of the two maps.
++    #[cfg(feature = "gpu")]
++    let _display_control = DisplayControlRegistration::new(ctx_id, &mut ctx_cfg);
++    drop(ctx_map);
+ 
+     if ctx_cfg.vmr.external_kernel.is_none()
+         && ctx_cfg.vmr.kernel_bundle.is_none()
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index 72831f1..e43a98b 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -70,9 +70,9 @@ use crate::vstate::{Error as VstateError, Vcpu, VcpuConfig, Vm};
+ use arch::{ArchMemoryInfo, InitrdConfig};
+ use device_manager::shm::ShmManager;
+ #[cfg(feature = "gpu")]
+-use devices::virtio::display::DisplayInfo;
+-#[cfg(feature = "gpu")]
+ use devices::virtio::display::NoopDisplayBackend;
++#[cfg(feature = "gpu")]
++use devices::virtio::display::{DisplayControl, DisplayInfo};
+ #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+ use devices::virtio::{fs::ExportTable, VirtioShmRegion};
+ use flate2::read::GzDecoder;
+@@ -1018,6 +1018,10 @@ pub fn build_microvm(
+         let display_backend = vm_resources
+             .display_backend
+             .unwrap_or_else(|| NoopDisplayBackend::into_display_backend(None));
++        let display_control = vm_resources
++            .display_control
++            .clone()
++            .unwrap_or_else(|| Arc::new(DisplayControl::new(&vm_resources.displays)));
+ 
+         attach_gpu_device(
+             &mut vmm,
+@@ -1029,6 +1033,7 @@ pub fn build_microvm(
+             vm_resources.gpu_render_server_fd,
+             Box::from(&vm_resources.displays[..]),
+             display_backend,
++            display_control,
+             #[cfg(target_os = "macos")]
+             _sender.clone(),
+         )?;
+@@ -2280,6 +2285,7 @@ fn attach_gpu_device(
+     render_server_fd: Option<RawFd>,
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
++    display_control: Arc<DisplayControl>,
+     #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+ ) -> std::result::Result<(), StartMicrovmError> {
+     use self::StartMicrovmError::*;
+@@ -2290,6 +2296,7 @@ fn attach_gpu_device(
+             render_server_fd,
+             displays,
+             display_backend,
++            display_control,
+             #[cfg(target_os = "macos")]
+             map_sender,
+         )
+diff --git a/src/vmm/src/resources.rs b/src/vmm/src/resources.rs
+index aa32404..5d22aca 100644
+--- a/src/vmm/src/resources.rs
++++ b/src/vmm/src/resources.rs
+@@ -9,6 +9,8 @@ use std::fs::File;
+ use std::io::BufReader;
+ use std::os::fd::RawFd;
+ use std::path::PathBuf;
++#[cfg(feature = "gpu")]
++use std::sync::Arc;
+ 
+ #[cfg(feature = "tee")]
+ use serde::{Deserialize, Serialize};
+@@ -29,7 +31,7 @@ use crate::vmm_config::net::{NetBuilder, NetworkInterfaceConfig, NetworkInterfac
+ use crate::vmm_config::vsock::*;
+ use crate::vstate::VcpuConfig;
+ #[cfg(feature = "gpu")]
+-use devices::virtio::display::DisplayInfo;
++use devices::virtio::display::{DisplayControl, DisplayInfo};
+ #[cfg(feature = "tee")]
+ use kbs_types::Tee;
+ #[cfg(feature = "gpu")]
+@@ -166,6 +168,9 @@ pub struct VmResources {
+     pub display_backend: Option<DisplayBackend<'static>>,
+     #[cfg(feature = "gpu")]
+     pub displays: Vec<DisplayInfo>,
++    /// Runtime display changes (krun_display_resize), shared with the GPU device.
++    #[cfg(feature = "gpu")]
++    pub display_control: Option<Arc<DisplayControl>>,
+     #[cfg(feature = "input")]
+     pub input_backends: Vec<(
+         krun_input::InputConfigBackend<'static>,
+@@ -431,6 +436,8 @@ mod tests {
+             display_backend: None,
+             #[cfg(feature = "gpu")]
+             displays: Vec::new(),
++            #[cfg(feature = "gpu")]
++            display_control: None,
+             #[cfg(feature = "input")]
+             input_backends: Vec::new(),
+             #[cfg(feature = "snd")]
+-- 
+2.50.1

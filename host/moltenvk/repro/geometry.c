@@ -27,6 +27,8 @@
  *                                  GL_SHORT vertices); vfmt + f without GS as reference
  *   ladj + zink_passthrough + fprim  TRIANGLE_FAN with a GS (zink GL_TRIANGLE_FAN), static and with a
  *                                  TRIANGLE_LIST pipeline + dynamic TRIANGLE_FAN topology
+ *   ubo + zink_passthrough + ubo   also with vertex bindings 0..7 declared: buffer-size constants (robust
+ *                                  UBO arrays) and the GS DrawInfo buffer must not share a Metal index
  *   lines + zink_lines + fprim     GS with line input (line list), lines expanded to quads
  *   VK_NULL_HANDLE bound as graphics and compute pipeline (what a guest does through Venus
  *   when the host failed to create a pipeline), then draw + dispatch: no crash, nothing drawn
@@ -106,7 +108,8 @@ static VkDeviceMemory alloc(VkMemoryRequirements mr, VkMemoryPropertyFlags flags
 
 /* Vertex input of the next pipeline: none, binding 0 with a static stride of 16, or binding 0 with
  * stride 0 in the pipeline and VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (what zink does). */
-enum vertex_input { VI_NONE, VI_STATIC_STRIDE, VI_DYNAMIC_STRIDE, VI_INSTANCE, VI_SSCALED16, VI_SNORM16, VI_SNORM8 };
+enum vertex_input { VI_NONE, VI_STATIC_STRIDE, VI_DYNAMIC_STRIDE, VI_INSTANCE, VI_SSCALED16, VI_SNORM16, VI_SNORM8,
+                    VI_HIGH_BINDINGS };
 static enum vertex_input vertex_input;
 /* Whether the next pipeline has VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY (zink). */
 static int dynamic_topology;
@@ -135,7 +138,15 @@ static VkPipeline graphics(const char *vs, const char *gs, const char *fs, VkPri
 		via[1] = (VkVertexInputAttributeDescription){ 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 4 };
 	}
 	VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-	if (vertex_input >= VI_SSCALED16) {
+	/* VI_HIGH_BINDINGS: vertex bindings 0..7 declared (no attributes), as zink declares them; moves the
+	 * implicit buffers (buffer sizes ...) down to the indices the GS DrawInfo buffer used to have. */
+	VkVertexInputBindingDescription high_vib[8];
+	for (uint32_t b = 0; b < 8; b++)
+		high_vib[b] = (VkVertexInputBindingDescription){ b, 16, VK_VERTEX_INPUT_RATE_VERTEX };
+	if (vertex_input == VI_HIGH_BINDINGS) {
+		vi.vertexBindingDescriptionCount = 8;
+		vi.pVertexBindingDescriptions = high_vib;
+	} else if (vertex_input >= VI_SSCALED16) {
 		vi.vertexBindingDescriptionCount = 1;
 		vi.pVertexBindingDescriptions = vib;
 		vi.vertexAttributeDescriptionCount = 2;
@@ -312,7 +323,8 @@ int main(int argc, char **argv)
 	 * Index buffer (uint16): two junk indices, then 0..5 (firstIndex = 2, vertexOffset = 1). */
 	/* Vertex buffer (vattr.vert): v.vert's six positions, 16 bytes per vertex, padding = junk. */
 	enum draw_mode { DRAW_DIRECT, DRAW_FIRST_VERTEX, DRAW_INDIRECT, DRAW_INDEXED_INDIRECT, DRAW_STATIC_STRIDE,
-	                 DRAW_DYNAMIC_STRIDE, DRAW_INSTANCED, DRAW_DYNAMIC_FAN, DRAW_SSCALED16, DRAW_SNORM16, DRAW_SNORM8 };
+	                 DRAW_DYNAMIC_STRIDE, DRAW_INSTANCED, DRAW_DYNAMIC_FAN, DRAW_SSCALED16, DRAW_SNORM16, DRAW_SNORM8,
+	                 DRAW_HIGH_BINDINGS };
 	VkBufferCreateInfo argbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
 		.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT };
 	VkBuffer indirect_buf, index_buf, vertex_buf, fmt_buf;
@@ -381,6 +393,8 @@ int main(int argc, char **argv)
 		  { { 0, 255, 128, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "ubo.vert.spv", "zink_passthrough.geom.spv", "ubo.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 128, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
+		{ "ubo.vert.spv", "zink_passthrough.geom.spv", "ubo.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
+		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 128, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_HIGH_BINDINGS },
 		{ "v.vert.spv", "zink_primid2.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 64, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "lines.vert.spv", "zink_lines.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_LINE_LIST, 4,
@@ -438,6 +452,7 @@ int main(int argc, char **argv)
 			if (tests[t].draw_mode == DRAW_SSCALED16) vertex_input = VI_SSCALED16;
 			if (tests[t].draw_mode == DRAW_SNORM16) vertex_input = VI_SNORM16;
 			if (tests[t].draw_mode == DRAW_SNORM8) vertex_input = VI_SNORM8;
+			if (tests[t].draw_mode == DRAW_HIGH_BINDINGS) vertex_input = VI_HIGH_BINDINGS;
 			p = graphics(tests[t].vs, tests[t].gs, tests[t].fs, tests[t].topology, layout);
 			if (!p) {
 				printf("%-4s render %s + %s + %s: pipeline creation failed\n", verdict_fail, tests[t].vs,
@@ -503,6 +518,9 @@ int main(int argc, char **argv)
 			vkCmdDraw(cmd, tests[t].vertex_count, 1, 0, 0);
 			break;
 		}
+		case DRAW_HIGH_BINDINGS:
+			vkCmdDraw(cmd, tests[t].vertex_count, 1, 0, 0);
+			break;
 		case DRAW_DYNAMIC_FAN:
 			vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN);
 			vkCmdDraw(cmd, tests[t].vertex_count, 1, 0, 0);
@@ -560,7 +578,8 @@ int main(int argc, char **argv)
 			                         "pipeline TRIANGLE_LIST + dynamic TRIANGLE_FAN",
 			                         "R16G16_SSCALED positions, R8G8B8A8_UNORM colors",
 			                         "R16G16_SNORM positions, R8G8B8A8_UNORM colors",
-			                         "R8G8_SNORM positions, R8G8B8A8_UNORM colors" }[tests[t].draw_mode]);
+			                         "R8G8_SNORM positions, R8G8B8A8_UNORM colors",
+			                         "vertex bindings 0..7 declared (implicit buffers moved down)" }[tests[t].draw_mode]);
 		if (!tests[t].known_limitation)
 			fails += !ok;
 		if (p)

@@ -208,6 +208,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         static TRIANGLE_FAN failed), triangle fans assembled by the GS object stage"
 	echo "  0015 = steamac: GS object stage vertex attributes read with their memory type (SCALED/NORM"
 	echo "         formats such as glamor's R16G16_SSCALED were read as float bits)"
+	echo "  0016 = steamac: GS DrawInfo buffer index allocated after the vertex stage's implicit buffers"
+	echo "         (was fixed at 20: collided with the buffer-size buffer with 8 vertex bindings)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
