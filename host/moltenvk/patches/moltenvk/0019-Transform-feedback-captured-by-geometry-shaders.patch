@@ -1,4 +1,4 @@
-From 1183e29aeba7687d3df5986e16d30bc4e0fb63e4 Mon Sep 17 00:00:00 2001
+From f97bb457ed19fba5513894a015f89a3916b31d4c Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 01:03:34 +0300
 Subject: [PATCH 19/20] Transform feedback captured by geometry shaders
@@ -36,9 +36,9 @@ draw).
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.h      |  1 +
  MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm     | 12 ++-
  MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h    |  9 +-
- MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 28 ++++++
+ MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm   | 32 ++++++-
  MoltenVK/MoltenVK/Utility/MVKFoundation.h     |  1 +
- 14 files changed, 282 insertions(+), 35 deletions(-)
+ 14 files changed, 284 insertions(+), 37 deletions(-)
 
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
 index 1215fbf1..6f2e4a0e 100644
@@ -546,7 +546,7 @@ index 48366721..ccefc9aa 100644
  	MVKShaderModule* _vertexModule = nullptr;
  	MVKShaderModule* _tessCtlModule = nullptr;
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-index e265e0ff..022ec859 100644
+index 7f7ab8c9..5023b2b8 100644
 --- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 +++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 @@ -1710,6 +1710,11 @@ static void setDepthClipConfig(SPIRVToMSLConversionConfiguration& shaderConfig,
@@ -602,7 +602,7 @@ index e265e0ff..022ec859 100644
  	plDesc.rasterizationEnabled = !funcRslts.isRasterizationDisabled;
  	populateResourceUsage(_stageResources[kMVKShaderStageTessEval], shaderConfig, funcRslts, spv::ExecutionModelTessellationEvaluation);
  	_stageResources[kMVKShaderStageTessEval].implicitBuffers.needed.set(MVKImplicitBuffer::EmulatedReversedDepthViewport, shaderConfig.options.mslOptions.emulate_reversed_depth_viewport);
-@@ -3322,6 +3347,9 @@ void serialize(Archive & archive, CompilerMSL::Options& opt) {
+@@ -3331,6 +3356,9 @@ void serialize(Archive & archive, CompilerMSL::Options& opt) {
  				opt.shader_patch_input_buffer_index,
  				opt.draw_info_index,
  				opt.xfb_buffer_index,
@@ -612,6 +612,20 @@ index e265e0ff..022ec859 100644
  				opt.texture_offset_buffer_index,
  				opt.reversed_depth_viewport_buffer_index,
  				opt.depth_clip_state_buffer_index,
+@@ -3703,11 +3731,11 @@ void mvkValidateCeralArchiveDefinitions() {
+ 	missingBytes += mvkValidateCerealArchiveSize<SPIRV_CROSS_NAMESPACE::MSLConstexprSampler>();
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVWorkgroupSizeDimension>(3);
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVEntryPoint>(20);						// Contains string
+-	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionOptions>(24);			// Contains string
++	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionOptions>(28);			// Contains string
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLShaderInterfaceVariable>(6);
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLResourceBinding>(2);
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::DescriptorBinding>();
+-	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(104);	// Contains collection
++	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionConfiguration>(108);	// Contains collection
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::SPIRVToMSLConversionResultInfo>(39);		// Contains collection
+ 	missingBytes += mvkValidateCerealArchiveSize<mvk::MSLSpecializationMacroInfo>(22);			// Contains string
+ 	missingBytes += mvkValidateCerealArchiveSize<MVKShaderModuleKey>();
 diff --git a/MoltenVK/MoltenVK/Utility/MVKFoundation.h b/MoltenVK/MoltenVK/Utility/MVKFoundation.h
 index f05df58e..b0718223 100644
 --- a/MoltenVK/MoltenVK/Utility/MVKFoundation.h

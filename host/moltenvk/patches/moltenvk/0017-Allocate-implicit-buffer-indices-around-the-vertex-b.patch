@@ -1,4 +1,4 @@
-From 6f31cf31dd6193be288b5a409e4b218e86550ccc Mon Sep 17 00:00:00 2001
+From 3b7281ef990fb3c56f8ab24d029a108e2b472a25 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Sun, 4 Oct 2026 00:59:15 +0300
 Subject: [PATCH 17/20] Allocate implicit buffer indices around the vertex
@@ -15,9 +15,9 @@ bindings (and their synthetic translation bindings) and of the reserved tessella
 and staying above the descriptor buffers. When none is free the buffer gets
 kMVKUnassignedImplicitBufferIndex and the stage fails with a clear error if it needs it.
 ---
- MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h  |  4 +++
- MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm | 33 +++++++++++++++++++--
- 2 files changed, 34 insertions(+), 3 deletions(-)
+ MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h  |  4 ++
+ MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm | 48 ++++++++++++++++++---
+ 2 files changed, 46 insertions(+), 6 deletions(-)
 
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h
 index 846f2f62..48366721 100644
@@ -42,7 +42,7 @@ index 846f2f62..48366721 100644
  	uint32_t _outputControlPointCount;
      uint32_t _meshDrawInfoBufferIndex = 0;		// Object stage of a geometry-shader pipeline, below the vertex stage's implicit buffers
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-index 3f1a28d5..e265e0ff 100644
+index 3f1a28d5..7f7ab8c9 100644
 --- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 +++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 @@ -1632,7 +1632,7 @@ static MTLVertexFormat mvkAdjustFormatVectorToSize(MTLVertexFormat format, uint3
@@ -64,7 +64,29 @@ index 3f1a28d5..e265e0ff 100644
  		setConfigurationResult(reportError(VK_ERROR_INITIALIZATION_FAILED, "Vertex shader of a geometry pipeline requires a draw info buffer, but there is no free slot to pass it."));
  		return false;
  	}
-@@ -2589,8 +2590,20 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -2541,9 +2542,18 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+ 				break;
+ 		}
+ 	}
+-	// The DrawInfo buffer of the geometry-shader object stage (the vertex shader) comes after the vertex
+-	// stage's implicit buffers, so that it cannot share an index with them or with vertex buffers.
+-	_meshDrawInfoBufferIndex = getImplicitBufferIndex(kMVKShaderStageVertex, 9);
++	// The vertex shader of a geometry-shader pipeline is the object stage of a mesh pipeline: it uses no
++	// output, view range, index, reversed-depth or depth-clip buffers, but the DrawInfo buffer.
++	// Keep the free indices for the buffers it can use.
++	if (isGeometryPipeline()) {
++		auto& vtxIds = _stageResources[kMVKShaderStageVertex].implicitBuffers.ids;
++		vtxIds[MVKImplicitBuffer::Output] = kMVKUnassignedImplicitBufferIndex;
++		vtxIds[MVKImplicitBuffer::ViewRange] = kMVKUnassignedImplicitBufferIndex;
++		vtxIds[MVKImplicitBuffer::Index] = kMVKUnassignedImplicitBufferIndex;
++		vtxIds[MVKImplicitBuffer::EmulatedReversedDepthViewport] = kMVKUnassignedImplicitBufferIndex;
++		vtxIds[MVKImplicitBuffer::DepthClip] = kMVKUnassignedImplicitBufferIndex;
++		_meshDrawInfoBufferIndex = getImplicitBufferIndex(kMVKShaderStageVertex, 3);
++	}
+ 
+ 	const VkPipelineRenderingCreateInfo* pRendInfo = getRenderingCreateInfo(pCreateInfo);
+ 	MVKPixelFormats* pixFmts = getPixelFormats();
+@@ -2589,8 +2599,20 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
      shaderConfig.options.numTessControlPoints = reflectData.numControlPoints;
  }
  
@@ -86,7 +108,7 @@ index 3f1a28d5..e265e0ff 100644
  }
  
  // Set the number of vertex attribute buffers consumed by this pipeline at each stage.
-@@ -2632,6 +2645,20 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
+@@ -2632,6 +2654,20 @@ static MSLShaderVariableFormat mvkMSLMeshVertexMemoryFormat(MTLVertexFormat mtlF
  	_reservedVertexAttributeBufferCount.stages[kMVKShaderStageVertex] = (maxBinding + 1) + xltdBuffCnt;
  	_reservedVertexAttributeBufferCount.stages[kMVKShaderStageTessCtl] = kMVKTessCtlNumReservedBuffers;
  	_reservedVertexAttributeBufferCount.stages[kMVKShaderStageTessEval] = kMVKTessEvalNumReservedBuffers;

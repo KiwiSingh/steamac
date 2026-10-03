@@ -15,6 +15,9 @@
 #    cleared depth/stencil values.
 # 4. linear_pitch.c: LINEAR image with VkImageDrmFormatModifierExplicitCreateInfoEXT rowPitch
 #    (virglrenderer dma-buf imports): layouts, memory size and pixel data use that pitch.
+# 5. xfb.c: transform feedback captured by geometry shaders (DXVK stream-output style without
+#    position and with rasterizer discard, strips with varying vertex counts, lines, 2 buffers,
+#    buffer offsets/sizes, counter buffers), buffer contents checked.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
 set -eu
 
@@ -74,3 +77,7 @@ MVK_CONFIG_LOG_LEVEL=1 "$work/depth_stencil"
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/linear_pitch.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/linear_pitch"
 MVK_CONFIG_LOG_LEVEL=1 "$work/linear_pitch"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/xfb.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/xfb"
+MVK_CONFIG_LOG_LEVEL=1 "$work/xfb" "$gspv"
