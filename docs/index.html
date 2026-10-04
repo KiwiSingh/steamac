@@ -35,6 +35,7 @@
   <nav class="nav-links">
     <a href="#scene"><span lang="en">Inside</span><span lang="ru">Внутри</span></a>
     <a href="#proof"><span lang="en">Games</span><span lang="ru">Игры</span></a>
+    <a href="#settings"><span lang="en">Settings</span><span lang="ru">Настройки</span></a>
     <a href="#get"><span lang="en">Download</span><span lang="ru">Скачать</span></a>
     <a href="https://github.com/fxgl/steamac" class="gh">GitHub</a>
   </nav>
@@ -331,6 +332,65 @@
         <li><span lang="en"><b>Anti-cheat</b> that blocks virtual machines won't let you in.</span><span lang="ru"><b>Античиты</b>, блокирующие виртуальные машины, не пропустят.</span></li>
         <li><span lang="en"><b>First-time effects</b> stutter while Metal compiles the pipeline (~50–100 ms); after that it's cached, even across VM restarts.</span><span lang="ru"><b>Новые эффекты</b> подтормаживают, пока Metal компилирует конвейер (~50–100 мс); дальше всё из кеша, даже после перезапуска ВМ.</span></li>
       </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section settings" id="settings">
+  <div class="wrap">
+    <p class="kicker"><span lang="en">Settings · ⌘,</span><span lang="ru">Настройки · ⌘,</span></p>
+    <h2><span lang="en">Every knob, one window.</span><span lang="ru">Все ручки — в одном окне.</span></h2>
+    <p class="section-lede">
+      <span lang="en">Six tabs. Anything marked “applies now” changes the running SteamOS on the spot; the rest takes effect on the next start.</span>
+      <span lang="ru">Шесть вкладок. Всё, что помечено «applies now», меняется в работающем SteamOS сразу; остальное — при следующем запуске.</span>
+    </p>
+
+    <div class="settings-grid">
+      <ol class="settings-tabs" role="tablist" aria-label="Settings tabs">
+        <li><button type="button" role="tab" data-tab="general" aria-selected="true">
+          <b>General</b>
+          <span lang="en">Boot and shutdown overlay, open in full screen, and a frame-pacing log: every 5 s, guest and on-screen frame intervals, latency, dropped frames.</span>
+          <span lang="ru">Оверлей загрузки и выключения, запуск на весь экран и журнал плавности: каждые 5 с — интервалы кадров гостя и на экране, задержка, пропущенные кадры.</span>
+        </button></li>
+        <li><button type="button" role="tab" data-tab="display" aria-selected="false">
+          <b>Display</b>
+          <span lang="en">Physical size from the screen, DPI or millimetres sets SteamOS's UI scale; refresh rate; follow the window size or keep a fixed resolution and scale the picture.</span>
+          <span lang="ru">Физический размер — по экрану, в DPI или миллиметрах — задаёт масштаб интерфейса SteamOS; частота обновления; следовать размеру окна или держать разрешение и масштабировать картинку.</span>
+        </button></li>
+        <li><button type="button" role="tab" data-tab="mouse" aria-selected="false">
+          <b>Mouse</b>
+          <span lang="en">Capture the mouse in games for mouse-look, release with Ctrl+Option. Games appear here as you play them; set capture per game so strategy games keep a free cursor.</span>
+          <span lang="ru">Захват мыши в играх для обзора, отпустить — Ctrl+Option. Игры появляются в списке сами, когда вы в них играете; захват настраивается для каждой, чтобы в стратегиях курсор оставался свободным.</span>
+        </button></li>
+        <li><button type="button" role="tab" data-tab="controller" aria-selected="false">
+          <b>Controller</b>
+          <span lang="en">Virtual Xbox 360 pad on or off, which controller drives it, A/B and X/Y swap, stick deadzone — plus a live input test for connected controllers.</span>
+          <span lang="ru">Виртуальный Xbox 360 pad, какой контроллер им управляет, перестановка A/B и X/Y, мёртвая зона стиков — и живой тест ввода подключённых контроллеров.</span>
+        </button></li>
+        <li><button type="button" role="tab" data-tab="sound" aria-selected="false">
+          <b>Sound</b>
+          <span lang="en">virtio-snd → CoreAudio: output device or the macOS default, volume on top of the guest's own, mute, and a Low / Normal / Safe buffer (10 / 20 / 60 ms).</span>
+          <span lang="ru">virtio-snd → CoreAudio: устройство вывода или системное по умолчанию, громкость поверх гостевой, выключение звука и буфер Low / Normal / Safe (10 / 20 / 60 мс).</span>
+        </button></li>
+        <li><button type="button" role="tab" data-tab="advanced" aria-selected="false">
+          <b>Advanced</b>
+          <span lang="en">vCPUs, memory, SSH port, network on or off, and the SteamOS disk image — used in place, never copied. Reset All Settings brings the defaults back.</span>
+          <span lang="ru">vCPU, память, порт SSH, сеть и образ диска SteamOS — используется на месте, никогда не копируется. Reset All Settings возвращает значения по умолчанию.</span>
+        </button></li>
+      </ol>
+
+      <div class="settings-window">
+        <img src="media/settings-general.png" data-tab="general" class="show" alt="Settings: General tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-display.png" data-tab="display" alt="Settings: Display tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-mouse.png" data-tab="mouse" alt="Settings: Mouse tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-controller.png" data-tab="controller" alt="Settings: Controller tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-sound.png" data-tab="sound" alt="Settings: Sound tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-advanced.png" data-tab="advanced" alt="Settings: Advanced tab" width="600" height="700" loading="lazy">
+        <!-- Click targets over the screenshot's own toolbar icons. -->
+        <div class="toolbar-hit" aria-hidden="true">
+          <i data-tab="general"></i><i data-tab="display"></i><i data-tab="mouse"></i><i data-tab="controller"></i><i data-tab="sound"></i><i data-tab="advanced"></i>
+        </div>
+      </div>
     </div>
   </div>
 </section>

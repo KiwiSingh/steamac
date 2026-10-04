@@ -27,6 +27,32 @@
     })
     .catch(() => {});
 
+  // ---------- Settings showcase: tab list and the screenshot's toolbar switch the shown tab ----------
+  const settingsBox = document.getElementById("settings");
+  if (settingsBox) {
+    const tabButtons = [...settingsBox.querySelectorAll(".settings-tabs [data-tab]")];
+    const shots = [...settingsBox.querySelectorAll(".settings-window img")];
+    const names = tabButtons.map((b) => b.dataset.tab);
+    let current = names[0], timer = 0, touched = false;
+    const show = (name) => {
+      current = name;
+      tabButtons.forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+      shots.forEach((img) => img.classList.toggle("show", img.dataset.tab === name));
+    };
+    const pick = (name) => { touched = true; clearInterval(timer); show(name); };
+    settingsBox.querySelectorAll("[data-tab]:not(img)").forEach((el) =>
+      el.addEventListener("click", () => pick(el.dataset.tab)));
+    // Cycle through the tabs while the section is on screen, until the visitor picks one.
+    if ("IntersectionObserver" in window && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      new IntersectionObserver(([entry]) => {
+        clearInterval(timer);
+        if (entry.isIntersecting && !touched) {
+          timer = setInterval(() => show(names[(names.indexOf(current) + 1) % names.length]), 4500);
+        }
+      }, { threshold: 0.5 }).observe(settingsBox.querySelector(".settings-grid"));
+    }
+  }
+
   // ---------- Scene ----------
   const scene = document.getElementById("scene");
   const rig = scene.querySelector(".rig");
