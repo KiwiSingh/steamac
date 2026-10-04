@@ -1,3 +1,4 @@
+import Combine
 import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
@@ -21,6 +22,11 @@ final class WindowController: NSObject, NSWindowDelegate {
     private let mouseMode: MouseMode
     private let baseTitle: String
     var onCloseRequest: (() -> Void)?
+    /// Cmd+, while the VM window has the keyboard (keys otherwise all go to the guest).
+    var onOpenSettings: (() -> Void)?
+    /// Launcher settings (live values: overlay, follow window size, mouse auto-capture).
+    let settings: LauncherSettings
+    private var subscriptions: [AnyCancellable] = []
     /// FX boot/shutdown overlay, layered over the Metal view.
     let overlay: OverlayView
     private var progress: BootProgress?
@@ -61,6 +67,7 @@ final class WindowController: NSObject, NSWindowDelegate {
                           backing: .buffered, defer: false, screen: screen)
         view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
         overlay = OverlayView(frame: rect)
+        settings = LauncherSettings.shared
         super.init()
         window.title = title
         window.contentView = view
@@ -76,6 +83,21 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay.frame = view.bounds
         view.addSubview(overlay)
         updateTitle()
+        // @Published fires before the change: evaluate on the next main-queue turn.
+        subscriptions.append(settings.$followWindowSize.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
+            log("display: follow window size \(on ? "on" : "off")")
+            if on { self?.scheduleGuestResize() }
+        })
+        subscriptions.append(settings.$showOverlay.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
+            guard let self else { return }
+            if !on { self.overlay.hide() }
+            else if let p = self.progress, p.state.phase != .running, !self.overlayDismissed { self.overlay.show() }
+        })
+        subscriptions.append(settings.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            guard let self else { return }
+            if self.captured && self.mouseMode == .auto && !self.clickCaptures { self.releasePointer() }
+            self.updateTitle()
+        })
     }
 
     func show() {
@@ -130,6 +152,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// meanwhile); fires once the size has been stable for `guestResizeDebounce`.
     private func scheduleGuestResize() {
         guestResizeWork?.cancel()
+        guard settings.followWindowSize else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.window.inLiveResize, !self.inFullScreenTransition else { return }
             let size = self.guestSizeForWindow()
@@ -172,7 +195,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     // MARK: overlay
 
     /// Boot overlay follows `progress`: hides on `ready` (or when the user clicks / presses a key,
-    /// or after 15 minutes), comes back for shutdown/reboot.
+    /// or after 15 minutes), comes back for shutdown/reboot — unless Settings > General turned it off.
     func attach(progress: BootProgress) {
         self.progress = progress
         overlay.update(progress.state)
@@ -186,7 +209,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         progress.onShutdown = { [weak self] reboot in
             previousShutdown?(reboot)
             self?.overlayDismissed = false
-            self?.overlay.show()
+            if self?.settings.showOverlay ?? false { self?.overlay.show() }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in
             guard let self, let p = self.progress, p.state.phase == .boot, self.overlay.shown else { return }
@@ -251,6 +274,11 @@ final class WindowController: NSObject, NSWindowDelegate {
                 default: break
                 }
             }
+            if mods == .command && Int(e.keyCode) == kVK_ANSI_Comma, let onOpenSettings {
+                releaseAll()
+                onOpenSettings()
+                return true
+            }
             if e.isARepeat { return true }   // guest does autorepeat
             guard let code = Keymap.linuxKey(e.keyCode) else { return true }
             if pressedKeys.insert(code).inserted { sendKey(code, true) }
@@ -301,8 +329,10 @@ final class WindowController: NSObject, NSWindowDelegate {
         mouseMode == .tablet || (mouseMode == .auto && guestFocus == .desktop)
     }
 
-    /// Persisted auto-capture preferences (set by main before the window is shown).
-    var mouseSettings = MouseSettings(runOverride: nil)
+    /// "Name (appid)" when the guest told us the game's name.
+    private func gameLabel(_ id: Int) -> String {
+        settings.gameName(id).map { "\($0) (\(id))" } ?? "game \(id)"
+    }
 
     private var focusedGame: Int? {
         if case .game(let id) = guestFocus { return id } else { return nil }
@@ -313,7 +343,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         switch mouseMode {
         case .capture: return true
         case .tablet: return false
-        case .auto: return focusedGame.map { mouseSettings.autoCapture(for: $0) } ?? false
+        case .auto: return focusedGame.map { settings.autoCapture(for: $0) } ?? false
         }
     }
 
@@ -326,8 +356,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         if captured && mouseMode == .auto && !clickCaptures { releasePointer() }
         updateTitle()
         if let id = focusedGame, mouseMode == .auto {
-            flashStatus(mouseSettings.autoCapture(for: id) ? "click to capture the mouse (Ctrl+Option releases)"
-                                                           : "auto-capture off for game \(id) (Ctrl+Cmd+G captures)")
+            flashStatus(settings.autoCapture(for: id) ? "click to capture the mouse (Ctrl+Option releases)"
+                                                      : "auto-capture off for \(gameLabel(id)) (Ctrl+Cmd+G captures)")
         }
     }
 
@@ -344,18 +374,21 @@ final class WindowController: NSObject, NSWindowDelegate {
     // Mouse menu actions.
     @objc func toggleGameAutoCapture(_ sender: Any?) {
         guard let id = focusedGame else { return }
-        let on = !mouseSettings.autoCapture(for: id)
-        mouseSettings.setAutoCapture(on, for: id)
+        let on = !settings.autoCapture(for: id)
+        settings.setAutoCapture(on, for: id)
         if !on && captured { releasePointer() }
         updateTitle()
-        flashStatus(on ? "auto-capture on for game \(id)" : "auto-capture off for game \(id)")
+        flashStatus(on ? "auto-capture on for \(gameLabel(id))" : "auto-capture off for \(gameLabel(id))")
     }
 
     @objc func toggleGlobalAutoCapture(_ sender: Any?) {
-        mouseSettings.globalAutoCapture.toggle()
+        let on = !settings.globalAutoCapture
+        settings.autoCaptureGames = on
+        log("input: auto-capture in games \(on ? "on" : "off") (saved)"
+            + (settings.autoCaptureOverride != nil ? "; --auto-capture still applies to this run" : ""))
         if captured && !clickCaptures { releasePointer() }
         updateTitle()
-        flashStatus("auto-capture in games \(mouseSettings.globalAutoCapture ? "on" : "off")")
+        flashStatus("auto-capture in games \(settings.globalAutoCapture ? "on" : "off")")
     }
 
     @objc func toggleCaptureNow(_ sender: Any?) { captured ? releasePointer() : grabPointer() }
@@ -383,15 +416,15 @@ extension WindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(toggleGameAutoCapture(_:)):
             if let id = focusedGame {
-                item.title = "Capture Mouse in This Game (\(id))"
-                item.state = mouseSettings.autoCapture(for: id) ? .on : .off
+                item.title = "Capture Mouse in This Game (\(gameLabel(id)))"
+                item.state = settings.autoCapture(for: id) ? .on : .off
                 return mouseMode == .auto
             }
             item.title = "Capture Mouse in This Game"
             item.state = .off
             return false
         case #selector(toggleGlobalAutoCapture(_:)):
-            item.state = mouseSettings.globalAutoCapture ? .on : .off
+            item.state = settings.globalAutoCapture ? .on : .off
             return mouseMode == .auto
         default:
             return inputs != nil
@@ -587,17 +620,21 @@ extension WindowController {
 }
 
 enum MainMenu {
-    static func install(target: AnyObject, shutdown: Selector, forceQuit: Selector,
+    static func install(target: AnyObject, settings: Selector, restart: Selector, shutdown: Selector, forceQuit: Selector,
                         fullscreen: Selector, grab: Selector, overlay: Selector) {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
+        appMenu.addItem(item("Settings…", settings, target, key: ","))
+        appMenu.addItem(.separator())
+        appMenu.addItem(item("Restart VM", restart, target))
         appMenu.addItem(item("Shut Down Guest", shutdown, target))
         appMenu.addItem(item("Force Quit", forceQuit, target))
+        addEditAndWindowMenus(main)
         let viewItem = NSMenuItem()
-        main.addItem(viewItem)
+        main.insertItem(viewItem, at: 2)
         let viewMenu = NSMenu(title: "View")
         viewItem.submenu = viewMenu
         viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
@@ -606,8 +643,42 @@ enum MainMenu {
         NSApp.mainMenu = main
     }
 
-    private static func item(_ title: String, _ action: Selector, _ target: AnyObject) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    /// App menu with Settings… and Quit only (first-run sheet, --selftest-settings).
+    static func installMinimal(settings: (Selector, AnyObject)? = nil) {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        if let (action, target) = settings { appMenu.addItem(item("Settings…", action, target, key: ",")) }
+        appMenu.addItem(NSMenuItem(title: "Quit FX Steam Launcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        addEditAndWindowMenus(main)
+        NSApp.mainMenu = main
+    }
+
+    /// Standard Edit (text fields in Settings) and Window (Cmd+W closes Settings) menus.
+    private static func addEditAndWindowMenus(_ main: NSMenu) {
+        let edit = NSMenu(title: "Edit")
+        for (title, action, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"),
+                                     ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
+                                     ("Paste", #selector(NSText.paste(_:)), "v"),
+                                     ("Select All", #selector(NSText.selectAll(_:)), "a")] {
+            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        let editItem = NSMenuItem()
+        editItem.submenu = edit
+        main.addItem(editItem)
+        let window = NSMenu(title: "Window")
+        window.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        window.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        let windowItem = NSMenuItem()
+        windowItem.submenu = window
+        main.addItem(windowItem)
+        NSApp.windowsMenu = window
+    }
+
+    private static func item(_ title: String, _ action: Selector, _ target: AnyObject, key: String = "") -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
         i.target = target
         return i
     }

@@ -47,6 +47,14 @@ struct Options {
     var selftestOut: String?
     var inputSelftestDelay: Double?
     var resizeSelftestDelay: Double?
+    var selftestSettings = false
+    var perfStats = false
+    /// Settings: enter fullscreen once the window is up.
+    var fullscreen = false
+    /// No main disk configured or found (app bundle launch): the first-run sheet asks for one.
+    var needsDisk = false
+    /// Flags given on the command line (they override the saved settings for this run).
+    var explicit: Set<String> = []
 
     static let usage = """
     usage: steamac-vm --kernel PATH [--initrd PATH] [--cmdline STR] --disk PATH[:ro] ...
@@ -56,6 +64,12 @@ struct Options {
                       [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
+           steamac-vm --selftest-settings [--selftest-out DIR]
+
+    Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
+    vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
+    fullscreen, perf stats. Inside FX Steam Launcher.app, --kernel/--initrd/--disk default to the
+    bundled Image, initramfs and layer plus the disk image chosen in Settings > Advanced.
 
       --kernel PATH        raw arm64 Image (KRUN_KERNEL_FORMAT_RAW)
       --initrd PATH        initramfs
@@ -102,6 +116,7 @@ struct Options {
                            close the window (guest power key) 4 s later
       --selftest-overlay   drive the FX boot/shutdown overlay with synthetic console and fx.progress
                            input and write window captures at several progress points
+      --selftest-settings  open the Settings window and write a PNG of every tab to --selftest-out
       --resize-selftest S  S seconds after Steam is ready, resize the window 1600x1000 -> fullscreen ->
                            windowed -> 1280x800, wait for the guest's new scanout each time and dump
                            frames to <--frame-dump>-resize-N-*.png
@@ -109,7 +124,8 @@ struct Options {
                            move UX UY (0..1 in the picture) | button left|right|middle down|up |
                            click left|right|middle | wheel NOTCHES | rel DX DY | key KEYCODE |
                            grab | release | menu game|global (toggle the Mouse menu checkboxes) |
-                           guest LINE (as if sent on fx.progress) | dump PNG
+                           guest LINE (as if sent on fx.progress) | dump PNG |
+                           settings TAB|close | settings-dump PNG | set KEY VALUE | restart
 
     Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release.
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
@@ -131,6 +147,8 @@ struct Options {
         }
         while i < argv.count {
             let a = argv[i]
+            if a.hasPrefix("-psn_") { i += 1; continue }   // old Finder process serial number
+            o.explicit.insert(a)
             switch a {
             case "--kernel": o.kernel = try value(a)
             case "--initrd": o.initrd = try value(a)
@@ -184,10 +202,11 @@ struct Options {
                 o.autoCapture = v == "on"
             case "--no-gamepad": o.gamepad = false
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
-            case "--perf-stats": break   // read by PerfStats.shared (argv is passed to the VM process)
+            case "--perf-stats": o.perfStats = true
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true
+            case "--selftest-settings": o.selftestSettings = true
             case "--resize-selftest":
                 let v = try value(a)
                 guard let d = Double(v), d >= 0 else { throw OptionError("--resize-selftest: seconds") }
@@ -204,21 +223,75 @@ struct Options {
             }
             i += 1
         }
-        if !o.selftestDisplay && !o.selftestOverlay {
-            guard !o.kernel.isEmpty else { throw OptionError("--kernel is required") }
-            guard (1...255).contains(o.cpus) else { throw OptionError("--cpus must be 1..255") }
-            guard o.memMiB >= 256 else { throw OptionError("--mem must be >= 256") }
-            guard o.sshPort == 0 || (1024...65535).contains(o.sshPort) else {
-                throw OptionError("--ssh-port must be 0 or 1024..65535")
-            }
-            for path in [o.kernel] + (o.initrd.map { [$0] } ?? []) + o.disks.map(\.path) {
-                guard FileManager.default.isReadableFile(atPath: path) else {
-                    throw OptionError("not readable: \(path)")
-                }
-            }
-            if o.disks.count > 26 { throw OptionError("at most 26 disks") }
+        if ProcessInfo.processInfo.environment["STEAMAC_PERF_STATS"] == "1" {
+            o.perfStats = true
+            o.explicit.insert("STEAMAC_PERF_STATS=1")
         }
         return o
+    }
+
+    var isSelftest: Bool { selftestDisplay || selftestOverlay || selftestSettings }
+
+    /// Command line + saved settings (+ app bundle resources): what this boot runs with, and which
+    /// settings keys the command line overrides.
+    static func resolve(_ argv: [String], settings: LauncherSettings) throws -> (Options, [LauncherSettings.Key: String]) {
+        var o = try parse(argv)
+        var overrides = o.applySettings(settings)
+        if !o.isSelftest { AppBundle.fill(&o, settings: settings, overrides: &overrides) }
+        try o.validate()
+        return (o, overrides)
+    }
+
+    /// Fill every value the command line did not set from the saved settings.
+    mutating func applySettings(_ s: LauncherSettings) -> [LauncherSettings.Key: String] {
+        var ov: [LauncherSettings.Key: String] = [:]
+        func given(_ flag: String) -> Bool { explicit.contains(flag) }
+        if given("--cpus") { ov[.cpus] = "--cpus \(cpus)" } else { cpus = min(255, max(1, s.cpus)) }
+        if given("--mem") { ov[.memMiB] = "--mem \(memMiB)" } else { memMiB = max(1024, s.memMiB) }
+        if given("--ssh-port") { ov[.sshPort] = "--ssh-port \(sshPort)" }
+        else { sshPort = s.sshPort == 0 || (1024...65535).contains(s.sshPort) ? s.sshPort : 2222 }
+        if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
+        if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
+        if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" } else { gamepad = s.virtualPad }
+        if given("--refresh") { ov[.refreshRate] = "--refresh \(refreshRate)" } else { refreshRate = min(240, max(24, s.refreshRate)) }
+        if given("--display") {
+            ov[.windowWidth] = "--display \(displayWidth)x\(displayHeight)"
+            ov[.windowHeight] = ov[.windowWidth]
+        } else {
+            displayWidth = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.width), s.windowWidth & ~1))
+            displayHeight = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.height), s.windowHeight & ~1))
+        }
+        if given("--dpi") || given("--display-mm") {
+            let flag = displayMM.map { "--display-mm \($0.0)x\($0.1)" } ?? "--dpi \(dpi ?? 0)"
+            for k in [LauncherSettings.Key.dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM] { ov[k] = flag }
+        } else {
+            switch s.dpiSource {
+            case .auto: break
+            case .dpi: dpi = min(600, max(50, s.fixedDPI))
+            case .mm: displayMM = (min(5000, max(10, s.fixedWidthMM)), min(5000, max(10, s.fixedHeightMM)))
+            }
+        }
+        if perfStats { ov[.perfStats] = explicit.contains("--perf-stats") ? "--perf-stats" : "STEAMAC_PERF_STATS=1" }
+        else { perfStats = s.perfStats }
+        fullscreen = s.openFullscreen
+        if !disks.isEmpty { ov[.diskImage] = "--disk \(disks[0].path)" }
+        return ov
+    }
+
+    func validate() throws {
+        guard !isSelftest, !needsDisk else { return }
+        guard !kernel.isEmpty else { throw OptionError("--kernel is required") }
+        guard (1...255).contains(cpus) else { throw OptionError("--cpus must be 1..255") }
+        guard memMiB >= 256 else { throw OptionError("--mem must be >= 256") }
+        guard sshPort == 0 || (1024...65535).contains(sshPort) else {
+            throw OptionError("--ssh-port must be 0 or 1024..65535")
+        }
+        for path in [kernel] + (initrd.map { [$0] } ?? []) + disks.map(\.path) {
+            guard FileManager.default.isReadableFile(atPath: path) else {
+                throw OptionError("not readable: \(path)")
+            }
+        }
+        if disks.count > 26 { throw OptionError("at most 26 disks") }
     }
 }
 

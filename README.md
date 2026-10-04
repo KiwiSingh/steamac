@@ -56,16 +56,61 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 - **Auto-Capture Mouse in Games** — значение по умолчанию для всех игр;
 - **Capture / Release Mouse Now** — то же, что Ctrl+Cmd+G.
 
-Настройки лежат в `defaults read es.fxgam.steamac` (`autoCaptureGames`, `autoCapture.<appid>`);
-при первом запуске они один раз копируются из прежнего домена `dev.steamac.vm`. Metal хранит кеш
-шейдеров по идентификатору приложения, поэтому после смены идентификатора первый запуск игр снова
-компилирует шейдеры (один «холодный» запуск).
+Эти и все остальные настройки — в окне **Settings** (см. ниже), домен `es.fxgam.steamac`
+(`defaults read es.fxgam.steamac`); при первом запуске они один раз копируются из прежнего домена
+`dev.steamac.vm`. Metal хранит кеш шейдеров по идентификатору приложения, поэтому после смены
+идентификатора первый запуск игр снова компилирует шейдеры (один «холодный» запуск).
 `--auto-capture on|off` переопределяет значение по умолчанию на один запуск.
 `--mouse tablet` — абсолютный планшет (для режима рабочего стола KDE, он включается и сам по
 `focus desktop`), `--mouse capture` — всегда захват по щелчку.
 
 Доступ в гостя: `ssh -p 2222 steamos@127.0.0.1`, пароль `steamos` (меняется через
 `STEAMOS_PASSWORD=... scripts/build-image.sh disk`). Консоль hvc0 — в терминале, где запущен `run.sh`.
+
+## Окно настроек
+
+**FX Steam Launcher → Settings…** (Cmd+, — работает и когда клавиатура у гостя). У каждого поля
+подпись «applies now» (применяется сразу) или «applies on next start» (при следующем запуске ВМ).
+Если изменено что-то из второй группы, внизу появляется **Restart VM to apply**: гость штатно
+выключается кнопкой питания, супервизор запускает ВМ заново уже с новыми значениями (то же —
+пункт меню **Restart VM**). Флаги командной строки важнее сохранённых значений, но только на этот
+запуск: рядом с полем пишется «overridden by command line (--cpus 6)».
+
+| Вкладка | Сразу | При следующем запуске |
+|---|---|---|
+| General | оверлей загрузки/выключения; лог статистики кадров (`--perf-stats`) | полный экран при старте |
+| Display | гость следует за размером окна | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`) |
+| Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
+| Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
+| Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
+| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), порт SSH (`--ssh-port`), сеть (`--no-net`), образ диска (`--disk`) |
+
+Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
+--selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
+`settings TAB`, `settings-dump PNG`, `set KEY VALUE` (как из окна), `restart`.
+
+## FX Steam Launcher.app
+
+`host/launcher/build.sh` (и `./build.sh host`) кроме `work/out/steamac-vm` собирает
+`work/out/FX Steam Launcher.app` (`host/launcher/bundle.sh`): `es.fxgam.steamac`, библиотеки
+(libkrun, libvirglrenderer, libMoltenVK, libepoxy) в `Contents/Frameworks` через `@rpath`,
+в `Contents/Resources` — gvproxy, ядро `Image`, `initramfs.cpio.gz`, `steamac-layer.img`;
+подпись ad-hoc с entitlements hypervisor + disable-library-validation. Приложение можно
+перенести в `/Applications`.
+
+Запуск из Finder (без аргументов) берёт ядро, initramfs и слой из бандла, а диск SteamOS — из
+Settings → Advanced → Disk image. По умолчанию:
+`~/Library/Application Support/es.fxgam.steamac/steamos.img`, иначе `work/out/steamos.img`
+репозитория (рядом с бандлом или там, где он был собран). Если диска нет — окно первого запуска
+с выбором существующего образа («Use Existing Disk…»); образ используется на месте и никогда не
+копируется (собирается `scripts/build-image.sh`). Консоль гостя и лог лаунчера в этом режиме
+пишутся в `~/Library/Logs/es.fxgam.steamac/steamac-vm.log`, SIGUSR1-дампы кадра — туда же.
+`./run.sh` и `work/out/steamac-vm` работают как раньше (настройки из окна действуют и для них,
+если не заданы флагами).
+
+Если образ лежит на внешнем диске, при первом запуске из Finder macOS спрашивает «FX Steam
+Launcher хочет получить доступ к файлам на съёмном томе» — нужно разрешить (до ответа ВМ ждёт
+на открытии диска). Подпись ad-hoc, поэтому после пересборки бандла macOS может спросить снова.
 
 ## Как это устроено
 

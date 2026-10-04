@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FX Steam Launcher — SteamOS on your Mac</title>
+<meta name="description" content="Valve's official ARM64 SteamOS (the Steam Frame build) in a lightweight VM on Apple Silicon: GPU-accelerated Windows games, any controller, native CoreAudio sound.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="FX Steam Launcher — SteamOS on your Mac">
+<meta property="og:description" content="Valve's official ARM64 SteamOS in a lightweight VM on Apple Silicon. DirectX → Vulkan → Metal, any controller, native sound.">
+<meta property="og:image" content="https://fxgl.github.io/steamac/media/og.jpg">
+<meta property="og:url" content="https://fxgl.github.io/steamac/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#06090e">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='26' height='26' rx='7' fill='%2306090e' stroke='%2366c0f4' stroke-width='2'/%3E%3Cpath d='M10 20l6-10 6 10' fill='none' stroke='%2366c0f4' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("lang"); } catch (e) {}
+    var lang = saved || (/^ru\b/i.test(navigator.language || "") ? "ru" : "en");
+    document.documentElement.dataset.lang = lang;
+    document.documentElement.lang = lang;
+    document.documentElement.classList.add("js");
+  })();
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#top" aria-label="FX Steam Launcher">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">FX Steam Launcher</span>
+  </a>
+  <nav class="nav-links">
+    <a href="#scene"><span lang="en">Inside</span><span lang="ru">Внутри</span></a>
+    <a href="#proof"><span lang="en">Games</span><span lang="ru">Игры</span></a>
+    <a href="#get"><span lang="en">Download</span><span lang="ru">Скачать</span></a>
+    <a href="https://github.com/fxgl/steamac" class="gh">GitHub</a>
+  </nav>
+  <div class="lang-switch" role="group" aria-label="Language">
+    <button type="button" data-set-lang="en">EN</button>
+    <button type="button" data-set-lang="ru">RU</button>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- Scroll-driven scene: the running SteamOS screen tilts and splits into the layers below it. -->
+<section class="scene" id="scene">
+  <div class="stage">
+    <div class="glow" aria-hidden="true"></div>
+
+    <div class="hero-copy">
+      <p class="kicker">steamac · Apple Silicon · macOS 15+</p>
+      <h1>
+        <span lang="en">SteamOS.<br><em>On your Mac.</em></span>
+        <span lang="ru">SteamOS.<br><em>На вашем Mac.</em></span>
+      </h1>
+      <p class="lede">
+        <span lang="en">Valve's official ARM64 SteamOS — the Steam Frame build — running in a lightweight VM on Apple Silicon. GPU-accelerated Windows games, any controller, native sound.</span>
+        <span lang="ru">Официальный ARM64 SteamOS от Valve — сборка для Steam Frame — в лёгкой ВМ на Apple Silicon. Windows-игры с ускорением графики, любой геймпад, родной звук.</span>
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" data-dl href="https://github.com/fxgl/steamac/releases/latest">
+          <span lang="en">Download for Mac</span><span lang="ru">Скачать для Mac</span>
+          <small data-ver></small>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/fxgl/steamac">
+          <span lang="en">Source on GitHub</span><span lang="ru">Исходники на GitHub</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="viewport">
+      <div class="rig">
+
+        <!-- 0 · Display -->
+        <div class="layer layer-screen" style="--accent:#66c0f4">
+          <div class="slab">
+            <div class="window">
+              <div class="titlebar"><i></i><i></i><i></i><span>FX Steam Launcher</span></div>
+              <video class="screen-video" autoplay muted loop playsinline preload="auto" poster="media/poster.jpg" aria-label="SteamOS running in the VM: Steam gamepad UI, then Diplomacy is Not an Option">
+                <source src="media/hero.mp4" type="video/mp4">
+              </video>
+            </div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+        <!-- 1 · Controls -->
+        <div class="layer" style="--accent:#4ade80">
+          <div class="slab pcb">
+            <svg class="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M32 21H35.5V40H39M32 48.5H39M32 73.5H35.5V60H39M61 38H63.5V15.5H68M61 45H64.5V36.5H68M61 55H65.5V56.5H68M61 62H66.5V76.5H68"/>
+            </svg>
+            <div class="silk silk-tl">STEAMAC · INPUT · REV A</div>
+            <div class="silk silk-big">CONTROLS</div>
+            <div class="silk" style="--x:68;--y:2">VIRTIO-INPUT</div>
+            <div class="chip" style="--x:5;--y:10;--w:27;--h:22"><b>Gamepad</b><small>Xbox · DualSense · DualShock · MFi</small></div>
+            <div class="chip" style="--x:5;--y:40;--w:27;--h:17"><b>Keyboard</b><small>AppKit key events</small></div>
+            <div class="chip" style="--x:5;--y:65;--w:27;--h:17"><b>Mouse · Trackpad</b><small>1:1 cursor</small></div>
+            <div class="chip chip-core" style="--x:39;--y:28;--w:22;--h:44"><b>Input router</b><small>steamac-vm</small></div>
+            <div class="chip" style="--x:68;--y:8;--w:27;--h:15"><b>Xbox 360 pad</b><small>evdev</small></div>
+            <div class="chip" style="--x:68;--y:30;--w:27;--h:13"><b>Keyboard</b></div>
+            <div class="chip" style="--x:68;--y:50;--w:27;--h:13"><b>Mouse · relative</b></div>
+            <div class="chip" style="--x:68;--y:70;--w:27;--h:13"><b>Tablet · absolute</b></div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+        <!-- 2 · Sound -->
+        <div class="layer" style="--accent:#c084fc">
+          <div class="slab pcb">
+            <svg class="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M17.5 30V42M30 51H37M63 46H70M82.5 24V36M82.5 56V66M30 78H33.5V64H37"/>
+            </svg>
+            <div class="silk silk-tl">STEAMAC · AUDIO · REV A</div>
+            <div class="silk silk-big">SOUND</div>
+            <div class="chip" style="--x:5;--y:12;--w:25;--h:18"><b>SteamOS</b><small>PipeWire</small></div>
+            <div class="chip" style="--x:5;--y:42;--w:25;--h:18"><b>virtio-snd</b><small>PCM · 8–48 kHz</small></div>
+            <div class="chip" style="--x:5;--y:70;--w:25;--h:16"><b>Mic in</b><small>HAL input</small></div>
+            <div class="chip chip-core chip-ring" style="--x:37;--y:26;--w:26;--h:48"><b>SPSC ring</b><small>lock-free</small></div>
+            <div class="chip" style="--x:70;--y:8;--w:25;--h:16"><b>Device clock</b><small>10 · 20 · 60 ms</small></div>
+            <div class="chip" style="--x:70;--y:36;--w:25;--h:20"><b>CoreAudio</b><small>AUHAL output</small></div>
+            <div class="chip" style="--x:70;--y:66;--w:25;--h:18"><b>Any output</b><small>speakers · AirPods · DAC</small></div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+        <!-- 3 · Graphics translation -->
+        <div class="layer" style="--accent:#fb923c">
+          <div class="slab pcb">
+            <svg class="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M24 20H30M48 20H54M72 20H78M87 58V72H72M54 72H48M30 72H24"/>
+            </svg>
+            <div class="silk silk-tl">STEAMAC · GPU · REV A</div>
+            <div class="silk silk-big">GRAPHICS</div>
+            <div class="silk" style="--x:4;--y:3">GUEST · STEAMOS</div>
+            <div class="silk" style="--x:4;--y:55">HOST · MACOS</div>
+            <div class="chip" style="--x:4;--y:10;--w:20;--h:20"><b>DirectX</b><small>9 · 10 · 11</small></div>
+            <div class="chip" style="--x:30;--y:10;--w:18;--h:20"><b>DXVK</b><small>→ Vulkan</small></div>
+            <div class="chip" style="--x:54;--y:10;--w:18;--h:20"><b>Venus</b><small>Mesa · guest</small></div>
+            <div class="chip chip-core" style="--x:78;--y:10;--w:18;--h:48"><b>virtio-gpu</b><small>16K blobs · fences</small></div>
+            <div class="chip" style="--x:54;--y:62;--w:18;--h:20"><b>virglrenderer</b><small>Venus host</small></div>
+            <div class="chip" style="--x:30;--y:62;--w:18;--h:20"><b>MoltenVK</b><small>GS · XFB · depth clip</small></div>
+            <div class="chip" style="--x:4;--y:62;--w:20;--h:20"><b>Metal</b><small>Apple GPU</small></div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+        <!-- 4 · CPU translation -->
+        <div class="layer" style="--accent:#fb7185">
+          <div class="slab pcb">
+            <svg class="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M16 30V44M27 53H36M64 30H67V19H70M64 50H70M50 62V72M16 74V62"/>
+            </svg>
+            <div class="silk silk-tl">STEAMAC · CPU · REV A</div>
+            <div class="silk silk-big">X86 → ARM</div>
+            <div class="chip" style="--x:5;--y:12;--w:22;--h:18"><b>game.exe</b><small>Windows · x86-64</small></div>
+            <div class="chip" style="--x:5;--y:44;--w:22;--h:18"><b>Proton 11</b><small>ARM64</small></div>
+            <div class="chip" style="--x:5;--y:74;--w:22;--h:13"><b>Steam</b><small>native ARM64</small></div>
+            <div class="chip chip-core" style="--x:36;--y:20;--w:28;--h:42"><b>FEX</b><small>x86 → ARM64 JIT</small></div>
+            <div class="chip" style="--x:36;--y:72;--w:28;--h:14"><b>x86 Venus</b><small>i386 · x86-64 Mesa</small></div>
+            <div class="chip" style="--x:70;--y:10;--w:25;--h:18"><b>Apple TSO</b><small>PR_SET_MEM_MODEL</small></div>
+            <div class="chip" style="--x:70;--y:40;--w:25;--h:20"><b>vCPU</b><small>ARM64 · hardware TSO</small></div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+        <!-- 5 · Core -->
+        <div class="layer" style="--accent:#22d3ee">
+          <div class="slab pcb">
+            <svg class="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M31 16H33.5V30H36M31 40H36M31 66H33.5V56H36M64 30H66.5V16H70M64 40H70M64 56H66.5V65H70M50 66V74"/>
+            </svg>
+            <div class="silk silk-tl">STEAMAC · CORE · REV A</div>
+            <div class="silk silk-big">CORE</div>
+            <div class="chip" style="--x:5;--y:8;--w:26;--h:16"><b>Hypervisor.framework</b><small>macOS</small></div>
+            <div class="chip" style="--x:5;--y:32;--w:26;--h:16"><b>libkrun</b><small>microVM · virtio</small></div>
+            <div class="chip" style="--x:5;--y:58;--w:26;--h:16"><b>gvproxy</b><small>DHCP · NAT · SSH</small></div>
+            <div class="chip chip-core chip-soc" style="--x:36;--y:22;--w:28;--h:44"><b>Apple silicon</b><small>M-series</small></div>
+            <div class="chip" style="--x:36;--y:74;--w:28;--h:12"><b>QoS</b><small>user-interactive</small></div>
+            <div class="chip" style="--x:70;--y:8;--w:25;--h:16"><b>initramfs</b><small>bootloader · A/B</small></div>
+            <div class="chip" style="--x:70;--y:32;--w:25;--h:16"><b>RAUC OTA</b><small>signed · rollback</small></div>
+            <div class="chip" style="--x:70;--y:56;--w:25;--h:18"><b>SteamOS image</b><small>Valve · Steam Frame</small></div>
+            <div class="dim"></div>
+          </div>
+          <div class="edge edge-b"></div><div class="edge edge-l"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Feature panel: one article per layer, shown while that layer is pulled out. -->
+    <aside class="panel" aria-live="polite">
+      <article class="info" data-i="-1">
+        <p class="info-kicker"><span lang="en">Exploded view</span><span lang="ru">В разборе</span></p>
+        <h2><span lang="en">Six layers between Steam and the silicon.</span><span lang="ru">Шесть слоёв между Steam и кремнием.</span></h2>
+        <p><span lang="en">Keep scrolling: each board is one part of the stack, and how it works.</span><span lang="ru">Листайте дальше: каждая плата — одна часть стека и то, как она работает.</span></p>
+      </article>
+
+      <article class="info" data-i="0" style="--accent:#66c0f4">
+        <p class="info-kicker">01 · <span lang="en">Display</span><span lang="ru">Экран</span></p>
+        <h2><span lang="en">SteamOS in a Mac window</span><span lang="ru">SteamOS в окне macOS</span></h2>
+        <p class="info-lede"><span lang="en">The real SteamOS gamepad UI, drawn by gamescope inside the VM and presented by a native Metal window.</span><span lang="ru">Настоящий игровой интерфейс SteamOS: его рисует gamescope внутри ВМ, а показывает нативное окно на Metal.</span></p>
+        <ul>
+          <li><span lang="en">Guest resolution follows the window at constant DPI — the EDID is computed from your screen's physical size, so text stays crisp in a window or full screen (Ctrl+Cmd+F).</span><span lang="ru">Разрешение гостя следует за размером окна при постоянном DPI — EDID считается из физического размера экрана, поэтому текст чёткий и в окне, и на весь экран (Ctrl+Cmd+F).</span></li>
+          <li><span lang="en">Resizing is live: the new size reaches SteamOS as a display change, no reboot.</span><span lang="ru">Ресайз — на лету: новый размер приходит в SteamOS как смена дисплея, без перезагрузки.</span></li>
+          <li><span lang="en">The launcher overlay shows boot and shutdown progress reported by an agent inside SteamOS. Closing the window presses the power button: clean shutdown in 2–4 s.</span><span lang="ru">Оверлей лаунчера показывает прогресс загрузки и выключения — его сообщает агент внутри SteamOS. Закрыть окно = нажать кнопку питания: чистое выключение за 2–4 с.</span></li>
+        </ul>
+        <p class="tags"><span>gamescope</span><span>Metal</span><span>EDID</span><span>virtio-gpu</span></p>
+      </article>
+
+      <article class="info" data-i="1" style="--accent:#4ade80">
+        <p class="info-kicker">02 · <span lang="en">Controls</span><span lang="ru">Управление</span></p>
+        <h2><span lang="en">Any controller. A mouse that just works.</span><span lang="ru">Любой геймпад. Мышь, которая просто работает.</span></h2>
+        <p class="info-lede"><span lang="en">Every gamepad macOS knows becomes an Xbox 360 pad inside SteamOS; keyboard and mouse go in through virtio-input.</span><span lang="ru">Любой геймпад, который видит macOS, становится в SteamOS геймпадом Xbox 360; клавиатура и мышь идут через virtio-input.</span></p>
+        <ul>
+          <li><span lang="en">GameController.framework reads Xbox, DualSense, DualShock and MFi pads; the launcher drives a virtual Xbox 360 pad, so Steam Input and games see a standard controller.</span><span lang="ru">GameController.framework читает Xbox, DualSense, DualShock и MFi; лаунчер ведёт виртуальный Xbox 360 pad, поэтому Steam Input и игры видят стандартный контроллер.</span></li>
+          <li><span lang="en">Pick the controller, swap A/B and X/Y for Nintendo-style layouts, set a stick deadzone — while the game runs.</span><span lang="ru">Выбор контроллера, перестановка A/B и X/Y под раскладку Nintendo, мёртвая зона стиков — прямо во время игры.</span></li>
+          <li><span lang="en">gamescope ignores absolute pointers, so the SteamOS cursor is moved with unaccelerated relative motion and tracks the Mac cursor 1:1. In a game the first click captures the mouse for mouse-look, Ctrl+Option releases it — remembered per game.</span><span lang="ru">gamescope не принимает абсолютные координаты, поэтому курсор SteamOS ведётся относительными сдвигами без ускорения и точно следует за курсором Mac. В игре первый щелчок захватывает мышь для обзора, Ctrl+Option отпускает — выбор запоминается для каждой игры.</span></li>
+        </ul>
+        <p class="tags"><span>virtio-input</span><span>GameController</span><span>evdev</span></p>
+      </article>
+
+      <article class="info" data-i="2" style="--accent:#c084fc">
+        <p class="info-kicker">03 · <span lang="en">Sound</span><span lang="ru">Звук</span></p>
+        <h2><span lang="en">Native CoreAudio sound</span><span lang="ru">Родной звук через CoreAudio</span></h2>
+        <p class="info-lede"><span lang="en">A virtio-snd device with a CoreAudio backend written for steamac — no PipeWire on the Mac, no drivers to install.</span><span lang="ru">Устройство virtio-snd с бэкендом CoreAudio, написанным для steamac: без PipeWire на Mac и без драйверов.</span></p>
+        <ul>
+          <li><span lang="en">The guest stream (8–48 kHz, mono or stereo, integer or float) is copied into a lock-free ring; CoreAudio's real-time callback only reads from it.</span><span lang="ru">Поток гостя (8–48 кГц, моно или стерео, целые или float) копируется в lock-free кольцевой буфер; real-time колбэк CoreAudio только читает из него.</span></li>
+          <li><span lang="en">Playback is paced by the output device's clock, so the guest never runs ahead of real time; the reported latency includes CoreAudio's own, keeping audio and video in sync.</span><span lang="ru">Воспроизведение идёт по часам устройства вывода — гость не убегает вперёд реального времени; в задержку включена задержка самого CoreAudio, звук не расходится с картинкой.</span></li>
+          <li><span lang="en">Output device, volume and buffer (10 / 20 / 60 ms) change on the fly; if a device disappears, sound falls back to the system default. The microphone opens only while SteamOS records.</span><span lang="ru">Устройство вывода, громкость и буфер (10 / 20 / 60 мс) меняются на лету; пропало устройство — звук уходит на системное. Микрофон открывается только пока SteamOS записывает.</span></li>
+        </ul>
+        <p class="tags"><span>virtio-snd</span><span>CoreAudio</span><span>AUHAL</span></p>
+      </article>
+
+      <article class="info" data-i="3" style="--accent:#fb923c">
+        <p class="info-kicker">04 · <span lang="en">Graphics translation</span><span lang="ru">Трансляция графики</span></p>
+        <h2>DirectX → Vulkan → Metal</h2>
+        <p class="info-lede"><span lang="en">Windows games render through a chain of translations, GPU-accelerated end to end.</span><span lang="ru">Windows-игры рисуют через цепочку трансляций — с аппаратным ускорением на всём пути.</span></p>
+        <ul>
+          <li><span lang="en">DXVK in Proton turns DirectX 9/10/11 into Vulkan. Mesa's Venus driver in the VM serializes the Vulkan calls to the host over virtio-gpu, sharing memory as 16K-aligned blobs.</span><span lang="ru">DXVK в Proton превращает DirectX 9/10/11 в Vulkan. Драйвер Venus из Mesa внутри ВМ сериализует вызовы Vulkan и передаёт их хосту через virtio-gpu; память общая — blob-ресурсы с выравниванием 16K.</span></li>
+          <li><span lang="en">On the Mac, virglrenderer replays them on MoltenVK, which runs them on Metal. SteamOS sees “Virtio-GPU Venus (Apple M4 Max)” with Vulkan 1.4.</span><span lang="ru">На Mac virglrenderer исполняет их на MoltenVK, а тот — на Metal. SteamOS видит «Virtio-GPU Venus (Apple M4 Max)» с Vulkan 1.4.</span></li>
+          <li><span lang="en">Patched MoltenVK adds what DXVK needs: geometry shaders, transform feedback, depth clip, null descriptors. Metal caches compiled shaders — a new effect stutters once, then never again.</span><span lang="ru">Пропатченный MoltenVK даёт то, что нужно DXVK: геометрические шейдеры, transform feedback, depth clip, null-дескрипторы. Metal кеширует шейдеры — новый эффект подтормаживает один раз, потом никогда.</span></li>
+        </ul>
+        <p class="tags"><span>DXVK</span><span>Venus</span><span>virglrenderer</span><span>MoltenVK</span></p>
+      </article>
+
+      <article class="info" data-i="4" style="--accent:#fb7185">
+        <p class="info-kicker">05 · <span lang="en">CPU translation</span><span lang="ru">Трансляция процессора</span></p>
+        <h2><span lang="en">x86 games on ARM</span><span lang="ru">x86-игры на ARM</span></h2>
+        <p class="info-lede"><span lang="en">Proton 11 for ARM64 runs the Windows game; FEX translates its x86 code to ARM64 on the fly.</span><span lang="ru">Proton 11 для ARM64 запускает Windows-игру, а FEX на лету транслирует её x86-код в ARM64.</span></p>
+        <ul>
+          <li><span lang="en">Steam itself installs Proton 11 (ARM64) and FEX. The Steam client and the UI are native ARM64; only the game is emulated.</span><span lang="ru">Proton 11 (ARM64) и FEX ставит сам Steam. Клиент Steam и интерфейс — нативные ARM64; эмулируется только игра.</span></li>
+          <li><span lang="en">x86 code expects strong memory ordering (TSO). Apple silicon can do TSO in hardware: guest kernel patches expose it through PR_SET_MEM_MODEL, so FEX switches it on instead of emulating barriers.</span><span lang="ru">x86-код рассчитывает на строгий порядок памяти (TSO). Apple silicon умеет TSO аппаратно: патчи гостевого ядра открывают его через PR_SET_MEM_MODEL, и FEX включает его вместо эмуляции барьеров.</span></li>
+          <li><span lang="en">i386 and x86-64 builds of the Venus driver let emulated code reach the GPU too.</span><span lang="ru">Сборки Venus для i386 и x86-64 дают доступ к GPU и эмулируемому коду.</span></li>
+        </ul>
+        <p class="tags"><span>FEX</span><span>Proton 11 ARM64</span><span>Apple TSO</span></p>
+      </article>
+
+      <article class="info" data-i="5" style="--accent:#22d3ee">
+        <p class="info-kicker">06 · <span lang="en">Core</span><span lang="ru">Ядро</span></p>
+        <h2><span lang="en">Real SteamOS, tiny VM</span><span lang="ru">Настоящий SteamOS, маленькая ВМ</span></h2>
+        <p class="info-lede"><span lang="en">Valve's own ARM64 SteamOS image, booted by libkrun on Hypervisor.framework — no QEMU, no CPU emulation for the OS.</span><span lang="ru">Собственный ARM64-образ SteamOS от Valve, загруженный libkrun на Hypervisor.framework — без QEMU и без эмуляции процессора для системы.</span></p>
+        <ul>
+          <li><span lang="en">The image comes from Valve as a signed RAUC bundle; signature and sha256 are verified. The SteamOS root filesystem is never modified — VM bits live in the initramfs and a separate read-only layer.</span><span lang="ru">Образ скачивается с серверов Valve подписанным RAUC-бандлом; подпись и sha256 проверяются. Корневая ФС SteamOS не изменяется — всё для ВМ живёт в initramfs и отдельном read-only слое.</span></li>
+          <li><span lang="en">So official updates just work: RAUC installs into the other A/B slot and rolls back the standard way, with the initramfs acting as the bootloader.</span><span lang="ru">Поэтому официальные обновления просто работают: RAUC ставит их в другой слот A/B и откатывает штатно, а initramfs играет роль загрузчика.</span></li>
+          <li><span lang="en">vCPU and GPU threads run at user-interactive QoS; networking goes through gvproxy, with SSH on localhost:2222.</span><span lang="ru">Потоки vCPU и GPU работают с QoS user-interactive; сеть — через gvproxy, SSH на localhost:2222.</span></li>
+        </ul>
+        <p class="tags"><span>libkrun</span><span>Hypervisor.framework</span><span>RAUC A/B</span><span>gvproxy</span></p>
+      </article>
+    </aside>
+
+    <nav class="rail" aria-label="Layers">
+      <button type="button" data-go="0" style="--accent:#66c0f4"><span lang="en">Display</span><span lang="ru">Экран</span></button>
+      <button type="button" data-go="1" style="--accent:#4ade80"><span lang="en">Controls</span><span lang="ru">Управление</span></button>
+      <button type="button" data-go="2" style="--accent:#c084fc"><span lang="en">Sound</span><span lang="ru">Звук</span></button>
+      <button type="button" data-go="3" style="--accent:#fb923c"><span lang="en">Graphics</span><span lang="ru">Графика</span></button>
+      <button type="button" data-go="4" style="--accent:#fb7185"><span lang="en">x86 → ARM</span><span lang="ru">x86 → ARM</span></button>
+      <button type="button" data-go="5" style="--accent:#22d3ee"><span lang="en">Core</span><span lang="ru">Ядро</span></button>
+    </nav>
+
+    <div class="scroll-hint" aria-hidden="true"><span lang="en">Scroll to take it apart</span><span lang="ru">Листайте, чтобы разобрать</span><i></i></div>
+  </div>
+</section>
+
+<section class="section proof" id="proof">
+  <div class="wrap">
+    <p class="kicker"><span lang="en">Recorded, not rendered</span><span lang="ru">Это запись, а не рендер</span></p>
+    <h2><span lang="en">Real games, real Steam.</span><span lang="ru">Настоящие игры, настоящий Steam.</span></h2>
+    <p class="section-lede">
+      <span lang="en">The screen above is captured from the VM's framebuffer on an M4 Max: the Steam gamepad UI, then the Windows x86-64 build of Diplomacy is Not an Option running through Proton 11 (ARM64). Capture was limited to a few frames per second, so the clip is motion-interpolated to 30 fps.</span>
+      <span lang="ru">Экран выше снят с фреймбуфера ВМ на M4 Max: интерфейс Steam, затем Windows x86-64 сборка Diplomacy is Not an Option через Proton 11 (ARM64). Захват шёл с частотой несколько кадров в секунду, поэтому ролик интерполирован до 30 fps.</span>
+    </p>
+    <div class="cards">
+      <div class="card">
+        <h3>Death's Door</h3>
+        <p><span lang="en">DirectX 11 · DXVK → Venus → MoltenVK. The first game that ran.</span><span lang="ru">DirectX 11 · DXVK → Venus → MoltenVK. Первая игра, которая запустилась.</span></p>
+      </div>
+      <div class="card">
+        <h3>Heroes of Might and Magic: Olden Era</h3>
+        <p><span lang="en">Unity · DirectX 11. Seven minutes of play without a single error.</span><span lang="ru">Unity · DirectX 11. Семь минут игры без единой ошибки.</span></p>
+      </div>
+      <div class="card">
+        <h3>Diplomacy is Not an Option</h3>
+        <p><span lang="en">Unity · Windows x86-64 via Proton 11 and FEX. The game in the video.</span><span lang="ru">Unity · Windows x86-64 через Proton 11 и FEX. Игра из ролика.</span></p>
+      </div>
+    </div>
+
+    <div class="limits">
+      <h3><span lang="en">Honest limits</span><span lang="ru">Честные ограничения</span></h3>
+      <ul>
+        <li><span lang="en"><b>DirectX 12</b> (vkd3d-proton) doesn't run yet: MoltenVK lacks features it needs.</span><span lang="ru"><b>DirectX 12</b> (vkd3d-proton) пока не работает: MoltenVK не даёт нужных возможностей.</span></li>
+        <li><span lang="en"><b>Anti-cheat</b> that blocks virtual machines won't let you in.</span><span lang="ru"><b>Античиты</b>, блокирующие виртуальные машины, не пропустят.</span></li>
+        <li><span lang="en"><b>First-time effects</b> stutter while Metal compiles the pipeline (~50–100 ms); after that it's cached, even across VM restarts.</span><span lang="ru"><b>Новые эффекты</b> подтормаживают, пока Metal компилирует конвейер (~50–100 мс); дальше всё из кеша, даже после перезапуска ВМ.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section get" id="get">
+  <div class="wrap">
+    <p class="kicker"><span lang="en">Get it</span><span lang="ru">Начать</span></p>
+    <h2><span lang="en">Put SteamOS on your Mac.</span><span lang="ru">Поставьте SteamOS на свой Mac.</span></h2>
+
+    <div class="get-grid">
+      <div class="get-card get-main">
+        <a class="btn btn-primary btn-big" data-dl href="https://github.com/fxgl/steamac/releases/latest">
+          <span lang="en">Download FX Steam Launcher</span><span lang="ru">Скачать FX Steam Launcher</span>
+          <small data-ver></small>
+        </a>
+        <a class="all-releases" href="https://github.com/fxgl/steamac/releases"><span lang="en">All releases</span><span lang="ru">Все релизы</span> →</a>
+        <ol class="steps">
+          <li><span lang="en">Download the launcher from the latest release and move it to Applications.</span><span lang="ru">Скачайте лаунчер из последнего релиза и перенесите в «Программы».</span></li>
+          <li><span lang="en">Build the SteamOS disk with <code>./build.sh guest</code>: it downloads Valve's signed image, checks it and lays out the disk (needs OrbStack or Docker). On first start the launcher asks for the image and uses it in place.</span><span lang="ru">Соберите диск SteamOS командой <code>./build.sh guest</code>: она скачает подписанный образ Valve, проверит его и разметит диск (нужен OrbStack или Docker). При первом запуске лаунчер спросит образ и будет использовать его на месте.</span></li>
+          <li><span lang="en">Sign in to Steam and install games — Steam brings Proton 11 (ARM64) and FEX itself.</span><span lang="ru">Войдите в Steam и ставьте игры — Proton 11 (ARM64) и FEX Steam поставит сам.</span></li>
+        </ol>
+      </div>
+
+      <div class="get-card">
+        <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
+<pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
+<span class="c"># guest kernel, Mesa and the SteamOS disk</span>
+git clone https://github.com/fxgl/steamac
+cd steamac
+./build.sh
+./run.sh</code></pre>
+        <h3><span lang="en">Requirements</span><span lang="ru">Требования</span></h3>
+        <ul class="req">
+          <li><span lang="en">Mac with Apple silicon, macOS 15 or later</span><span lang="ru">Mac на Apple silicon, macOS 15 или новее</span></li>
+          <li><span lang="en">~150 GB free disk (the image is sparse)</span><span lang="ru">~150 ГБ свободного места (образ разреженный)</span></li>
+          <li><span lang="en">To build: Xcode, Homebrew, rustup, OrbStack</span><span lang="ru">Для сборки: Xcode, Homebrew, rustup, OrbStack</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p><span lang="en">steamac is an independent project, not affiliated with or endorsed by Valve. Steam, SteamOS and Steam Frame are trademarks of Valve Corporation.</span><span lang="ru">steamac — независимый проект, не связанный с Valve. Steam, SteamOS и Steam Frame — товарные знаки Valve Corporation.</span></p>
+    <p><span lang="en">Built on</span><span lang="ru">Построено на</span> <a href="https://github.com/containers/libkrun">libkrun</a>, <a href="https://gitlab.freedesktop.org/virgl/virglrenderer">virglrenderer</a>, <a href="https://github.com/KhronosGroup/MoltenVK">MoltenVK</a> (<a href="https://github.com/utmapp/MoltenVK">UTM fork</a>), <a href="https://mesa3d.org">Mesa</a>, <a href="https://fex-emu.com">FEX</a>, <a href="https://github.com/doitsujin/dxvk">DXVK</a>, <a href="https://github.com/ValveSoftware/Proton">Proton</a>, <a href="https://github.com/containers/gvisor-tap-vsock">gvproxy</a>.</p>
+    <p class="muted"><a href="https://github.com/fxgl/steamac">github.com/fxgl/steamac</a></p>
+  </div>
+</footer>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>

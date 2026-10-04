@@ -42,6 +42,8 @@ final class BootProgress {
     var onRebootIntent: (() -> Void)?
     /// Which guest app has focus (`focus steam` / `focus game <appid>` / `focus desktop`).
     var onFocus: ((GuestFocus) -> Void)?
+    /// `game <appid> <name>`: the display name of a game the guest focused.
+    var onGameName: ((Int, String) -> Void)?
 
     private var sawConsole = false
     private var okLines = 0
@@ -132,6 +134,11 @@ final class BootProgress {
             case "game": onFocus?(.game(parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0))
             default: break
             }
+        case "game":   // game <appid> <name>: display name of a focused game (Settings > Mouse)
+            guard parts.count >= 3, let id = Int(parts[1]), id > 0,
+                  let r = line.range(of: parts[1], range: line.index(line.startIndex, offsetBy: 4)..<line.endIndex) else { return }
+            let name = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { onGameName?(id, name) }
         default:
             break   // forward compatible
         }
@@ -148,6 +155,14 @@ final class BootProgress {
         } else {
             beginShutdown(reboot: false)
         }
+    }
+
+    /// "Restart VM" (Settings / menu): the launcher pressed the power key and relaunches the VM
+    /// once it is off (onRebootIntent writes the supervisor's reboot marker).
+    func hostRequestedRestart() {
+        guard !hostRequestedPowerOff else { return }
+        beginShutdown(reboot: true)
+        noteReboot()
     }
 
     // MARK: shutdown

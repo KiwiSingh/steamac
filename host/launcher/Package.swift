@@ -19,6 +19,8 @@ let package = Package(
                 .linkedFramework("GameController"),
                 .linkedFramework("ImageIO"),
                 .linkedFramework("Carbon"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("SwiftUI"),
             ]
         ),
     ],

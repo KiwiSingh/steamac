@@ -16,9 +16,17 @@ import Foundation
 ///   menu game|global      toggle Mouse > Capture Mouse in This Game / Auto-Capture Mouse in Games
 ///   guest LINE            handle LINE as if the guest had sent it on fx.progress
 ///   dump PATH             frame + window dump (as SIGUSR1, to PATH)
+///   settings TAB|close    open the Settings window at TAB (general, display, mouse, controller,
+///                         sound, advanced) or close it
+///   settings-dump PATH    PNG of the Settings window
+///   restart               Restart VM (as the menu / Settings button)
+///   set KEY VALUE         change a setting as the Settings window would (LauncherSettings.Key names)
 enum DebugControl {
+    nonisolated(unsafe) private static var settingsWindow: SettingsWindowController?
+
     static func start(path: String, window wc: WindowController, progress: BootProgress,
-                      dump: @escaping (String) -> Void) {
+                      settingsWindow: SettingsWindowController, dump: @escaping (String) -> Void) {
+        self.settingsWindow = settingsWindow
         unlink(path)
         guard mkfifo(path, 0o600) == 0 else {
             log("control: cannot create FIFO \(path): \(String(cString: strerror(errno)))")
@@ -106,6 +114,22 @@ enum DebugControl {
         case "release": wc.releasePointer()
         case "guest": progress.guestLine(p.count > 1 ? p[1] : "")
         case "dump": dump(args.first ?? "control-dump.png")
+        case "settings":
+            guard let sw = settingsWindow else { break }
+            if args.first == "close" { sw.window.close(); break }
+            let tab = SettingsWindowController.Tab.allCases.first { $0.title.lowercased() == (args.first ?? "general") }
+            sw.show(tab: tab ?? .general)
+        case "settings-dump":
+            guard let sw = settingsWindow, let rep = sw.snapshot(),
+                  let png = rep.representation(using: .png, properties: [:]) else { log("control: settings dump failed"); break }
+            let out = args.first ?? "settings.png"
+            do { try png.write(to: URL(fileURLWithPath: out)); log("control: settings window dumped to \(out)") }
+            catch { log("control: settings dump failed: \(error)") }
+        case "restart": lifecycle.requestRestart()
+        case "set":
+            guard args.count >= 2 else { break }
+            let value = args.dropFirst().joined(separator: " ")
+            if !LauncherSettings.shared.set(args[0], value) { log("control: set: unknown key or bad value") }
         default: log("control: unknown command")
         }
     }

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build the steamac-vm launcher (release), sign it with the hypervisor entitlement and
-# install it as work/out/steamac-vm. Also fetches the pinned gvproxy into work/out/host/bin.
+# install it as work/out/steamac-vm. Also fetches the pinned gvproxy into work/out/host/bin and
+# assembles work/out/FX Steam Launcher.app (bundle.sh; skipped with STEAMAC_NO_BUNDLE=1 or when
+# the kernel/initramfs/layer images are not built yet).
 #
 # libkrun (v1.19.6 C API, built with GPU=1 INPUT=1 BLK=1 NET=1) is taken from
 # $KRUN_PREFIX (default: work/out/host, produced by host/libkrun). The binary's rpath is
@@ -50,3 +52,11 @@ mv -f "$tmp" "$OUT/steamac-vm"
 echo "built $OUT/steamac-vm"
 otool -L "$OUT/steamac-vm" | awk '/libkrun/'
 codesign -d --entitlements - "$OUT/steamac-vm" 2>&1 | grep -E 'hypervisor|library-validation' || true
+
+if [[ "${STEAMAC_NO_BUNDLE:-}" == 1 ]]; then
+    echo "STEAMAC_NO_BUNDLE=1: app bundle skipped"
+elif [[ -f "$OUT/Image" && -f "$OUT/initramfs.cpio.gz" && -f "$OUT/steamac-layer.img" ]]; then
+    KRUN_PREFIX="$KRUN_PREFIX" "$HERE/bundle.sh" "$OUT/steamac-vm"
+else
+    echo "app bundle skipped: build Image, initramfs.cpio.gz and steamac-layer.img first" >&2
+fi

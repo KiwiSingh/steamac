@@ -2,8 +2,10 @@ import AppKit
 import Foundation
 import QuartzCore
 import os
+import Synchronization
 
-/// `--perf-stats` / STEAMAC_PERF_STATS=1: every 5 s, log how guest frames travel to the screen.
+/// `--perf-stats` / STEAMAC_PERF_STATS=1 / Settings > General: every 5 s, log how guest frames
+/// travel to the screen (switchable while the VM runs, `setEnabled`).
 ///
 ///   flush   guest flushes of scanout 0 (libkrun present_frame, GPU worker thread): interval
 ///           distribution and libkrun's per-flush copy into our frame (alloc_frame -> present_frame)
@@ -17,10 +19,10 @@ import os
 ///
 /// Intervals over 25 ms (more than 1.5 frames at 60 Hz) and 50 ms are the visible stutters.
 final class PerfStats {
-    static let shared: PerfStats? = {
-        let env = ProcessInfo.processInfo.environment["STEAMAC_PERF_STATS"]
-        return (env == "1" || CommandLine.arguments.contains("--perf-stats")) ? PerfStats() : nil
-    }()
+    static let instance = PerfStats()
+    private static let enabled = Atomic<Bool>(false)
+    /// The collector while stats are on (hot paths: one relaxed atomic load when off).
+    static var shared: PerfStats? { enabled.load(ordering: .relaxed) ? instance : nil }
 
     static let period: TimeInterval = 5
 
@@ -44,6 +46,7 @@ final class PerfStats {
     private let linkTarget = LinkTarget()
 
     private init() { linkTarget.stats = self }
+    private weak var view: NSView?
 
     private func locked(_ body: () -> Void) {
         os_unfair_lock_lock(&lock)
@@ -51,18 +54,43 @@ final class PerfStats {
         os_unfair_lock_unlock(&lock)
     }
 
-    func start() {
+    /// Main thread: start / stop collecting and reporting.
+    static func setEnabled(_ on: Bool) {
+        guard enabled.load(ordering: .relaxed) != on else { return }
+        instance.locked {
+            instance.flushTimes.removeAll(); instance.copyMs.removeAll(); instance.shownTimes.removeAll()
+            instance.refreshesPerFrame.removeAll(); instance.latencyMs.removeAll(); instance.uploadMs.removeAll()
+            instance.drawableWaitMs.removeAll(); instance.taken = 0; instance.allocAt = 0
+            instance.lastFlush = 0; instance.lastShown = 0
+        }
+        enabled.store(on, ordering: .relaxed)
+        if on { instance.start() } else { instance.stop() }
+    }
+
+    private func start() {
         let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         t.schedule(deadline: .now() + PerfStats.period, repeating: PerfStats.period)
         t.setEventHandler { [weak self] in self?.report() }
         t.resume()
         timer = t
+        if let view { attach(view: view) }
         log("perf: stats every \(Int(PerfStats.period)) s (intervals in ms; >25/>50 = intervals longer than that)")
     }
 
-    /// Main thread: follow the refreshes of the display showing `view`.
-    func attach(view: NSView) {
+    private func stop() {
+        timer?.cancel()
+        timer = nil
         displayLink?.invalidate()
+        displayLink = nil
+        log("perf: stats off")
+    }
+
+    /// Main thread: follow the refreshes of the display showing `view` (while stats are on).
+    func attach(view: NSView) {
+        self.view = view
+        displayLink?.invalidate()
+        displayLink = nil
+        guard PerfStats.shared != nil else { return }
         let link = view.displayLink(target: linkTarget, selector: #selector(LinkTarget.tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link

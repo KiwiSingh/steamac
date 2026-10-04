@@ -1,13 +1,18 @@
+import Combine
 import Foundation
 import GameController
 
-/// Feeds the fixed virtual Xbox 360 pad from whichever GameController.framework
-/// extended gamepad (Xbox, DualSense, DualShock, MFi, ...) is current.
+/// Feeds the fixed virtual Xbox 360 pad from a GameController.framework extended gamepad (Xbox,
+/// DualSense, DualShock, MFi, ...): Settings > Controller picks which one (first connected by
+/// default), swaps A/B and X/Y for Nintendo-style layouts and applies a radial stick deadzone,
+/// all while the VM runs.
 final class GamepadBridge {
     private let device: InputDevice
+    private let settings: LauncherSettings
     private var controller: GCController?
     private var state = PadState()
     private var observers: [NSObjectProtocol] = []
+    private var subscriptions: [AnyCancellable] = []
 
     struct PadState: Equatable {
         var buttons: [UInt16: Bool] = [:]
@@ -18,10 +23,26 @@ final class GamepadBridge {
                                         BTN.SELECT, BTN.START, BTN.MODE, BTN.THUMBL, BTN.THUMBR]
     static let axisCodes: [UInt16] = [ABS.X, ABS.Y, ABS.Z, ABS.RX, ABS.RY, ABS.RZ, ABS.HAT0X, ABS.HAT0Y]
 
-    init(device: InputDevice) {
+    init(device: InputDevice, settings: LauncherSettings) {
         self.device = device
+        self.settings = settings
         for c in GamepadBridge.buttonCodes { state.buttons[c] = false }
         for a in GamepadBridge.axisCodes { state.axes[a] = 0 }
+    }
+
+    /// Settings identifier of a controller: "<vendorName>|<productCategory>".
+    static func identifier(of c: GCController) -> String {
+        "\(c.vendorName ?? "?")|\(c.productCategory)"
+    }
+
+    static func displayName(of c: GCController) -> String {
+        let vendor = c.vendorName ?? "Controller"
+        return vendor == c.productCategory ? vendor : "\(vendor) (\(c.productCategory))"
+    }
+
+    /// Extended gamepads in connection order.
+    static var connected: [GCController] {
+        GCController.controllers().filter { $0.extendedGamepad != nil }
     }
 
     func start() {
@@ -38,39 +59,75 @@ final class GamepadBridge {
         observers.append(nc.addObserver(forName: .GCControllerDidBecomeCurrent, object: nil, queue: .main) { [weak self] _ in
             self?.selectController()
         })
+        // @Published emits before the property changes: re-read on the next main-queue turn.
+        subscriptions.append(settings.$controllerID.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.selectController()
+        })
+        subscriptions.append(settings.$swapABXY.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refresh() })
+        subscriptions.append(settings.$stickDeadzone.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refresh() })
         GCController.startWirelessControllerDiscovery(completionHandler: nil)
         selectController()
     }
 
     private func selectController() {
-        let candidates = GCController.controllers().filter { $0.extendedGamepad != nil }
-        let next = (GCController.current.flatMap { c in candidates.contains(c) ? c : nil }) ?? candidates.first
+        let candidates = GamepadBridge.connected
+        let next: GCController?
+        if !settings.controllerID.isEmpty,
+           let chosen = candidates.first(where: { GamepadBridge.identifier(of: $0) == settings.controllerID }) {
+            next = chosen
+        } else {
+            // First connected (the chosen one is not connected: fall back to it as well).
+            next = candidates.first
+        }
         if next === controller { return }
         controller?.extendedGamepad?.valueChangedHandler = nil
         controller = next
         // Release everything the previous controller held.
         apply(PadState(buttons: Dictionary(uniqueKeysWithValues: GamepadBridge.buttonCodes.map { ($0, false) }),
                        axes: Dictionary(uniqueKeysWithValues: GamepadBridge.axisCodes.map { ($0, 0) })))
-        guard let pad = next?.extendedGamepad else { return }
-        log("gamepad active: \(next?.vendorName ?? "?") -> virtual Xbox 360 pad")
+        guard let pad = next?.extendedGamepad else {
+            log("gamepad: none connected")
+            return
+        }
+        log("gamepad active: \(next.map(GamepadBridge.displayName(of:)) ?? "?") -> virtual Xbox 360 pad")
         // Keep the Home/PS button for the guest (Steam button) instead of macOS.
         pad.buttonHome?.preferredSystemGestureState = .disabled
         pad.buttonOptions?.preferredSystemGestureState = .disabled
         pad.buttonMenu.preferredSystemGestureState = .disabled
-        pad.valueChangedHandler = { [weak self] pad, _ in self?.apply(GamepadBridge.read(pad)) }
-        apply(GamepadBridge.read(pad))
+        pad.valueChangedHandler = { [weak self] pad, _ in self?.update(from: pad) }
+        update(from: pad)
     }
 
-    private static func stick(_ v: Float) -> Int32 {
+    /// Swap / deadzone changed: resend the current state with the new mapping.
+    private func refresh() {
+        if let pad = controller?.extendedGamepad { update(from: pad) }
+    }
+
+    private func update(from pad: GCExtendedGamepad) {
+        apply(GamepadBridge.read(pad, swapABXY: settings.swapABXY, deadzone: Float(settings.stickDeadzone) / 100))
+    }
+
+    private static func axis(_ v: Float) -> Int32 {
         Int32((max(-1, min(1, v)) * 32767).rounded())
     }
 
-    private static func read(_ p: GCExtendedGamepad) -> PadState {
+    /// Radial deadzone `dz` (0..1), rescaled so the stick still reaches full deflection.
+    static func deadzoned(_ x: Float, _ y: Float, _ dz: Float) -> (Float, Float) {
+        guard dz > 0 else { return (x, y) }
+        let m = (x * x + y * y).squareRoot()
+        guard m > dz else { return (0, 0) }
+        let scale = min(1, (m - dz) / (1 - dz)) / m
+        return (x * scale, y * scale)
+    }
+
+    static func read(_ p: GCExtendedGamepad, swapABXY: Bool, deadzone: Float) -> PadState {
         var s = PadState()
-        s.buttons[BTN.SOUTH] = p.buttonA.isPressed
-        s.buttons[BTN.EAST] = p.buttonB.isPressed
-        s.buttons[BTN.NORTH] = p.buttonX.isPressed   // xpad: Xbox "X" (west position) is BTN_X
-        s.buttons[BTN.WEST] = p.buttonY.isPressed    // xpad: Xbox "Y" (north position) is BTN_Y
+        let (south, east) = swapABXY ? (p.buttonB, p.buttonA) : (p.buttonA, p.buttonB)
+        let (west, north) = swapABXY ? (p.buttonY, p.buttonX) : (p.buttonX, p.buttonY)
+        s.buttons[BTN.SOUTH] = south.isPressed
+        s.buttons[BTN.EAST] = east.isPressed
+        s.buttons[BTN.NORTH] = west.isPressed    // xpad: Xbox "X" (west position) is BTN_X
+        s.buttons[BTN.WEST] = north.isPressed    // xpad: Xbox "Y" (north position) is BTN_Y
         s.buttons[BTN.TL] = p.leftShoulder.isPressed
         s.buttons[BTN.TR] = p.rightShoulder.isPressed
         s.buttons[BTN.SELECT] = p.buttonOptions?.isPressed ?? false
@@ -79,10 +136,12 @@ final class GamepadBridge {
         s.buttons[BTN.THUMBL] = p.leftThumbstickButton?.isPressed ?? false
         s.buttons[BTN.THUMBR] = p.rightThumbstickButton?.isPressed ?? false
         // xpad reports Y axes inverted relative to GameController (up = negative).
-        s.axes[ABS.X] = stick(p.leftThumbstick.xAxis.value)
-        s.axes[ABS.Y] = -stick(p.leftThumbstick.yAxis.value)
-        s.axes[ABS.RX] = stick(p.rightThumbstick.xAxis.value)
-        s.axes[ABS.RY] = -stick(p.rightThumbstick.yAxis.value)
+        let l = deadzoned(p.leftThumbstick.xAxis.value, p.leftThumbstick.yAxis.value, deadzone)
+        let r = deadzoned(p.rightThumbstick.xAxis.value, p.rightThumbstick.yAxis.value, deadzone)
+        s.axes[ABS.X] = axis(l.0)
+        s.axes[ABS.Y] = -axis(l.1)
+        s.axes[ABS.RX] = axis(r.0)
+        s.axes[ABS.RY] = -axis(r.1)
         s.axes[ABS.Z] = Int32((max(0, min(1, p.leftTrigger.value)) * 255).rounded())
         s.axes[ABS.RZ] = Int32((max(0, min(1, p.rightTrigger.value)) * 255).rounded())
         let d = p.dpad

@@ -27,6 +27,8 @@ final class VM {
     let ctx: UInt32
     private(set) var shutdownFd: Int32 = -1
     private(set) var running = false
+    /// This boot has a virtio-snd device (runtime controls: SoundControl).
+    private(set) var hasSound = false
     private let displayId: UInt32
     /// Boot EDID; its mm-per-pixel is reused for every resize (constant DPI).
     let edid: EdidSize.Result
@@ -64,6 +66,7 @@ final class VM {
         if o.sound {
             if krun_has_feature(UInt64(KRUN_FEATURE_SND)) == 1 {
                 try krun("krun_set_snd_device", krun_set_snd_device(ctx, true))
+                hasSound = true
             } else {
                 log("warning: this libkrun was built without SND=1; no guest audio")
             }

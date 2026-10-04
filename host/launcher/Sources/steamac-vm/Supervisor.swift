@@ -42,7 +42,9 @@ enum Supervisor {
         }
     }
 
-    static func run(_ o: Options) -> Never {
+    /// `resolve` reads the command line + saved settings again before every boot, so next-start
+    /// settings changed in the Settings window ("Restart VM to apply") take effect on relaunch.
+    static func run(resolve: () throws -> Options) -> Never {
         sweepStaleRunDirs()
         // sun_path is 104 bytes on macOS: keep the run dir short.
         let dir = "/tmp/steamac-\(getpid())"
@@ -61,14 +63,6 @@ enum Supervisor {
         }
 
         var gvproxy: Gvproxy?
-        var gvproxyBinary = ""
-        if o.network {
-            guard let bin = Gvproxy.locate(explicit: o.gvproxyPath) else {
-                fatal("gvproxy not found (run host/launcher/fetch-gvproxy.sh, pass --gvproxy PATH, or --no-net)")
-            }
-            gvproxy = Gvproxy(runDir: dir)
-            gvproxyBinary = bin
-        }
 
         func cleanup() {
             gvproxy?.stop()
@@ -91,12 +85,31 @@ enum Supervisor {
         var boot = 1
         var frame: String?
         while true {
+            let o: Options
             do {
-                try gvproxy?.start(binary: gvproxyBinary, sshPort: o.sshPort)
+                o = try resolve()
             } catch {
                 log("error: \(error)")
                 cleanup()
-                exit(1)
+                exit(2)
+            }
+            // No disk yet (app bundle first run): the VM process shows the first-run sheet instead.
+            gvproxy = nil
+            if o.network && !o.needsDisk {
+                guard let bin = Gvproxy.locate(explicit: o.gvproxyPath) else {
+                    log("error: gvproxy not found (run host/launcher/fetch-gvproxy.sh, pass --gvproxy PATH, or --no-net)")
+                    cleanup()
+                    exit(1)
+                }
+                let g = Gvproxy(runDir: dir)
+                gvproxy = g
+                do {
+                    try g.start(binary: bin, sshPort: o.sshPort)
+                } catch {
+                    log("error: \(error)")
+                    cleanup()
+                    exit(1)
+                }
             }
             var env = ProcessInfo.processInfo.environment
             env[childEnv] = "1"
@@ -112,8 +125,13 @@ enum Supervisor {
             let marker = rebootMarker(dir)
             if let contents = try? String(contentsOfFile: marker, encoding: .utf8) {
                 try? FileManager.default.removeItem(atPath: marker)
+                let text = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text == firstRunMarker {
+                    log("disk image chosen: starting the VM")
+                    continue
+                }
                 boot += 1
-                frame = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+                frame = text
                 log("guest rebooted (VM exit status \(status)): starting boot #\(boot)")
                 continue
             }
@@ -121,6 +139,9 @@ enum Supervisor {
             exit(status)
         }
     }
+
+    /// Reboot-marker contents written by the first-run sheet (not a reboot: boot number unchanged).
+    static let firstRunMarker = "firstrun"
 
     /// posix_spawn (same process group, so the VM process can own the terminal) + waitpid.
     private static func spawnAndWait(_ exe: String, _ argv: [String], _ env: [String: String]) -> Int32 {
