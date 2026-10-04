@@ -32,6 +32,12 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// "Still working" card shown when the guest GPU goes idle (StallMonitor), above the overlay.
     let stallView: StallIndicatorView
     private var stall: StallMonitor?
+    /// "Game paused" (GamePause confirmed a frozen game), above everything else.
+    let pauseView: PauseOverlayView
+    /// App id shown as paused (nil = not paused).
+    private(set) var pausedGame: Int?
+    /// Buttons whose press was swallowed (it resumed a paused game): their release is too.
+    private var swallowedButtons = Set<UInt16>()
     private var progress: BootProgress?
     private var overlayDismissed = false
 
@@ -71,6 +77,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
         overlay = OverlayView(frame: rect)
         stallView = StallIndicatorView(frame: rect)
+        pauseView = PauseOverlayView(frame: rect)
         settings = LauncherSettings.shared
         super.init()
         window.title = title
@@ -88,6 +95,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.addSubview(overlay)
         stallView.frame = view.bounds
         view.addSubview(stallView)
+        pauseView.frame = view.bounds
+        view.addSubview(pauseView)
         updateTitle()
         // @Published fires before the change: evaluate on the next main-queue turn.
         subscriptions.append(settings.$followWindowSize.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
@@ -195,13 +204,27 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     private func updateTitle() {
-        if captured {
+        if pausedGame != nil {
+            setStatus("paused")
+        } else if captured {
             setStatus("mouse captured — Ctrl+Option releases")
         } else if inputs != nil && clickCaptures {
             setStatus("click to capture the mouse")
         } else {
             setStatus(nil)
         }
+    }
+
+    /// GamePause: the guest confirmed `appid` frozen (nil: running again). The card stays off
+    /// while the boot/shutdown overlay is up.
+    func gamePaused(_ appid: Int?) {
+        pausedGame = appid
+        if let appid, !overlay.shown {
+            pauseView.show(gameName: settings.gameName(appid))
+        } else {
+            pauseView.hide()
+        }
+        updateTitle()
     }
 
     // MARK: overlay
@@ -222,6 +245,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             previousShutdown?(reboot)
             self?.overlayDismissed = false
             if self?.settings.showOverlay ?? false { self?.overlay.show() }
+            self?.pauseView.hide(animated: false)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in
             guard let self, let p = self.progress, p.state.phase == .boot, self.overlay.shown else { return }
@@ -605,6 +629,7 @@ extension WindowController {
     }
 
     func pointerMoved(_ e: NSEvent) {
+        if pauseView.shown { return }   // nothing reaches a frozen game
         if captured {
             moveRelative(dx: Double(e.deltaX), dy: Double(e.deltaY))
         } else if inPicture(e) || NSEvent.pressedMouseButtons != 0 {
@@ -617,6 +642,15 @@ extension WindowController {
     func pointerButton(_ e: NSEvent, down: Bool) {
         guard let inputs else { return }
         let b = button(for: e)
+        // "Game paused": the click resumes (activates the app → GamePause thaws); it must not
+        // also click into the game. Its release is swallowed too.
+        if down && pauseView.shown {
+            swallowedButtons.insert(b)
+            log("input: click resumes the paused game (not sent to the guest)")
+            NSApp.activate()
+            return
+        }
+        if !down && swallowedButtons.remove(b) != nil { return }
         if down { userInput() }
         if captured {
             if down ? mouseButtons.insert(b).inserted : mouseButtons.remove(b) != nil {
@@ -651,7 +685,7 @@ extension WindowController {
     }
 
     func scroll(_ e: NSEvent) {
-        guard inputs != nil else { return }
+        guard inputs != nil, !pauseView.shown else { return }
         if !captured {
             guard inPicture(e) else { return }
             if usesTablet { moveTablet(e) } else { moveEmulated(e) }

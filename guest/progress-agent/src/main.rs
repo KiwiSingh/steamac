@@ -20,6 +20,8 @@
 //!   logs-begin / logs / logs-end / logs-failed   log bundle answering the
 //!                                 host's `collect-logs <id>` (collect.rs; the
 //!                                 launcher's Report a Problem)
+//!   game-frozen <appid> / game-thawed <appid>   a freeze took effect / the game
+//!                                 was thawed (freeze.rs; the "Game paused" overlay)
 //!
 //! Host -> guest (same port): `collect-logs <id>`, served at any point of the
 //! lifecycle below (worker thread; the bundle goes out from the main loop);
@@ -280,6 +282,7 @@ fn serve_host(port: &mut Port, collector: &mut collect::Collector, freezer: &mut
         }
     }
     freezer.pump(focus.game());
+    freezer.send_replies(port);
 }
 
 /// Boot progress until `ready` (or give-up / SIGTERM); focus changes are
@@ -450,6 +453,7 @@ fn main() {
     }
     // Never leave a game frozen behind (shutdown, session end).
     freezer.thaw("agent exiting");
+    freezer.send_replies(&mut rep.port);
     let sig = SIGNAL.load(Ordering::SeqCst);
     match shutdown::detect() {
         Some(kind) => rep.port.send(&format!("shutdown {}", kind.word())),

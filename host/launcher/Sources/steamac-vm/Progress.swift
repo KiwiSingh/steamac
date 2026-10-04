@@ -44,6 +44,8 @@ final class BootProgress {
     var onFocus: ((GuestFocus) -> Void)?
     /// `game <appid> <name>`: the display name of a game the guest focused.
     var onGameName: ((Int, String) -> Void)?
+    /// `game-frozen <appid>` / `game-thawed <appid>`: the agent's confirmation of a pause (GamePause).
+    var onGameFrozen: ((_ appid: Int, _ frozen: Bool) -> Void)?
     /// First-boot provisioning ended (`provision done` / `provision failed <reason>`, fx.progress
     /// or hvc0 `steamac-provision: …`); may be reported on both channels.
     var onProvision: ((_ ok: Bool, _ reason: String) -> Void)?
@@ -149,6 +151,9 @@ final class BootProgress {
             case "game": onFocus?(.game(parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0))
             default: break
             }
+        case "game-frozen", "game-thawed":
+            guard parts.count >= 2, let id = Int(parts[1]) else { return }
+            onGameFrozen?(id, verb == "game-frozen")
         case "game":   // game <appid> <name>: display name of a focused game (Settings > Mouse)
             guard parts.count >= 3, let id = Int(parts[1]), id > 0,
                   let r = line.range(of: parts[1], range: line.index(line.startIndex, offsetBy: 4)..<line.endIndex) else { return }

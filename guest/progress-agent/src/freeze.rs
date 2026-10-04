@@ -14,9 +14,16 @@
 //! every 2 s; without one for KEEPALIVE_TIMEOUT the agent thaws by itself (the
 //! launcher died / was killed). Also thawed when the focus leaves the game,
 //! on agent exit (Drop) and before a new freeze.
+//!
+//! Replies (queued, sent by the main loop with `send_replies`): `game-frozen
+//! <appid>` once a freeze took effect, `game-thawed <appid>` after any thaw
+//! (host request, keepalive timeout, focus change, agent exit), so the
+//! launcher's "Game paused" overlay shows the real state.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use crate::port::Port;
 
 pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -24,11 +31,12 @@ pub struct Freezer {
     appid: Option<u32>,
     frozen: Vec<PathBuf>,
     last_keepalive: Instant,
+    replies: Vec<String>,
 }
 
 impl Freezer {
     pub fn new() -> Freezer {
-        Freezer { appid: None, frozen: Vec::new(), last_keepalive: Instant::now() }
+        Freezer { appid: None, frozen: Vec::new(), last_keepalive: Instant::now(), replies: Vec::new() }
     }
 
     pub fn freeze(&mut self, appid: u32) {
@@ -48,12 +56,17 @@ impl Freezer {
             eprintln!("fx-progress: freeze {appid}: no {prefix}*.scope below {}", root.display());
             return;
         }
+        let mut any = false;
         for s in &scopes {
-            set_frozen(s, true);
+            any |= set_frozen(s, true);
         }
+        // Remember the scopes even if a write failed: thaw them all later.
         self.appid = Some(appid);
         self.frozen = scopes;
         self.last_keepalive = Instant::now();
+        if any {
+            self.replies.push(format!("game-frozen {appid}"));
+        }
     }
 
     pub fn keepalive(&mut self) {
@@ -69,6 +82,7 @@ impl Freezer {
             }
         }
         eprintln!("fx-progress: thawed game {appid} ({why})");
+        self.replies.push(format!("game-thawed {appid}"));
     }
 
     /// Thaw when the host stopped sending keepalives, or the focus left the game.
@@ -78,6 +92,13 @@ impl Freezer {
             self.thaw("no keepalive from the launcher");
         } else if focused_game != Some(appid) {
             self.thaw("focus left the game");
+        }
+    }
+
+    /// Queue the pending `game-frozen` / `game-thawed` replies on the port.
+    pub fn send_replies(&mut self, port: &mut Port) {
+        for r in self.replies.drain(..) {
+            port.send(&r);
         }
     }
 
@@ -94,8 +115,8 @@ impl Drop for Freezer {
 }
 
 /// Freeze / thaw one scope: `systemctl --user freeze|thaw <unit>` (bounded to
-/// 2 s), else its cgroup.freeze directly.
-fn set_frozen(scope: &Path, frozen: bool) {
+/// 2 s), else its cgroup.freeze directly. True if either took effect.
+fn set_frozen(scope: &Path, frozen: bool) -> bool {
     let verb = if frozen { "freeze" } else { "thaw" };
     let unit = scope.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let via_systemd = std::process::Command::new("systemctl")
@@ -122,11 +143,17 @@ fn set_frozen(scope: &Path, frozen: bool) {
         == Some(true);
     if via_systemd {
         eprintln!("fx-progress: {verb} {unit} (systemctl)");
-        return;
+        return true;
     }
     match std::fs::write(scope.join("cgroup.freeze"), if frozen { "1" } else { "0" }) {
-        Ok(()) => eprintln!("fx-progress: {verb} {unit} (cgroup.freeze)"),
-        Err(e) => eprintln!("fx-progress: {verb} {}: {e}", scope.display()),
+        Ok(()) => {
+            eprintln!("fx-progress: {verb} {unit} (cgroup.freeze)");
+            true
+        }
+        Err(e) => {
+            eprintln!("fx-progress: {verb} {}: {e}", scope.display());
+            false
+        }
     }
 }
 

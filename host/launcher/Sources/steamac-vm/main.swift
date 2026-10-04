@@ -308,6 +308,7 @@ do {
     // Settings > General "Pause the game" in the background; no GPU-idle card while frozen.
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
+    gamePause.onConfirmedChange = { [weak wc] in wc?.gamePaused($0) }
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
                                           vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
