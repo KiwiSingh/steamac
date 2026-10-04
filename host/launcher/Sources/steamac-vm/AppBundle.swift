@@ -112,20 +112,7 @@ enum FirstRun {
         app.setActivationPolicy(.regular)
         MainMenu.installMinimal()
         app.activate()
-        let alert = NSAlert()
-        alert.messageText = "No SteamOS disk image"
-        let looked = AppBundle.defaultDiskCandidates().map { "• " + ($0 as NSString).abbreviatingWithTildeInPath }
-        var info = "FX Steam Launcher needs a SteamOS disk image (steamos.img, ~87 GB sparse).\n\n"
-        if !settings.diskImage.isEmpty {
-            info += "The image chosen in Settings is not readable:\n\((settings.diskImage as NSString).abbreviatingWithTildeInPath)\n\n"
-        }
-        info += "Looked in:\n\(looked.joined(separator: "\n"))\n\n"
-        info += "Create a new one: the official SteamOS image is downloaded from Valve and verified (about 4.5 GB; the disk "
-        info += "uses ~10 GB on your Mac at first). Or choose an existing image, which is used in place and never copied."
-        alert.informativeText = info
-        alert.addButton(withTitle: "Create New Disk…")
-        alert.addButton(withTitle: "Use Existing Disk…")
-        alert.addButton(withTitle: "Quit")
+        let alert = makeAlert(settings: settings)
         while true {
             let choice = alert.runModal()
             var chosen: String?
@@ -155,5 +142,25 @@ enum FirstRun {
             }
             exit(0)
         }
+    }
+
+    /// The first-run alert (also captured by --selftest-settings).
+    static func makeAlert(settings: LauncherSettings) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "No SteamOS disk image"
+        let looked = AppBundle.defaultDiskCandidates().map { "• " + ($0 as NSString).abbreviatingWithTildeInPath }
+        var info = "FX Steam Launcher needs a SteamOS disk image (steamos.img, ~87 GB sparse).\n\n"
+        if !settings.diskImage.isEmpty {
+            info += "The image chosen in Settings is not readable:\n\((settings.diskImage as NSString).abbreviatingWithTildeInPath)\n\n"
+        }
+        info += "Looked in:\n\(looked.joined(separator: "\n"))\n\n"
+        info += "Create a new one: the official SteamOS image is downloaded from Valve and verified (about 4.5 GB; the disk "
+        info += "uses ~10 GB on your Mac at first). Or choose an existing image, which is used in place and never copied."
+        alert.informativeText = info
+        alert.accessoryView = CrashReportsToggle.accessoryView(settings: settings)
+        alert.addButton(withTitle: "Create New Disk…")
+        alert.addButton(withTitle: "Use Existing Disk…")
+        alert.addButton(withTitle: "Quit")
+        return alert
     }
 }

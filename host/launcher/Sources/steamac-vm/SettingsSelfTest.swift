@@ -1,9 +1,11 @@
 import AppKit
+import SwiftUI
 
 /// `--selftest-settings [--selftest-out DIR]`: open the Settings window without a VM, write
 /// DIR/settings-<tab>.png for every tab (command-line overrides of this run are shown as in a
-/// real run), then DIR/settings-create-disk.png of the "Create New Disk…" window, and check that
-/// each capture has content.
+/// real run), then DIR/settings-create-disk.png of the "Create New Disk…" window,
+/// DIR/settings-first-run.png of the first-run alert and DIR/settings-what-is-sent.png (the crash
+/// reports popover), and check that each capture has content.
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
         let settings = LauncherSettings.shared
@@ -54,7 +56,28 @@ enum SettingsSelfTest {
                 CreateDiskWindowController.show(settings: settings)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                     capture("create-disk", CreateDiskWindowController.visibleWindow.flatMap(SettingsWindowController.snapshot))
-                    finish()
+                    CreateDiskWindowController.visibleWindow?.close()
+                    let alert = FirstRun.makeAlert(settings: settings)
+                    alert.layout()
+                    alert.window.center()
+                    alert.window.makeKeyAndOrderFront(nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        capture("first-run", SettingsWindowController.snapshot(alert.window))
+                        alert.window.orderOut(nil)
+                        // The "What is sent" popover content, in a plain window.
+                        let host = NSHostingView(rootView: WhatIsSentView())
+                        let w = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled],
+                                         backing: .buffered, defer: false)
+                        w.title = "What is sent"
+                        w.contentView = host
+                        w.isReleasedWhenClosed = false
+                        w.center()
+                        w.makeKeyAndOrderFront(nil)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            capture("what-is-sent", SettingsWindowController.snapshot(w))
+                            finish()
+                        }
+                    }
                 }
                 return
             }

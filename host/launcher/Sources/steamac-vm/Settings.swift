@@ -19,7 +19,7 @@ final class LauncherSettings: ObservableObject {
     /// Preference keys. `nextStart` keys are read once per boot (see Options.applySettings).
     enum Key: String, CaseIterable {
         // General
-        case showOverlay, openFullscreen, perfStats
+        case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight
         // Mouse
@@ -80,8 +80,11 @@ final class LauncherSettings: ObservableObject {
 
     // General
     @Published var showOverlay = true { didSet { save(.showOverlay, showOverlay) } }
+    @Published var showStallIndicator = true { didSet { save(.showStallIndicator, showStallIndicator) } }
     @Published var openFullscreen = false { didSet { save(.openFullscreen, openFullscreen) } }
     @Published var perfStats = false { didSet { save(.perfStats, perfStats) } }
+    /// Crash reports and diagnostics through Sentry (CrashReporting); applies now.
+    @Published var sendCrashReports = true { didSet { save(.sendCrashReports, sendCrashReports) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }
     @Published var fixedDPI = 110 { didSet { save(.fixedDPI, fixedDPI) } }
@@ -145,8 +148,10 @@ final class LauncherSettings: ObservableObject {
         func int(_ k: Key, _ v: inout Int) { if let n = d.object(forKey: k.rawValue) as? Int { v = n } }
         func string(_ k: Key, _ v: inout String) { if let s = d.string(forKey: k.rawValue) { v = s } }
         bool(.showOverlay, &showOverlay)
+        bool(.showStallIndicator, &showStallIndicator)
         bool(.openFullscreen, &openFullscreen)
         bool(.perfStats, &perfStats)
+        bool(.sendCrashReports, &sendCrashReports)
         if let s = d.string(forKey: Key.dpiSource.rawValue).flatMap(DPISource.init(rawValue:)) { dpiSource = s }
         int(.fixedDPI, &fixedDPI)
         int(.fixedWidthMM, &fixedWidthMM)
@@ -190,8 +195,10 @@ final class LauncherSettings: ObservableObject {
         let i = Int(text), d = Double(text)
         switch key {
         case .showOverlay: guard let b else { return false }; showOverlay = b
+        case .showStallIndicator: guard let b else { return false }; showStallIndicator = b
         case .openFullscreen: guard let b else { return false }; openFullscreen = b
         case .perfStats: guard let b else { return false }; perfStats = b
+        case .sendCrashReports: guard let b else { return false }; sendCrashReports = b
         case .dpiSource: guard let v = DPISource(rawValue: text) else { return false }; dpiSource = v
         case .fixedDPI: guard let i else { return false }; fixedDPI = i
         case .fixedWidthMM: guard let i else { return false }; fixedWidthMM = i
@@ -230,7 +237,8 @@ final class LauncherSettings: ObservableObject {
         }
         let fresh = LauncherSettings(blank: ())
         loading = true
-        showOverlay = fresh.showOverlay; openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats
+        showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
+        openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; autoCaptureGames = fresh.autoCaptureGames

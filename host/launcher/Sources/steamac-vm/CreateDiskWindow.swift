@@ -74,6 +74,7 @@ final class CreateDiskModel: ObservableObject {
                     self.interrupted = true
                 case .failure(let e):
                     log("create-disk (UI): error: \(e)")
+                    CrashReporting.diskCreationFailed(e, branch: request.branch)
                     self.error = "\(e)"
                     self.interrupted = true
                 }
@@ -126,6 +127,9 @@ private struct CreateDiskView: View {
                     }
                 }
                 .disabled(model.running)
+                Section {
+                    CrashReportsToggle(settings: model.settings, checkbox: true)
+                }
                 if model.running || model.status != nil || model.error != nil {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {

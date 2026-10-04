@@ -36,6 +36,11 @@ impl Port {
     /// Queue one protocol line (without the trailing newline) and try to send it.
     pub fn send(&mut self, line: &str) {
         eprintln!("fx-progress: > {line}");
+        self.send_quiet(line);
+    }
+
+    /// `send` without the journal line (heartbeats: one per second).
+    pub fn send_quiet(&mut self, line: &str) {
         if self.pending.len() + line.len() + 1 > MAX_PENDING {
             self.pending.clear();
         }

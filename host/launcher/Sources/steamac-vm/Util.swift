@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 func log(_ message: String) {
     let line = "[steamac-vm] \(message)\n"
     line.withCString { p in _ = Darwin.write(STDERR_FILENO, p, strlen(p)) }
+    CrashReporting.logged(message)
 }
 
 func fatal(_ message: String) -> Never {

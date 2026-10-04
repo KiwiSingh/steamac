@@ -40,6 +40,13 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 перезапуска ВМ. Steam сам прогревает этот кеш (Shader Pre-Caching / fossilize_replay включены
 в SteamOS по умолчанию), делать ничего не нужно.
 
+Если гость 2 с не присылает GPU-команд (virtio-gpu control queue и Venus-кольца — счётчики
+`krun_gpu_get_activity`), поверх последнего кадра появляется карточка «Still working — loading or
+compiling shaders…» с загрузкой CPU ВМ; если агент гостя перестал присылать heartbeat (> 5 с) —
+«SteamOS is not responding…». Исчезает с первой же GPU-командой; каждый случай пишется в лог
+(`stall: gpu idle 3.1 s (guest alive, …)`). С `--perf-stats` раз в 5 с добавляется строка
+`perf: gpu ctrl/s=… ring/s=… longest-idle=…`. Выключается в Settings > General.
+
 | Клавиши в окне | |
 |---|---|
 | Ctrl+Cmd+F | полный экран |
@@ -92,7 +99,7 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 
 | Вкладка | Сразу | При следующем запуске |
 |---|---|---|
-| General | оверлей загрузки/выключения; лог статистики кадров (`--perf-stats`) | полный экран при старте |
+| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; отчёты о сбоях (`--no-crash-reports`, см. ниже); лог статистики кадров (`--perf-stats`) | полный экран при старте |
 | Display | гость следует за размером окна | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`) |
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
@@ -189,6 +196,52 @@ host/launcher/dist.sh       # подпись, нотаризация, DMG
 --password <app-specific password>`. Переменные: `STEAMAC_SIGN_IDENTITY` (по умолчанию
 единственная «Developer ID Application» в связке), `NOTARY_PROFILE` (по умолчанию `steamac-notary`);
 `--no-notarize` — только подпись, для локальной проверки (скачанную копию Gatekeeper не пустит).
+
+## Отчёты о сбоях (Sentry)
+
+Лаунчер отправляет отчёты о сбоях и немногие ошибки на собственный сервер Sentry разработчиков
+(`sentry.fxgam.es`, SDK sentry-cocoa 9.30.0 через SwiftPM). Включено по умолчанию; выключается
+галочкой **Send crash reports and diagnostics** — в Settings → General, в окне первого запуска и в
+окне Create SteamOS Disk (ссылка «What is sent» показывает список ниже). Выключено — SDK вообще не
+запускается, сетевых соединений нет (уже сохранённые отчёты остаются на диске и не отправляются).
+На один запуск: `--no-crash-reports` или `STEAMAC_SENTRY=0`.
+
+Что отправляется:
+
+- падения процесса-супервизора и процесса ВМ (сигнал/abort, необработанные исключения): причина,
+  стеки потоков, список загруженных библиотек. Сюда попадают assert'ы Metal/MoltenVK, abort'ы
+  libkrun/virglrenderer и паники Rust, вышедшие через C API libkrun. Отчёт о падении процесса ВМ
+  уходит при следующем запуске ВМ;
+- немногие ошибки (не чаще раза на отпечаток за процесс, общий лимит, повтор того же отпечатка — не
+  раньше чем через сутки, для ошибок компиляции шейдеров — 30 дней): гостевой GPU-контекст стал
+  фатальным/потеря устройства (vkr «fatal decoder state», «device lost»), ошибки компиляции
+  пайплайнов MoltenVK (`[mvk-error] … compile failed`) и vkr «pipeline … creation failed on host»,
+  паника Rust в libkrun (`thread … panicked at`), провал первичной настройки диска (`provision
+  failed`), провал создания диска, неожиданный выход ВМ (ненулевой код или сигнал, если выключение не
+  запрошено пользователем), «SteamOS is not responding» индикатора простоя;
+- в каждом событии — последние ~200 строк stderr лаунчера как breadcrumbs (строки `[steamac-vm]`,
+  `[mvk-*]`, предупреждения libkrun/virglrenderer, этапы загрузки) и теги: версия
+  (`es.fxgam.steamac@<CFBundleShortVersionString>+<git sha>`), окружение `release` (`.app`) или
+  `development`, macOS, модель Mac, GPU, vCPU/RAM, режим дисплея, UUID сборок libkrun /
+  virglrenderer / MoltenVK, `MVK_PATCH_REVISION`, версия ядра, BUILD_ID SteamOS и релиз слоя (из
+  строк initramfs), случайный ID установки.
+
+Не отправляется: консоль гостя (hvc0), имя пользователя и компьютера (`/Users/<имя>` → `~`, имя и
+hostname вырезаются), IP (`sendDefaultPii=false`, сервер не выводит IP), локаль/часовой пояс,
+аккаунт Steam, названия игр (только App ID), файлы. Супервизор пропускает свой stderr через канал
+(всё по-прежнему попадает в терминал/лог), поэтому видит и последние строки упавшего процесса ВМ.
+
+Проверка: `--sentry-test-event` (тестовое событие из супервизора и процесса ВМ, процесс ВМ заодно
+отправляет отложенный отчёт о падении и выходит), `--sentry-test-crash abort|segv|metal|panic`
+(процесс ВМ падает: `abort()` внутри вызова C, `EXC_BAD_ACCESS` в `memset`, assert Metal, паника
+Rust в `krun_start_enter` из-за слишком длинной командной строки ядра — для `panic` нужны `--kernel`
+и, при необходимости, `--initrd`). Такие события идут с `environment=development` и тегом `test=true`.
+`STEAMAC_SENTRY_DEBUG=1` печатает отладочный лог SDK (ответы сервера).
+
+Символы: `build.sh` кладёт dSYM `steamac-vm` и библиотек бандла в `work/out/dSYMs` (libkrun,
+virglrenderer и MoltenVK собраны без DWARF — там только таблицы символов). `dist.sh` загружает их и
+бинарники приложения через `sentry-cli --url https://sentry.fxgam.es debug-files upload`, если заданы
+`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` и `SENTRY_PROJECT`; иначе пишет, что загрузка пропущена.
 
 ## Как это устроено
 

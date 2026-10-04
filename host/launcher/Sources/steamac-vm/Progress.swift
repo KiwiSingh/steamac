@@ -49,6 +49,8 @@ final class BootProgress {
     var onProvision: ((_ ok: Bool, _ reason: String) -> Void)?
     /// Guest password payload: `config applied` / `config failed <reason>` (or hvc0 `steamac-config: …`).
     var onConfig: ((_ ok: Bool, _ reason: String) -> Void)?
+    /// Guest agent heartbeat, once a second: `alive <uptime_ms> <loadavg1>`.
+    var onAlive: ((_ uptimeMs: Int, _ load: Double) -> Void)?
 
     private var sawConsole = false
     private var okLines = 0
@@ -152,6 +154,9 @@ final class BootProgress {
                   let r = line.range(of: parts[1], range: line.index(line.startIndex, offsetBy: 4)..<line.endIndex) else { return }
             let name = line[r.upperBound...].trimmingCharacters(in: .whitespaces)
             if !name.isEmpty { onGameName?(id, name) }
+        case "alive":
+            guard parts.count >= 3, let ms = Int(parts[1]), let load = Double(parts[2]) else { return }
+            onAlive?(ms, load)
         default:
             break   // forward compatible
         }

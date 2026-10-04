@@ -6,13 +6,17 @@ import PackageDescription
 let package = Package(
     name: "steamac-vm",
     platforms: [.macOS(.v15)],
+    dependencies: [
+        // Crash/error reporting (CrashReporting.swift). Static Sentry.xcframework (binary target).
+        .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.30.0"),
+    ],
     targets: [
         .systemLibrary(name: "CKrun", path: "Sources/CKrun"),
         // zstd decoder (sources fetched by fetch-zstd.sh into Sources/CZstd/zstd, included by czstd.c).
         .target(name: "CZstd", path: "Sources/CZstd", exclude: ["zstd"]),
         .executableTarget(
             name: "steamac-vm",
-            dependencies: ["CKrun", "CZstd"],
+            dependencies: ["CKrun", "CZstd", .product(name: "Sentry", package: "sentry-cocoa")],
             path: "Sources/steamac-vm",
             linkerSettings: [
                 .linkedFramework("AppKit"),

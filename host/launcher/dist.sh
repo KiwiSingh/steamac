@@ -16,6 +16,9 @@
 #                          xcrun notarytool store-credentials steamac-notary \
 #                              --apple-id <Apple ID> --team-id <team> --password <app-specific password>
 #   --no-notarize          sign only (local tests; Gatekeeper rejects downloaded copies)
+#   SENTRY_AUTH_TOKEN      optional: upload debug files for crash reports (work/out/dSYMs from
+#   SENTRY_ORG             build.sh + the app's executables and libraries, matched by Mach-O UUID)
+#   SENTRY_PROJECT         with sentry-cli to https://sentry.fxgam.es; skipped when unset
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -130,3 +133,18 @@ mv "$APP" "$DIST/$NAME.app"
 mv "$WORK/$DMG_NAME" "$DIST/$DMG_NAME"
 echo "built $DIST/$DMG_NAME ($(du -h "$DIST/$DMG_NAME" | cut -f1), sha256 $(shasum -a 256 "$DIST/$DMG_NAME" | cut -d' ' -f1))"
 [[ $notarize == 1 ]] || echo "NOT notarized (--no-notarize): Gatekeeper blocks this DMG once downloaded"
+
+# Debug files for symbolicated crash reports (CrashReporting.swift). Never a hardcoded token.
+if [[ -z ${SENTRY_AUTH_TOKEN:-} || -z ${SENTRY_ORG:-} || -z ${SENTRY_PROJECT:-} ]]; then
+    echo "debug files NOT uploaded to Sentry: set SENTRY_AUTH_TOKEN, SENTRY_ORG and SENTRY_PROJECT to upload"
+elif ! command -v sentry-cli >/dev/null; then
+    echo "debug files NOT uploaded to Sentry: sentry-cli not found (brew install getsentry/tools/sentry-cli)"
+else
+    [[ -d $OUT/dSYMs ]] || die "missing $OUT/dSYMs (run host/launcher/build.sh)"
+    exe_uuid=$(dwarfdump --uuid "$DIST/$NAME.app/Contents/MacOS/steamac-vm" | awk '{print $2; exit}')
+    dsym_uuid=$(dwarfdump --uuid "$OUT/dSYMs/steamac-vm.dSYM" | awk '{print $2; exit}')
+    [[ $exe_uuid == "$dsym_uuid" ]] || die "work/out/dSYMs/steamac-vm.dSYM ($dsym_uuid) is not the app's steamac-vm ($exe_uuid): rebuild with build.sh"
+    echo "=== uploading debug files to sentry.fxgam.es ($SENTRY_ORG/$SENTRY_PROJECT)"
+    sentry-cli --url https://sentry.fxgam.es debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+        "$OUT/dSYMs" "$DIST/$NAME.app/Contents/MacOS" "$DIST/$NAME.app/Contents/Frameworks"
+fi

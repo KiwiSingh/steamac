@@ -29,6 +29,7 @@ struct Options {
     var dpi: Int?
     var displayMM: (Int, Int)?
     var selftestOverlay = false
+    var selftestStall = false
     var headless = false
     var logFile: String?
     var network = true
@@ -67,6 +68,11 @@ struct Options {
     var referenceDisk: String?
     /// --ssh-password DISK: print the disk's generated guest password (GuestPassword) and exit.
     var showSSHPassword: String?
+    /// --no-crash-reports / STEAMAC_SENTRY=0: no Sentry for this run (CrashReporting).
+    var noCrashReports = false
+    /// Hidden --sentry-test-event / --sentry-test-crash MODE (CrashReporting.runTests).
+    var sentryTestEvent = false
+    var sentryTestCrash: String?
     /// Flags given on the command line (they override the saved settings for this run).
     var explicit: Set<String> = []
 
@@ -76,8 +82,10 @@ struct Options {
                       [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT | --no-ssh] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
                       [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
+                      [--no-crash-reports]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
+           steamac-vm --selftest-stall [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
            steamac-vm --create-disk PATH [--branch stable|rc|beta|preview|main] [--home-gib N]
@@ -141,6 +149,10 @@ struct Options {
     SSH: --ssh-password DISK prints user, generated password and state (pending / applied) of DISK
     (the password Settings > Advanced shows; it exists once SSH was enabled for that disk).
 
+    Crash reports (Settings > General "Send crash reports and diagnostics", on by default):
+      --no-crash-reports   no crash reports or diagnostics for this run (also STEAMAC_SENTRY=0);
+                           STEAMAC_SENTRY_DEBUG=1 prints the Sentry SDK's debug log
+
     Diagnostics:
       --perf-stats         every 5 s log frame pacing (also STEAMAC_PERF_STATS=1): guest flush and
                            on-screen frame intervals (p50/p95/p99/max, count > 25 / > 50 ms), libkrun's
@@ -151,6 +163,8 @@ struct Options {
                            close the window (guest power key) 4 s later
       --selftest-overlay   drive the FX boot/shutdown overlay with synthetic console and fx.progress
                            input and write window captures at several progress points
+      --selftest-stall     drive the GPU-idle indicator with synthetic GPU counters and heartbeats
+                           and write window captures (indicator shown / hidden / not responding)
       --selftest-settings  open the Settings window and write a PNG of every tab to --selftest-out
       --selftest-provision unit tests of the disk creator: GPT writer vs the layout of --reference-disk
                            (default work/out/steamos.img, opened read-only), squashfs + CMS verification of
@@ -242,9 +256,16 @@ struct Options {
             case "--no-gamepad": o.gamepad = false
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
             case "--perf-stats": o.perfStats = true
+            case "--no-crash-reports": o.noCrashReports = true
+            case "--sentry-test-event": o.sentryTestEvent = true
+            case "--sentry-test-crash":
+                let v = try value(a)
+                guard ["abort", "segv", "metal", "panic"].contains(v) else { throw OptionError("--sentry-test-crash: abort, segv, metal or panic") }
+                o.sentryTestCrash = v
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true
+            case "--selftest-stall": o.selftestStall = true
             case "--selftest-settings": o.selftestSettings = true
             case "--selftest-provision": o.selftestProvision = true
             case "--reference-disk": o.referenceDisk = try value(a)
@@ -274,11 +295,16 @@ struct Options {
             o.perfStats = true
             o.explicit.insert("STEAMAC_PERF_STATS=1")
         }
+        if ProcessInfo.processInfo.environment[CrashReporting.disableEnv] == "0" {
+            o.noCrashReports = true
+            o.explicit.insert("\(CrashReporting.disableEnv)=0")
+        }
         return o
     }
 
     var isSelftest: Bool {
-        selftestDisplay || selftestOverlay || selftestSettings || selftestProvision || createDisk != nil || showSSHPassword != nil
+        selftestDisplay || selftestOverlay || selftestStall || selftestSettings || selftestProvision || createDisk != nil
+            || showSSHPassword != nil
     }
 
     /// Command line + saved settings (+ app bundle resources): what this boot runs with, and which
@@ -337,12 +363,15 @@ struct Options {
         if perfStats { ov[.perfStats] = explicit.contains("--perf-stats") ? "--perf-stats" : "STEAMAC_PERF_STATS=1" }
         else { perfStats = s.perfStats }
         fullscreen = s.openFullscreen
+        if noCrashReports {
+            ov[.sendCrashReports] = explicit.contains(CrashReporting.noFlag) ? CrashReporting.noFlag : "\(CrashReporting.disableEnv)=0"
+        }
         if !disks.isEmpty { ov[.diskImage] = "--disk \(disks[0].path)" }
         return ov
     }
 
     func validate() throws {
-        guard !isSelftest, !needsDisk else { return }
+        guard !isSelftest, !needsDisk, !sentryTestEvent, sentryTestCrash == nil else { return }
         guard !kernel.isEmpty else { throw OptionError("--kernel is required") }
         guard (1...255).contains(cpus) else { throw OptionError("--cpus must be 1..255") }
         guard memMiB >= 256 else { throw OptionError("--mem must be >= 256") }

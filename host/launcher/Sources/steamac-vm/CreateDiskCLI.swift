@@ -42,6 +42,8 @@ enum CreateDiskCLI {
             exit(130)
         } catch {
             log("create-disk: error: \(error)")
+            CrashReporting.diskCreationFailed(error, branch: request.branch)
+            CrashReporting.flush()
             exit(1)
         }
     }

@@ -117,10 +117,12 @@ enum Supervisor {
             env[bootEnv] = String(boot)
             env[netSockEnv] = gvproxy?.vfkitSocket
             env[frameEnv] = frame
+            CrashReporting.supervisorBoot(o, boot: boot, runDir: dir, env: &env)
             let status = spawnAndWait(exe, CommandLine.arguments, env)
             childPid = 0
             if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
             gvproxy?.stop()
+            CrashReporting.vmExited(status: status)
 
             let marker = rebootMarker(dir)
             if let contents = try? String(contentsOfFile: marker, encoding: .utf8) {

@@ -3,7 +3,7 @@
 # install it as work/out/steamac-vm. Also fetches the pinned zstd decoder sources (compiled in),
 # gvproxy and desync into work/out/host/bin and assembles work/out/FX Steam Launcher.app
 # (bundle.sh; skipped with STEAMAC_NO_BUNDLE=1 or when the kernel/initramfs/layer images are
-# not built yet).
+# not built yet). Debug symbols for crash reports go to work/out/dSYMs (see dist.sh).
 #
 # libkrun (v1.19.6 C API, built with GPU=1 INPUT=1 BLK=1 NET=1) is taken from
 # $KRUN_PREFIX (default: work/out/host, produced by host/libkrun). The binary's rpath is
@@ -20,6 +20,18 @@ for h in libkrun.h libkrun_display.h libkrun_input.h; do
 done
 ls "$KRUN_PREFIX"/lib/libkrun*.dylib >/dev/null 2>&1 || { echo "missing $KRUN_PREFIX/lib/libkrun*.dylib" >&2; exit 1; }
 
+# Info.plist embedded into the binary (-sectcreate) and copied into the .app by bundle.sh, plus the
+# build identity crash reports use (CrashReporting): SteamacGitCommit (release name
+# es.fxgam.steamac@<CFBundleShortVersionString>+<commit>) and SteamacMVKPatchRevision (MoltenVK
+# MVK_PATCH_REVISION, from $KRUN_PREFIX/MOLTENVK.txt).
+PLIST="$HERE/.build/Info.plist"
+mkdir -p "$HERE/.build"
+commit=$(git -C "$ROOT" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
+mvk_rev=$(sed -n 's/.*MVK_PATCH_REVISION (\([0-9a-f]\{8\}\).*/\1/p' "$KRUN_PREFIX/MOLTENVK.txt" 2>/dev/null | head -1)
+cp "$HERE/Info.plist" "$PLIST.new"
+/usr/libexec/PlistBuddy -c "Add :SteamacGitCommit string $commit" "$PLIST.new"
+[[ -z $mvk_rev ]] || /usr/libexec/PlistBuddy -c "Add :SteamacMVKPatchRevision string 0x$mvk_rev" "$PLIST.new"
+
 SWIFT_FLAGS=(
     -c release
     --package-path "$HERE"
@@ -28,12 +40,33 @@ SWIFT_FLAGS=(
     -Xlinker "-L$KRUN_PREFIX/lib"
     -Xlinker -rpath -Xlinker @executable_path/host/lib
     -Xlinker -rpath -Xlinker "$KRUN_PREFIX/lib"
-    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$HERE/Info.plist"
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$PLIST"
 )
 
 "$HERE/fetch-zstd.sh"
-swift build "${SWIFT_FLAGS[@]}"
 BIN="$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)/steamac-vm"
+# SwiftPM does not track the -sectcreate input: relink when the plist changed.
+if cmp -s "$PLIST.new" "$PLIST"; then
+    rm -f "$PLIST.new"
+else
+    mv -f "$PLIST.new" "$PLIST"
+    rm -f "$BIN"
+fi
+swift build "${SWIFT_FLAGS[@]}"
+
+# Debug files for crash reports (dist.sh uploads them with sentry-cli): the launcher's dSYM and
+# dSYMs of the libraries the .app bundles (their builds carry no DWARF, so these hold the symbol
+# tables), matched to the binaries by Mach-O UUID.
+DSYMS="$OUT/dSYMs"
+rm -rf "$DSYMS.new"
+mkdir -p "$DSYMS.new"
+dsymutil "$BIN" -o "$DSYMS.new/steamac-vm.dSYM"
+for lib in libkrun.1.dylib libvirglrenderer.1.dylib libMoltenVK.dylib; do
+    [[ -f "$KRUN_PREFIX/lib/$lib" ]] || continue
+    dsymutil "$KRUN_PREFIX/lib/$lib" -o "$DSYMS.new/$lib.dSYM" 2>&1 | grep -v 'no debug symbols in executable' >&2 || true
+done
+rm -rf "$DSYMS"
+mv "$DSYMS.new" "$DSYMS"
 
 mkdir -p "$OUT"
 tmp="$OUT/.steamac-vm.$$"

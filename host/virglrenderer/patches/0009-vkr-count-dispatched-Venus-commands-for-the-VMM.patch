@@ -1,0 +1,115 @@
+From 29b61a02d4e9ca5d127746195d10dc0489f4c433 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 12:00:00 +0000
+Subject: [PATCH] vkr: count dispatched Venus commands for the VMM
+ (virgl_steamac_cmd_count)
+
+The launcher shows a "still working" indicator when the guest stops sending
+GPU work. Venus rings run inside the VMM process and make progress without
+any new virtio-gpu command, so the VMM's own control-queue count cannot see
+a guest that only feeds its rings.
+
+Count every decoded Venus command (ring streams, direct SUBMIT_3D buffers and
+execute-command-streams) with one relaxed atomic increment, before the
+command runs so a blocking command still counts, and export the running
+total as virgl_steamac_cmd_count(). libkrun looks it up with dlsym and
+reports it through krun_gpu_get_activity.
+---
+ src/venus/vkr_common.h    | 10 ++++++++++
+ src/venus/vkr_context.c   |  1 +
+ src/venus/vkr_renderer.c  |  8 ++++++++
+ src/venus/vkr_ring.c      |  1 +
+ src/venus/vkr_transport.c |  1 +
+ src/virglrenderer.h       |  5 +++++
+ 6 files changed, 26 insertions(+)
+
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 8f43f922..1a444549 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -41,6 +41,16 @@
+ 
+ #define VKR_DEBUG(category) (unlikely(vkr_debug_flags & VKR_DEBUG_##category))
+ 
++/* steamac: Venus commands dispatched (virgl_steamac_cmd_count), counted as each command is
++ * decoded (before it runs, so a command that blocks still shows up). */
++extern atomic_uint_fast64_t vkr_dispatch_count;
++
++static inline void
++vkr_note_dispatch(void)
++{
++   atomic_fetch_add_explicit(&vkr_dispatch_count, 1, memory_order_relaxed);
++}
++
+ /* define a type-safe cast function */
+ #define VKR_DEFINE_OBJECT_CAST(vkr_type, vk_enum, vk_type)                               \
+    static inline struct vkr_##vkr_type *vkr_##vkr_type##_from_handle(vk_type handle)     \
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 3fde7723..91cf56c8 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -172,6 +172,7 @@ vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
+    vkr_cs_decoder_set_buffer_stream(&ctx->decoder, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(&ctx->decoder)) {
++      vkr_note_dispatch();
+       vn_dispatch_command(&ctx->dispatch);
+       if (vkr_context_get_fatal(ctx)) {
+          vkr_log("submit_cmd: vn_dispatch_command failed");
+diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
+index 36ec90ed..d9548a10 100644
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -20,6 +20,14 @@ struct vkr_renderer_state {
+ 
+ struct vkr_renderer_state vkr_state;
+ 
++atomic_uint_fast64_t vkr_dispatch_count;
++
++VIRGL_EXPORT uint64_t
++virgl_steamac_cmd_count(void)
++{
++   return atomic_load_explicit(&vkr_dispatch_count, memory_order_relaxed);
++}
++
+ size_t
+ vkr_get_capset(void *capset, uint32_t flags)
+ {
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index 4eb3ba05..a3d7b4a0 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -230,6 +230,7 @@ vkr_ring_submit_cmd(struct vkr_ring *ring,
+    vkr_cs_decoder_set_buffer_stream(dec, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(dec)) {
++      vkr_note_dispatch();
+       vn_dispatch_command(&ring->dispatch);
+       if (vkr_cs_decoder_get_fatal(dec)) {
+          vkr_log("ring_submit_cmd: vn_dispatch_command failed");
+diff --git a/src/venus/vkr_transport.c b/src/venus/vkr_transport.c
+index a8daba46..ef76e7b5 100644
+--- a/src/venus/vkr_transport.c
++++ b/src/venus/vkr_transport.c
+@@ -80,6 +80,7 @@ vkr_dispatch_vkExecuteCommandStreamsMESA(
+       }
+ 
+       while (vkr_cs_decoder_has_command(dec)) {
++         vkr_note_dispatch();
+          vn_dispatch_command(dispatch);
+          if (vkr_context_get_fatal(ctx))
+             break;
+diff --git a/src/virglrenderer.h b/src/virglrenderer.h
+index e5f0efdf..dcb8e561 100644
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -575,4 +575,9 @@ VIRGL_EXPORT int virgl_renderer_get_dev_fd(int ctx_id);
+ 
+ #endif /* VIRGL_RENDERER_UNSTABLE_APIS */
+ 
++/* steamac: Venus commands dispatched since the library was loaded, all contexts, ring and
++ * direct (SUBMIT_3D) submissions alike; a GPU activity hint for the VMM. Relaxed counter,
++ * cheap to read from any thread. */
++VIRGL_EXPORT uint64_t virgl_steamac_cmd_count(void);
++
+ #endif

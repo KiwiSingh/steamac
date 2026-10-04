@@ -151,6 +151,9 @@ int main(void)
           krun_display_resize(ctx, 0, 4096, 1000, 423, 265), -EINVAL);
     check("krun_display_resize(unknown ctx)",
           krun_display_resize(ctx + 1000, 0, 1600, 1000, 423, 265), -ENODEV);
+    uint64_t ctrl_cmds = 1, ring_cmds = 1;
+    check("krun_gpu_get_activity(not started) [no running context]",
+          krun_gpu_get_activity(ctx, &ctrl_cmds, &ring_cmds), -ENODEV);
 
     struct krun_display_backend display = {
         .features = KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER,

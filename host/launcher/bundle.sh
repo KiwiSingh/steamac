@@ -32,7 +32,10 @@ rm -rf "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Frameworks" "$TMP/Contents/Resources"
 
-cp "$HERE/Info.plist" "$TMP/Contents/Info.plist"
+# build.sh's Info.plist carries the build identity crash reports use (SteamacGitCommit, ...).
+PLIST="$HERE/.build/Info.plist"
+[[ -f $PLIST ]] || PLIST="$HERE/Info.plist"
+cp "$PLIST" "$TMP/Contents/Info.plist"
 # Lets the app find the repo's work/out/steamos.img as its default disk when moved elsewhere.
 /usr/libexec/PlistBuddy -c "Add :SteamacBuildOut string $OUT" "$TMP/Contents/Info.plist"
 # Release defaults (AppBundle.releaseDefaults): SSH off, generated guest password, no default

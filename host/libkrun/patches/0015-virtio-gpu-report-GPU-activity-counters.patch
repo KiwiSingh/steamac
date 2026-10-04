@@ -1,0 +1,201 @@
+From 8bab657d825d9f27251e584a925cc085a7714c4e Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 12:00:00 +0000
+Subject: [PATCH 15/15] virtio/gpu: report GPU activity counters
+ (krun_gpu_get_activity)
+
+Add krun_gpu_get_activity(ctx, &ctrl_cmds, &ring_cmds) so a host can tell
+whether the guest is still sending GPU work (the steamac launcher shows a
+"still working" indicator when it is not).
+
+ctrl_cmds counts the control-queue commands the GPU worker takes (cursor
+queue excluded), with a relaxed atomic in the DisplayControl that
+krun_start_enter registers per running context (krun_display_resize's
+registry). ring_cmds is virglrenderer's count of dispatched Venus commands
+(virgl_steamac_cmd_count, steamac virglrenderer patch 0009), looked up once
+with dlsym: Venus rings run in this process and make progress without new
+virtio-gpu commands. Without that symbol ring_cmds is 0 and the call
+returns -ENOTSUP (ctrl_cmds is still filled in).
+---
+ include/libkrun.h                     | 23 ++++++++++
+ src/devices/src/virtio/gpu/display.rs | 23 ++++++++++
+ src/devices/src/virtio/gpu/worker.rs  |  1 +
+ src/libkrun/src/lib.rs                | 62 +++++++++++++++++++++++++++
+ 4 files changed, 109 insertions(+)
+
+diff --git a/include/libkrun.h b/include/libkrun.h
+index 0369d6b..e9c9c3a 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -762,6 +762,29 @@ int32_t krun_display_set_physical_size(uint32_t ctx_id, uint32_t display_id, uin
+ int32_t krun_display_resize(uint32_t ctx_id, uint32_t display_id, uint32_t width, uint32_t height,
+                             uint16_t width_mm, uint16_t height_mm);
+ 
++/**
++ * Read the GPU activity counters of a running VM (any thread, cheap: two relaxed loads).
++ * Both are running totals (ring commands count every context of the process); a host
++ * compares two readings to tell whether the guest sent any GPU work in between.
++ *
++ * Arguments:
++ *  "ctx_id"    - the configuration context ID of a VM in krun_start_enter().
++ *  "ctrl_cmds" - (may be NULL) virtio-gpu control-queue commands taken by the GPU worker
++ *                (SUBMIT_3D, RESOURCE_FLUSH, SET_SCANOUT*, transfers, ...; the cursor
++ *                queue is not counted).
++ *  "ring_cmds" - (may be NULL) Venus commands virglrenderer dispatched, from its in-process
++ *                rings and from SUBMIT_3D buffers (a guest feeding only its Venus rings makes
++ *                progress without control-queue commands). 0 if virglrenderer does not
++ *                export virgl_steamac_cmd_count().
++ *
++ * Returns:
++ *  Zero on success, or a negative error number:
++ *  -ENODEV  no such running context, or the context has no virtio-gpu
++ *  -ENOTSUP libkrun was built without GPU support, or virglrenderer has no command counter
++ *           ("ctrl_cmds" is still valid then)
++ */
++int32_t krun_gpu_get_activity(uint32_t ctx_id, uint64_t *ctrl_cmds, uint64_t *ring_cmds);
++
+ /**
+  * Configure refresh rate for a display
+  *
+diff --git a/src/devices/src/virtio/gpu/display.rs b/src/devices/src/virtio/gpu/display.rs
+index da58617..98a528c 100644
+--- a/src/devices/src/virtio/gpu/display.rs
++++ b/src/devices/src/virtio/gpu/display.rs
+@@ -1,3 +1,4 @@
++use std::sync::atomic::{AtomicU64, Ordering};
+ use std::sync::{Mutex, MutexGuard};
+ 
+ use super::edid::EdidInfo;
+@@ -147,6 +148,8 @@ pub struct DisplayControl {
+     /// the worker, which waits on it.
+     waker: Mutex<Option<EventFd>>,
+     events: Mutex<DisplayEvents>,
++    /// Control-queue commands the worker has taken (krun_gpu_get_activity).
++    ctrl_commands: AtomicU64,
+ }
+ 
+ impl DisplayControl {
+@@ -161,6 +164,7 @@ impl DisplayControl {
+             receiver,
+             waker: Mutex::new(None),
+             events: Mutex::default(),
++            ctrl_commands: AtomicU64::new(0),
+         }
+     }
+ 
+@@ -190,6 +194,16 @@ impl DisplayControl {
+         self.receiver.clone()
+     }
+ 
++    /// The worker took a control-queue command off the queue.
++    pub(crate) fn note_ctrl_command(&self) {
++        self.ctrl_commands.fetch_add(1, Ordering::Relaxed);
++    }
++
++    /// Control-queue commands taken so far (cursor queue excluded).
++    pub fn ctrl_commands(&self) -> u64 {
++        self.ctrl_commands.load(Ordering::Relaxed)
++    }
++
+     fn events(&self) -> MutexGuard<'_, DisplayEvents> {
+         self.events.lock().unwrap()
+     }
+@@ -403,4 +417,13 @@ mod tests {
+         control.clear_events(VIRTIO_GPU_EVENT_DISPLAY);
+         assert_eq!(control.read_events(), 0);
+     }
++
++    #[test]
++    fn ctrl_commands_count_up() {
++        let control = DisplayControl::new(&[DisplayInfo::new(1280, 800)]);
++        assert_eq!(control.ctrl_commands(), 0);
++        control.note_ctrl_command();
++        control.note_ctrl_command();
++        assert_eq!(control.ctrl_commands(), 2);
++    }
+ }
+diff --git a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+index bf98d6b..62d7507 100644
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -442,6 +442,7 @@ impl Worker {
+             let head = control_queue.lock().unwrap().pop(&mem);
+ 
+             if let Some(head) = head {
++                self.display_control.note_ctrl_command();
+                 let mut reader = Reader::new(&mem, head.clone())
+                     .map_err(GpuError::QueueReader)
+                     .unwrap();
+diff --git a/src/libkrun/src/lib.rs b/src/libkrun/src/lib.rs
+index 2e44976..17f1e72 100644
+--- a/src/libkrun/src/lib.rs
++++ b/src/libkrun/src/lib.rs
+@@ -1961,6 +1961,68 @@ pub extern "C" fn krun_display_resize(
+     -libc::ENOTSUP
+ }
+ 
++/// virglrenderer's `uint64_t virgl_steamac_cmd_count(void)` (dispatched Venus commands,
++/// steamac virglrenderer patch 0009); None with a virglrenderer that does not export it.
++#[cfg(feature = "gpu")]
++static VIRGL_CMD_COUNT: std::sync::LazyLock<Option<extern "C" fn() -> u64>> =
++    std::sync::LazyLock::new(|| {
++        // SAFETY: dlsym with a NUL-terminated name.
++        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"virgl_steamac_cmd_count".as_ptr()) };
++        if sym.is_null() {
++            warn!("virglrenderer has no virgl_steamac_cmd_count: krun_gpu_get_activity reports no ring commands");
++            None
++        } else {
++            // SAFETY: the exported symbol has this signature.
++            Some(unsafe { std::mem::transmute::<*mut libc::c_void, extern "C" fn() -> u64>(sym) })
++        }
++    });
++
++#[cfg(feature = "gpu")]
++fn virgl_cmd_count() -> Option<u64> {
++    VIRGL_CMD_COUNT.map(|f| f())
++}
++
++#[cfg(feature = "gpu")]
++#[allow(clippy::missing_safety_doc)]
++#[no_mangle]
++pub unsafe extern "C" fn krun_gpu_get_activity(
++    ctx_id: u32,
++    ctrl_cmds: *mut u64,
++    ring_cmds: *mut u64,
++) -> i32 {
++    let Some(ctrl) = DISPLAY_CONTROLS
++        .lock()
++        .unwrap()
++        .get(&ctx_id)
++        .map(|c| c.ctrl_commands())
++    else {
++        return -libc::ENODEV;
++    };
++    let ring = virgl_cmd_count();
++    if !ctrl_cmds.is_null() {
++        *ctrl_cmds = ctrl;
++    }
++    if !ring_cmds.is_null() {
++        *ring_cmds = ring.unwrap_or(0);
++    }
++    if ring.is_some() {
++        KRUN_SUCCESS
++    } else {
++        -libc::ENOTSUP
++    }
++}
++
++#[cfg(not(feature = "gpu"))]
++#[allow(clippy::missing_safety_doc)]
++#[no_mangle]
++pub unsafe extern "C" fn krun_gpu_get_activity(
++    _ctx_id: u32,
++    _ctrl_cmds: *mut u64,
++    _ring_cmds: *mut u64,
++) -> i32 {
++    -libc::ENOTSUP
++}
++
+ #[allow(clippy::missing_safety_doc)]
+ #[no_mangle]
+ pub unsafe extern "C" fn krun_set_snd_device(ctx_id: u32, enable: bool) -> i32 {

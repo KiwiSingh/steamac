@@ -29,6 +29,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var subscriptions: [AnyCancellable] = []
     /// FX boot/shutdown overlay, layered over the Metal view.
     let overlay: OverlayView
+    /// "Still working" card shown when the guest GPU goes idle (StallMonitor), above the overlay.
+    let stallView: StallIndicatorView
+    private var stall: StallMonitor?
     private var progress: BootProgress?
     private var overlayDismissed = false
 
@@ -67,6 +70,7 @@ final class WindowController: NSObject, NSWindowDelegate {
                           backing: .buffered, defer: false, screen: screen)
         view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
         overlay = OverlayView(frame: rect)
+        stallView = StallIndicatorView(frame: rect)
         settings = LauncherSettings.shared
         super.init()
         window.title = title
@@ -82,6 +86,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.controller = self
         overlay.frame = view.bounds
         view.addSubview(overlay)
+        stallView.frame = view.bounds
+        view.addSubview(stallView)
         updateTitle()
         // @Published fires before the change: evaluate on the next main-queue turn.
         subscriptions.append(settings.$followWindowSize.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
@@ -223,6 +229,33 @@ final class WindowController: NSObject, NSWindowDelegate {
         if overlay.shown { overlay.hide() } else { overlay.show() }
     }
 
+    /// The GPU-idle indicator follows the overlay (never while it is up or the guest shuts down),
+    /// the guest heartbeat and Settings > General.
+    func attach(stall: StallMonitor) {
+        self.stall = stall
+        stall.enabled = settings.showStallIndicator
+        overlay.onVisibilityChange = { [weak self] _ in self?.updateStallGate() }
+        if let progress {
+            let previous = progress.onChange
+            progress.onChange = { [weak self] s in previous?(s); self?.updateStallGate() }
+            let previousAlive = progress.onAlive
+            progress.onAlive = { [weak stall] ms, load in previousAlive?(ms, load); stall?.alive(uptimeMs: ms, load: load) }
+        }
+        subscriptions.append(settings.$showStallIndicator.dropFirst().receive(on: DispatchQueue.main).sink { [weak stall] on in
+            log("stall: indicator \(on ? "on" : "off")")
+            stall?.enabled = on
+        })
+        updateStallGate()
+        stall.start()
+    }
+
+    private func updateStallGate() {
+        guard let stall else { return }
+        let phase = progress?.state.phase ?? .running
+        if case .shutdown = phase { stall.suppressed = true } else { stall.suppressed = overlay.shown }
+        stall.booting = phase == .boot
+    }
+
     /// The user interacted with the guest: a visible overlay gets out of the way (input still goes through).
     private func userInput() {
         guard overlay.shown, !overlayDismissed else { return }
@@ -230,12 +263,14 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay.hide()
     }
 
-    /// Read back the next presented drawable; `composite` = drawable with the overlay on top, at 2x.
+    /// Read back the next presented drawable; `composite` = drawable with the overlay and the
+    /// GPU-idle indicator on top, at 2x.
     func captureWindow(_ done: @escaping (_ drawable: CGImage?, _ composite: CGImage?) -> Void) {
         view.renderer.captureNextDraw = { [weak self] bytes, w, h in
             DispatchQueue.main.async {
                 let drawable = PNG.image(bgra: bytes, width: w, height: h)
-                done(drawable, self?.overlay.renderImage(scale: 2, under: drawable))
+                let withOverlay = self?.overlay.renderImage(scale: 2, under: drawable)
+                done(drawable, self?.stallView.renderImage(scale: 2, under: withOverlay))
             }
         }
         view.redraw()

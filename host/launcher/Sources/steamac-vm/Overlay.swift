@@ -19,6 +19,8 @@ final class OverlayView: NSView {
     private var state = ProgressState()
     private(set) var shown = false
     private var fading = false
+    /// Called with the new `shown` value when the overlay starts showing / starts fading out.
+    var onVisibilityChange: ((Bool) -> Void)?
     /// Progress bar track, in view coordinates (self-test pixel checks).
     var barFrame: CGRect { track.frame }
     var currentTitle: String { state.title }
@@ -87,6 +89,7 @@ final class OverlayView: NSView {
     func show(animated: Bool = true) {
         guard !shown || fading else { return }
         shown = true
+        onVisibilityChange?(true)
         fading = false
         isHidden = false
         startAnimations()
@@ -113,6 +116,7 @@ final class OverlayView: NSView {
             completion?()
         }
         shown = false
+        onVisibilityChange?(false)
         if animated {
             fading = true
             NSAnimationContext.runAnimationGroup({ ctx in

@@ -60,7 +60,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         /// Fixed content height per tab (grouped forms scroll beyond it).
         var height: CGFloat {
             switch self {
-            case .general: return 330
+            case .general: return 470
             case .display: return 470
             case .mouse: return 470
             case .controller: return 620
@@ -258,11 +258,17 @@ private struct GeneralTab: View {
                     Label2(title: "Show boot and shutdown overlay",
                            detail: "FX progress screen while SteamOS starts, restarts and shuts down.", now: true)
                 }
+                Toggle(isOn: $settings.showStallIndicator) {
+                    Label2(title: "Show indicator when the GPU goes idle",
+                           detail: "\"Still working\" card over the picture after 2 s without GPU work from SteamOS (loading, shader compiles).",
+                           now: true)
+                }
                 Toggle(isOn: $settings.openFullscreen) {
                     Label2(title: "Open in full screen", now: false, key: .openFullscreen)
                 }
             }
             Section {
+                CrashReportsToggle(settings: settings, showsApplies: true)
                 Toggle(isOn: $settings.perfStats) {
                     Label2(title: "Log frame-pacing statistics",
                            detail: "Every 5 s: guest flush and on-screen frame intervals, latency, dropped frames.",

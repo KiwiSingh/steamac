@@ -28,8 +28,13 @@ do {
 // level, which buries the guest console. Errors only, unless the user asks for more.
 setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
 
+// Crash reporting (Settings > General; both the supervisor and each VM process).
+CrashReporting.setUp(options: options, settings: settings)
+CrashReporting.runTests(&options)
+
 if options.selftestDisplay { SelfTest.run(options) }
 if options.selftestOverlay { OverlaySelfTest.run(options) }
+if options.selftestStall { StallSelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
 if options.selftestProvision { ProvisionSelfTest.run(options) }
 if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
@@ -82,6 +87,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     }
 
     func requestShutdown(force: Bool = false) {
+        CrashReporting.noteUserExit()
         if let at = requestedAt {
             // A terminal ^C reaches both the supervisor and us; its forwarded copy is not a second request.
             if !force && Date().timeIntervalSince(at) < 1 { return }
@@ -102,6 +108,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     /// "Restart VM" (menu / Settings): power the guest off cleanly, then the supervisor boots it
     /// again with the current settings.
     func requestRestart() {
+        CrashReporting.noteUserExit()
         guard requestedAt == nil, let vm, let progress else { return }
         requestedAt = Date()
         progress.hostRequestedRestart()   // onRebootIntent writes the supervisor's reboot marker
@@ -157,7 +164,10 @@ do {
 
     let progress = BootProgress(restarting: Supervisor.bootNumber > 1)
     lifecycle.progress = progress
-    console.onLine = { progress.consoleLine($0) }
+    console.onLine = { line in
+        progress.consoleLine(line)
+        CrashReporting.consoleLine(line)
+    }
     let progressPort = try ProgressPort()
     progressPort.start { progress.guestLine($0) }
     progress.onRebootIntent = {
@@ -261,6 +271,14 @@ do {
     lifecycle.window = wc
     wc.onCloseRequest = { lifecycle.requestShutdown() }
     wc.attach(progress: progress)
+    let ctxId = vm.ctx
+    let stall = StallMonitor(view: wc.stallView) {
+        var ctrl: UInt64 = 0, ring: UInt64 = 0
+        let r = krun_gpu_get_activity(ctxId, &ctrl, &ring)
+        return r == 0 || r == -ENOTSUP ? (ctrl, ring) : nil
+    }
+    stall.onNotResponding = { CrashReporting.stallNotResponding(seconds: $0) }
+    wc.attach(stall: stall)
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
                                           vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,

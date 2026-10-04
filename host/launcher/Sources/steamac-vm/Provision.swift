@@ -34,6 +34,7 @@ enum Provision {
         }
         guard ok else {
             log("provision failed: \(reason.isEmpty ? "(no reason given)" : reason); \(payload) is kept for the next boot")
+            CrashReporting.provisionFailed(reason: reason)
             return
         }
         guard FileManager.default.fileExists(atPath: payload) else { return }   // second report (port + console)

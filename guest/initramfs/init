@@ -809,6 +809,8 @@ if [ -f "$_osr" ]; then
     for _t in /newroot/usr/lib/os-release /newroot/etc/os-release; do
         [ -f "$_t" ] && [ ! -L "$_t" ] && bind_ro /run/steamac/os-release "$_t"
     done
+    # The launcher tags its crash reports with this line (steamac-init: rootfs-X BUILD_ID=...).
+    msg "rootfs-$SLOT BUILD_ID=$(sed -n 's/^BUILD_ID=//p' "$_osr" | tr -d '"') VERSION_ID=$(sed -n 's/^VERSION_ID=//p' "$_osr" | tr -d '"')"
 else
     warn "no os-release in rootfs-$SLOT"
 fi
