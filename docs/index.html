@@ -408,8 +408,8 @@
         </a>
         <a class="all-releases" href="https://github.com/fxgl/steamac/releases"><span lang="en">All releases</span><span lang="ru">Все релизы</span> →</a>
         <ol class="steps">
-          <li><span lang="en">Download the launcher from the latest release and move it to Applications.</span><span lang="ru">Скачайте лаунчер из последнего релиза и перенесите в «Программы».</span></li>
-          <li><span lang="en">Build the SteamOS disk with <code>./build.sh guest</code>: it downloads Valve's signed image, checks it and lays out the disk (needs OrbStack or Docker). On first start the launcher asks for the image and uses it in place.</span><span lang="ru">Соберите диск SteamOS командой <code>./build.sh guest</code>: она скачает подписанный образ Valve, проверит его и разметит диск (нужен OrbStack или Docker). При первом запуске лаунчер спросит образ и будет использовать его на месте.</span></li>
+          <li><span lang="en">Download the DMG, open it and drag FX Steam Launcher to Applications. It is signed and notarized by Apple.</span><span lang="ru">Скачайте DMG, откройте и перетащите FX Steam Launcher в «Программы». Приложение подписано и нотаризовано Apple.</span></li>
+          <li><span lang="en">Launch it and choose <b>Create New Disk…</b>: the launcher downloads the signed SteamOS image from Valve's servers (~4.4 GB), verifies Valve's signature and builds the disk. No Docker needed.</span><span lang="ru">Запустите и выберите <b>Create New Disk…</b>: лаунчер скачает подписанный образ SteamOS с серверов Valve (~4,4 ГБ), проверит подпись Valve и соберёт диск. Docker не нужен.</span></li>
           <li><span lang="en">Sign in to Steam and install games — Steam brings Proton 11 (ARM64) and FEX itself.</span><span lang="ru">Войдите в Steam и ставьте игры — Proton 11 (ARM64) и FEX Steam поставит сам.</span></li>
         </ol>
       </div>
@@ -425,8 +425,8 @@ cd steamac
         <h3><span lang="en">Requirements</span><span lang="ru">Требования</span></h3>
         <ul class="req">
           <li><span lang="en">Mac with Apple silicon, macOS 15 or later</span><span lang="ru">Mac на Apple silicon, macOS 15 или новее</span></li>
-          <li><span lang="en">~150 GB free disk (the image is sparse)</span><span lang="ru">~150 ГБ свободного места (образ разреженный)</span></li>
-          <li><span lang="en">To build: Xcode, Homebrew, rustup, OrbStack</span><span lang="ru">Для сборки: Xcode, Homebrew, rustup, OrbStack</span></li>
+          <li><span lang="en">~21 GB free to create the disk; the image is sparse and grows as you install games</span><span lang="ru">~21 ГБ свободного места на создание диска; образ разреженный и растёт по мере установки игр</span></li>
+          <li><span lang="en">To build from source: Xcode 26+, Homebrew, rustup, OrbStack</span><span lang="ru">Для сборки из исходников: Xcode 26+, Homebrew, rustup, OrbStack</span></li>
         </ul>
       </div>
     </div>
