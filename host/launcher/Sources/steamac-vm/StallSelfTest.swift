@@ -96,13 +96,17 @@ enum StallSelfTest {
                 progress.state.phase == .running && !wc.overlay.shown
                     ? expectHidden("ctrl commands at 60 Hz") : "expected running, overlay hidden"
             },
-            Step(name: "03-idle-1.5s", action: { mode.store(0, ordering: .relaxed) }, wait: 1.5) {
-                expectHidden("GPU idle 1.5 s")
+            Step(name: "03-steam-ui-idle-3s", action: { mode.store(0, ordering: .relaxed) }, wait: 3.0) {
+                expectHidden("Steam UI focused, GPU idle 3 s")
             },
-            Step(name: "04-idle-2.5s-shown", action: {}, wait: 1.0) {
+            Step(name: "04-game-focused-1.5s", action: { guest("focus game 4242\n") }, wait: 1.5) {
+                wc.guestFocus == .game(4242) ? expectHidden("game focused 1.5 s ago (stale idle must not count)")
+                                             : "expected game focus, got \(wc.guestFocus)"
+            },
+            Step(name: "05-game-idle-2.5s-shown", action: {}, wait: 1.0) {
                 expectShown(title: working, detail: "guest alive")
             },
-            Step(name: "05-resized", action: { wc.window.setContentSize(NSSize(width: 1000, height: 700)) }, wait: 0.6) {
+            Step(name: "06-resized", action: { wc.window.setContentSize(NSSize(width: 1000, height: 700)) }, wait: 0.6) {
                 let card = view.cardFrame, b = view.bounds
                 guard b.width == 1000 else { return "view did not resize: \(b)" }
                 guard abs(card.midX - b.midX) <= 1, card.minY > 0, card.maxY < b.height / 2 else {
@@ -110,26 +114,31 @@ enum StallSelfTest {
                 }
                 return expectShown(title: working, detail: "VM CPU")
             },
-            Step(name: "06-ring-resumes", action: { mode.store(2, ordering: .relaxed) }, wait: 0.6) {
+            Step(name: "07-ring-resumes", action: { mode.store(2, ordering: .relaxed) }, wait: 0.6) {
                 view.isIdle ? expectHidden("Venus ring commands") : "indicator view not hidden + idle after the fade"
             },
-            Step(name: "07-heartbeat-lost-2.5s", action: {
-                heartbeats.store(false, ordering: .relaxed); mode.store(0, ordering: .relaxed)
-            }, wait: 2.5) {
+            Step(name: "08-game-idle-again", action: { mode.store(0, ordering: .relaxed) }, wait: 2.5) {
                 expectShown(title: working, detail: "guest alive")
             },
-            Step(name: "08-not-responding", action: {}, wait: 4.0) {
+            Step(name: "09-focus-steam-hides", action: { guest("focus steam\n") }, wait: 0.5) {
+                view.isIdle ? expectHidden("focus back to Steam") : "indicator view not hidden + idle after focus steam"
+            },
+            Step(name: "10-steam-ui-heartbeat-lost-4s", action: { heartbeats.store(false, ordering: .relaxed) }, wait: 4.0) {
+                expectHidden("Steam UI, heartbeat lost < 5 s")
+            },
+            Step(name: "11-steam-ui-not-responding", action: {}, wait: 2.5) {
                 expectShown(title: "SteamOS is not responding…", detail: "waiting (")
             },
-            Step(name: "09-setting-off", action: { monitor.enabled = false }, wait: 2.6) {
+            Step(name: "12-heartbeat-back", action: { heartbeats.store(true, ordering: .relaxed) }, wait: 1.8) {
+                view.isIdle ? expectHidden("heartbeat back in the Steam UI") : "indicator view not hidden + idle after heartbeat"
+            },
+            Step(name: "13-setting-off", action: { guest("focus game 4242\n"); monitor.enabled = false }, wait: 2.6) {
                 view.isIdle ? expectHidden("setting off") : "indicator view not hidden + idle with the setting off"
             },
-            Step(name: "10-setting-on", action: {
-                heartbeats.store(true, ordering: .relaxed); monitor.enabled = true
-            }, wait: 2.6) {
+            Step(name: "14-setting-on", action: { monitor.enabled = true }, wait: 2.6) {
                 expectShown(title: working, detail: "guest alive")
             },
-            Step(name: "11-shutdown", action: { guest("shutdown poweroff\n") }, wait: 0.6) {
+            Step(name: "15-shutdown", action: { guest("shutdown poweroff\n") }, wait: 0.6) {
                 wc.overlay.shown && progress.state.phase == .shutdown(reboot: false)
                     ? expectHidden("shutdown overlay") : "shutdown overlay should be shown"
             },

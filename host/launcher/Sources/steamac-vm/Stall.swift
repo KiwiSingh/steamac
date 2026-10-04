@@ -2,17 +2,21 @@ import AppKit
 import Darwin
 import QuartzCore
 
-/// "Still working" indicator (Settings > General): shown when the guest sends no GPU work for
-/// `idleThreshold` once the boot overlay has gone, hidden as soon as any arrives.
+/// "Still working" indicator (Settings > General). Shown after `ready`, never during the
+/// boot/shutdown overlay, when the guest sends no GPU work for `idleThreshold` while a game has
+/// focus (`focus game <appid>`; the idle Steam UI legitimately sends none for minutes), or —
+/// whatever has focus — when the guest's heartbeat has also stopped for `heartbeatTimeout`.
+/// Hidden as soon as GPU work arrives, the game loses focus or the guest answers again.
 ///
 /// GPU work = libkrun's krun_gpu_get_activity counters (libkrun patch 0015), sampled every
 /// `tick`: virtio-gpu control-queue commands (SUBMIT_3D, RESOURCE_FLUSH, SET_SCANOUT*, …) and
 /// Venus commands virglrenderer dispatched from its in-process rings (virglrenderer patch 0009).
-/// The wording comes from the guest agent's heartbeat (`alive <uptime_ms> <loadavg1>` once a
-/// second over fx.progress) and this process's CPU time (vCPU threads included): alive →
-/// "Still working…" + CPU, no heartbeat for `heartbeatTimeout` → "SteamOS is not responding…".
-/// Never during the boot/shutdown overlay. With perf stats on it also logs the counter rates and
-/// the longest idle stretch every 5 s. Main thread only.
+/// The idle window starts at the latest of: last GPU work, gate opening (overlay gone, setting
+/// on), the game getting focus — so stale idle time never fires at once. The wording comes from
+/// the guest agent's heartbeat (`alive <uptime_ms> <loadavg1>` once a second over fx.progress)
+/// and this process's CPU time (vCPU threads included): alive → "Still working…" + CPU, no
+/// heartbeat for `heartbeatTimeout` → "SteamOS is not responding…". With perf stats on it also
+/// logs the counter rates and the longest idle stretch every 5 s. Main thread only.
 final class StallMonitor {
     typealias Counters = (ctrl: UInt64, ring: UInt64)
 
@@ -26,9 +30,11 @@ final class StallMonitor {
     private let sample: () -> Counters?
     private var timer: DispatchSourceTimer?
     private var counters: Counters?
+    private var countersAvailable = false
     private var lastActivity = CACurrentMediaTime()
     private var cpuAtActivity = StallMonitor.cpuSeconds()
-    /// When the gate (enabled, not suppressed) last opened: idle time counts from here at the earliest.
+    /// When the gate last opened (enabled, not suppressed, game focus): idle time counts from
+    /// here at the earliest.
     private var gateOpenedAt = CACurrentMediaTime()
     private var lastAlive: CFTimeInterval = 0
     private var guestLoad = 0.0
@@ -42,11 +48,11 @@ final class StallMonitor {
     private var perfLongestIdle: CFTimeInterval = 0
 
     /// Settings > General "Show indicator when the GPU goes idle".
-    var enabled = true { didSet { if enabled != oldValue { gateChanged(reason: "setting off") } } }
-    /// Boot / shutdown overlay on screen, or the guest is shutting down.
-    var suppressed = false { didSet { if suppressed != oldValue { gateChanged(reason: "overlay") } } }
-    /// Still booting (overlay off or dismissed): "SteamOS is starting" wording.
-    var booting = false
+    var enabled = true { didSet { if enabled != oldValue { gateChanged() } } }
+    /// Before `ready`, boot / shutdown overlay on screen, or the guest is shutting down.
+    var suppressed = true { didSet { if suppressed != oldValue { gateChanged() } } }
+    /// A game has focus in the guest (`focus game <appid>`).
+    var gameFocused = false { didSet { if gameFocused != oldValue { gateChanged() } } }
     /// The indicator is up (or about to fade in).
     var indicatorShown: Bool { shownSince != nil }
     /// Once per indicator stretch, when its wording turns to "SteamOS is not responding…"
@@ -81,12 +87,11 @@ final class StallMonitor {
 
     private var gateOpen: Bool { enabled && !suppressed }
 
-    private func gateChanged(reason: String) {
-        if gateOpen {
-            gateOpenedAt = CACurrentMediaTime()
-        } else {
-            hide(reason: reason)
-        }
+    /// Any gate input changed: a newly opened window starts now; a closed one hides at once.
+    private func gateChanged() {
+        let now = CACurrentMediaTime()
+        if gateOpen { gateOpenedAt = now }
+        evaluate(now)
     }
 
     // MARK: sampling
@@ -104,10 +109,22 @@ final class StallMonitor {
             cpuAtActivity = StallMonitor.cpuSeconds()
             return
         }
-        guard gateOpen, c != nil else { return }
-        // The threshold counts from the overlay going away at the earliest; durations shown and
-        // logged are the GPU's whole idle time.
-        guard now - max(lastActivity, gateOpenedAt) >= StallMonitor.idleThreshold else { return }
+        countersAvailable = c != nil
+        evaluate(now)
+    }
+
+    /// Show / refresh / hide the indicator for the current state (no GPU work since `lastActivity`).
+    private func evaluate(_ now: CFTimeInterval) {
+        let dead = notResponding()
+        // Durations shown and logged are the GPU's whole idle time.
+        guard countersAvailable, gateOpen, gameFocused || dead,
+              now - max(lastActivity, gateOpenedAt) >= StallMonitor.idleThreshold else {
+            if shownSince != nil {
+                hide(reason: !enabled ? "setting off" : suppressed ? "overlay"
+                     : notRespondingReported && !dead ? "guest responding again" : "game focus lost", now: now)
+            }
+            return
+        }
         noteCPU(now)
         let starting = shownSince == nil
         if starting { shownSince = (lastActivity, cpuAtActivity) }
@@ -117,7 +134,7 @@ final class StallMonitor {
             view.show()
             log("stall: gpu idle \(String(format: "%.1f", now - lastActivity)) s, indicator shown (\(status(now)))")
         }
-        if !notRespondingReported && notResponding() {
+        if !notRespondingReported && dead {
             notRespondingReported = true
             log("stall: guest not responding (no heartbeat for \(Int(heartbeatAge ?? 0)) s, gpu idle \(Int(now - lastActivity)) s)")
             onNotResponding?(now - lastActivity)
@@ -146,7 +163,7 @@ final class StallMonitor {
         if notResponding() {
             return ("SteamOS is not responding…", "waiting (\(Int(idle)) s)")
         }
-        let title = booting ? "Still working — SteamOS is starting…" : "Still working — loading or compiling shaders…"
+        let title = "Still working — loading or compiling shaders…"
         var detail = "VM CPU \(String(format: "%.1f", currentCPU())) cores"
         if lastAlive > 0 { detail += " · guest alive" }
         return (title, detail)

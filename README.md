@@ -40,12 +40,14 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 перезапуска ВМ. Steam сам прогревает этот кеш (Shader Pre-Caching / fossilize_replay включены
 в SteamOS по умолчанию), делать ничего не нужно.
 
-Если гость 2 с не присылает GPU-команд (virtio-gpu control queue и Venus-кольца — счётчики
-`krun_gpu_get_activity`), поверх последнего кадра появляется карточка «Still working — loading or
-compiling shaders…» с загрузкой CPU ВМ; если агент гостя перестал присылать heartbeat (> 5 с) —
-«SteamOS is not responding…». Исчезает с первой же GPU-командой; каждый случай пишется в лог
-(`stall: gpu idle 3.1 s (guest alive, …)`). С `--perf-stats` раз в 5 с добавляется строка
-`perf: gpu ctrl/s=… ring/s=… longest-idle=…`. Выключается в Settings > General.
+Пока в фокусе игра (`focus game <appid>`), если гость 2 с не присылает GPU-команд (virtio-gpu
+control queue и Venus-кольца — счётчики `krun_gpu_get_activity`), поверх последнего кадра появляется
+карточка «Still working — loading or compiling shaders…» с загрузкой CPU ВМ; если вдобавок агент
+гостя перестал присылать heartbeat (> 5 с) — «SteamOS is not responding…» (это — при любом фокусе).
+Простаивающий интерфейс Steam GPU-команд не шлёт минутами и индикатор не вызывает. Исчезает с первой
+же GPU-командой или при уходе фокуса из игры; каждый случай пишется в лог (`stall: gpu idle 3.1 s
+(guest alive, …)`). С `--perf-stats` раз в 5 с добавляется строка `perf: gpu ctrl/s=… ring/s=…
+longest-idle=…`. Выключается в Settings > General.
 
 | Клавиши в окне | |
 |---|---|

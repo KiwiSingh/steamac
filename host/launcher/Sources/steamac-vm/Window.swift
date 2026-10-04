@@ -229,11 +229,12 @@ final class WindowController: NSObject, NSWindowDelegate {
         if overlay.shown { overlay.hide() } else { overlay.show() }
     }
 
-    /// The GPU-idle indicator follows the overlay (never while it is up or the guest shuts down),
-    /// the guest heartbeat and Settings > General.
+    /// The GPU-idle indicator follows `ready`, the overlay (never while it is up or the guest shuts
+    /// down), game focus, the guest heartbeat and Settings > General.
     func attach(stall: StallMonitor) {
         self.stall = stall
         stall.enabled = settings.showStallIndicator
+        stall.gameFocused = focusedGame != nil
         overlay.onVisibilityChange = { [weak self] _ in self?.updateStallGate() }
         if let progress {
             let previous = progress.onChange
@@ -251,9 +252,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func updateStallGate() {
         guard let stall else { return }
-        let phase = progress?.state.phase ?? .running
-        if case .shutdown = phase { stall.suppressed = true } else { stall.suppressed = overlay.shown }
-        stall.booting = phase == .boot
+        stall.suppressed = overlay.shown || (progress.map { $0.state.phase != .running } ?? false)
     }
 
     /// The user interacted with the guest: a visible overlay gets out of the way (input still goes through).
@@ -385,6 +384,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     func guestFocusChanged(_ f: GuestFocus) {
         guard f != guestFocus else { return }
         guestFocus = f
+        stall?.gameFocused = focusedGame != nil
         log("input: guest focus \(f)")
         guestCursor = nil
         // Back in Steam / desktop (or a game without auto-capture): give the pointer back.
