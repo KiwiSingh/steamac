@@ -63,8 +63,8 @@ else
         "progress: kernel"
         "progress: shutdown"
         "input[steamac virtio keyboard] type=1 code=30 value=1"
-        "input[steamac virtio tablet] type=1 code=272 value=1"
-        "input[steamac virtio tablet] type=2 code=8 value=1"
+        "input[steamac virtio mouse] type=1 code=272 value=1"
+        "input[steamac virtio mouse] type=2 code=8 value=1"
         "input[Microsoft X-Box 360 pad] type=1 code=304 value=1"
         "gpio-keys key pressed"
     )

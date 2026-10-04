@@ -3,9 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.steamac.vm</string>
+    <string>es.fxgam.steamac</string>
     <key>CFBundleName</key>
-    <string>steamac-vm</string>
+    <string>FX Steam Launcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>FX Steam Launcher</string>
     <key>CFBundleExecutable</key>
     <string>steamac-vm</string>
     <key>CFBundlePackageType</key>
