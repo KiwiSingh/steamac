@@ -61,7 +61,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         var height: CGFloat {
             switch self {
             case .general: return 470
-            case .display: return 470
+            case .display: return 520
             case .mouse: return 470
             case .controller: return 620
             case .sound: return 440
@@ -289,6 +289,25 @@ private struct GeneralTab: View {
 private struct DisplayTab: View {
     @EnvironmentObject var settings: LauncherSettings
     static let refreshRates = [30, 48, 50, 60, 72, 75, 90, 100, 120, 144]
+    /// Largest window that fits the screen the VM window opens on (when the tab appears).
+    @State private var fit = LauncherSettings.fitToScreenSize()
+
+    /// Choosing a preset writes its W/H; "Fit to screen" writes the current fit (re-evaluated at
+    /// each start); "Custom…" keeps W/H and shows the fields.
+    private var preset: Binding<String> {
+        Binding(get: { settings.windowSizePreset }, set: { id in
+            if id == LauncherSettings.fitPreset {
+                (settings.windowWidth, settings.windowHeight) = fit
+            } else if let p = LauncherSettings.sizePresets.first(where: { $0.id == id }) {
+                (settings.windowWidth, settings.windowHeight) = (p.width, p.height)
+            }
+            settings.windowSizePreset = id
+        })
+    }
+
+    private func presetTitle(_ p: LauncherSettings.SizePreset) -> String {
+        "\(p.width) × \(p.height) (\(p.label))" + (p.width > fit.0 || p.height > fit.1 ? " — larger than this screen" : "")
+    }
 
     var body: some View {
         Form {
@@ -334,14 +353,26 @@ private struct DisplayTab: View {
                            detail: "Off: the guest keeps its resolution and the picture is scaled to the window.",
                            now: true)
                 }
-                HStack {
-                    Label2(title: "Default window size", detail: "Guest pixels = window points.", now: false, key: .windowWidth)
-                    Spacer()
-                    TextField("W", value: intBinding($settings.windowWidth, 800...4094), format: .number.grouping(.never))
-                        .frame(width: 64).multilineTextAlignment(.trailing)
-                    Text("×")
-                    TextField("H", value: intBinding($settings.windowHeight, 500...4094), format: .number.grouping(.never))
-                        .frame(width: 64).multilineTextAlignment(.trailing)
+                Picker(selection: preset) {
+                    ForEach(LauncherSettings.sizePresets) { Text(presetTitle($0)).tag($0.id) }
+                    Divider()
+                    Text(verbatim: "Fit to screen (\(fit.0) × \(fit.1))").tag(LauncherSettings.fitPreset)
+                    Text(verbatim: "Custom…").tag(LauncherSettings.customPreset)
+                } label: {
+                    Label2(title: "Default window size", detail: "Guest pixels = window points; at least 800 × 500.",
+                           now: false, key: .windowSizePreset)
+                }
+                if settings.windowSizePreset == LauncherSettings.customPreset {
+                    HStack {
+                        Text("Custom size")
+                        Spacer()
+                        TextField("W", value: intBinding($settings.windowWidth, 800...4094), format: .number.grouping(.never))
+                            .frame(width: 64).multilineTextAlignment(.trailing)
+                        Text("×")
+                        TextField("H", value: intBinding($settings.windowHeight, 500...4094), format: .number.grouping(.never))
+                            .frame(width: 64).multilineTextAlignment(.trailing)
+                        Text("pt")
+                    }
                 }
             }
         }

@@ -4,8 +4,9 @@ import SwiftUI
 /// `--selftest-settings [--selftest-out DIR]`: open the Settings window without a VM, write
 /// DIR/settings-<tab>.png for every tab (command-line overrides of this run are shown as in a
 /// real run), then DIR/settings-create-disk.png of the "Create New Disk…" window,
-/// DIR/settings-first-run.png of the first-run alert and DIR/settings-what-is-sent.png (the crash
-/// reports popover), and check that each capture has content.
+/// DIR/settings-first-run.png of the first-run alert, DIR/settings-what-is-sent.png (the crash
+/// reports popover), DIR/settings-display-presets.png (window size popup open; screen capture)
+/// and DIR/settings-display-custom.png (Custom… fields), and check that each capture has content.
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
         let settings = LauncherSettings.shared
@@ -51,6 +52,98 @@ enum SettingsSelfTest {
             exit(failures.isEmpty ? 0 : 1)
         }
 
+        /// SwiftUI menu pickers (SwiftUIPopupButton, an NSButton with a menu).
+        func popups(in view: NSView?) -> [NSButton] {
+            guard let view else { return [] }
+            if let b = view as? NSButton, "\(type(of: b))".contains("Popup") { return [b] }
+            return view.subviews.flatMap { popups(in: $0) }
+        }
+
+        /// The Display tab with the real window-size popup items drawn next to it (a popup menu is
+        /// its own window, which cacheDisplay cannot draw and screen capture needs permission for).
+        func withMenuItems(_ tab: NSBitmapImageRep, _ items: [String], selected: String) -> NSBitmapImageRep? {
+            let font = NSFont.menuFont(ofSize: 13), rowH: CGFloat = 22, pad: CGFloat = 6
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+            let menuW = (items.map { ($0 as NSString).size(withAttributes: attrs).width }.max() ?? 100) + 44
+            let menuH = items.reduce(pad * 2) { $0 + ($1 == "----" ? 11 : rowH) }
+            let size = NSSize(width: tab.size.width + menuW + 24, height: max(tab.size.height, menuH + 40))
+            let scale = CGFloat(tab.pixelsWide) / tab.size.width
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+            rep.size = size
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            NSColor.windowBackgroundColor.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            tab.draw(in: NSRect(x: 0, y: size.height - tab.size.height, width: tab.size.width, height: tab.size.height))
+            let menuRect = NSRect(x: tab.size.width + 12, y: size.height - 30 - menuH, width: menuW, height: menuH)
+            NSColor.controlBackgroundColor.setFill()
+            NSColor.separatorColor.setStroke()
+            let path = NSBezierPath(roundedRect: menuRect, xRadius: 6, yRadius: 6)
+            path.fill()
+            path.stroke()
+            ("Window size popup (items read from the live menu)" as NSString)
+                .draw(at: NSPoint(x: menuRect.minX, y: menuRect.maxY + 8),
+                      withAttributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
+            var y = menuRect.maxY - pad
+            for item in items {
+                if item == "----" {
+                    y -= 11
+                    NSColor.separatorColor.setFill()
+                    NSRect(x: menuRect.minX + 10, y: y + 5, width: menuW - 20, height: 1).fill()
+                    continue
+                }
+                y -= rowH
+                if item == selected { ("✓" as NSString).draw(at: NSPoint(x: menuRect.minX + 10, y: y + 3), withAttributes: attrs) }
+                (item as NSString).draw(at: NSPoint(x: menuRect.minX + 28, y: y + 3), withAttributes: attrs)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            return rep
+        }
+
+        /// Display tab: open the real window-size popup, check its items (11 presets, Fit to screen,
+        /// Custom…) → DIR/settings-display-presets.{txt,png}, then reveal "Custom…"
+        /// (settings-display-custom.png). The saved window size is restored afterwards.
+        func displayPresets(then done: @escaping () -> Void) {
+            let saved = (settings.windowSizePreset, settings.windowWidth, settings.windowHeight)
+            sw.show(tab: .display)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                guard let popup = popups(in: sw.window.contentView)
+                    .first(where: { $0.title.contains(" × ") || $0.title.hasPrefix("Custom") }) else {
+                    failures.append("display-presets: no window size popup")
+                    return done()
+                }
+                let selected = popup.title
+                let tabShot = sw.snapshot()
+                var titles: [String] = []
+                let timer = Timer(timeInterval: 0.5, repeats: false) { _ in
+                    titles = popup.menu?.items.map { $0.isSeparatorItem ? "----" : $0.title } ?? []
+                    popup.menu?.cancelTracking()
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                DispatchQueue.main.async {
+                    popup.performClick(nil)   // returns when the timer closes the menu
+                    let path = "\(dir)/settings-display-presets.txt"
+                    try? (titles.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+                    let presets = titles.filter { t in LauncherSettings.sizePresets.contains { t.hasPrefix("\($0.width) × \($0.height) (") } }
+                    log("selftest-settings: \(path): \(titles.count) items, \(presets.count) presets,"
+                        + " \(titles.filter { $0.contains("larger than this screen") }.count) larger than this screen")
+                    if presets.count != LauncherSettings.sizePresets.count || !titles.contains("Custom…")
+                        || !titles.contains(where: { $0.hasPrefix("Fit to screen (") }) {
+                        failures.append("display-presets: unexpected items \(titles)")
+                    }
+                    capture("display-presets", tabShot.flatMap { withMenuItems($0, titles, selected: selected) })
+                    settings.windowSizePreset = LauncherSettings.customPreset
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        capture("display-custom", sw.snapshot())
+                        (settings.windowSizePreset, settings.windowWidth, settings.windowHeight) = saved
+                        done()
+                    }
+                }
+            }
+        }
+
         func next() {
             guard let tab = tabs.popFirst() else {
                 CreateDiskWindowController.show(settings: settings)
@@ -75,7 +168,8 @@ enum SettingsSelfTest {
                         w.makeKeyAndOrderFront(nil)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                             capture("what-is-sent", SettingsWindowController.snapshot(w))
-                            finish()
+                            w.orderOut(nil)
+                            displayPresets(then: finish)
                         }
                     }
                 }

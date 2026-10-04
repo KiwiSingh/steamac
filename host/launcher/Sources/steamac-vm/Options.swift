@@ -346,9 +346,13 @@ struct Options {
         if given("--display") {
             ov[.windowWidth] = "--display \(displayWidth)x\(displayHeight)"
             ov[.windowHeight] = ov[.windowWidth]
+            ov[.windowSizePreset] = ov[.windowWidth]
         } else {
-            displayWidth = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.width), s.windowWidth & ~1))
-            displayHeight = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.height), s.windowHeight & ~1))
+            // "Fit to screen" is re-evaluated at every start (the screen may have changed).
+            let (w, h) = s.windowSizePreset == LauncherSettings.fitPreset && !headless
+                ? LauncherSettings.fitToScreenSize() : (s.windowWidth, s.windowHeight)
+            displayWidth = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.width), w & ~1))
+            displayHeight = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.height), h & ~1))
         }
         if given("--dpi") || given("--display-mm") {
             let flag = displayMM.map { "--display-mm \($0.0)x\($0.1)" } ?? "--dpi \(dpi ?? 0)"

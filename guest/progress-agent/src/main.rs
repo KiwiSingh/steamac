@@ -17,6 +17,12 @@
 //!                                 system shutdown), for the launcher's pointer handling
 //!   alive <uptime_ms> <loadavg1>  heartbeat, once a second from agent start
 //!                                 (alive.rs; the launcher's "not responding" hint)
+//!   logs-begin / logs / logs-end / logs-failed   log bundle answering the
+//!                                 host's `collect-logs <id>` (collect.rs; the
+//!                                 launcher's Report a Problem)
+//!
+//! Host -> guest (same port): `collect-logs <id>`, served at any point of the
+//! lifecycle below (worker thread; the bundle goes out from the main loop).
 //!
 //! Lifecycle
 //!   1. port missing (older launcher) -> exit 0 quietly.
@@ -44,6 +50,8 @@
 
 mod alive;
 mod appname;
+mod codec;
+mod collect;
 mod focus;
 mod port;
 mod shutdown;
@@ -250,7 +258,12 @@ fn ready_marker() -> String {
 
 /// Boot progress until `ready` (or give-up / SIGTERM); focus changes are
 /// reported along the way.
-fn report_boot(rep: &mut Reporter, focus: &mut focus::Focus, heartbeat: Option<&alive::Heartbeat>) {
+fn report_boot(
+    rep: &mut Reporter,
+    focus: &mut focus::Focus,
+    heartbeat: Option<&alive::Heartbeat>,
+    collector: &mut collect::Collector,
+) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
     let log_path = std::env::var("FX_PROGRESS_STEAM_LOG")
         .unwrap_or_else(|_| format!("{home}/.local/share/Steam/logs/bootstrap_log.txt"));
@@ -305,6 +318,7 @@ fn report_boot(rep: &mut Reporter, focus: &mut focus::Focus, heartbeat: Option<&
             }
         }
         rep.port.flush();
+        collector.service(&mut rep.port);
         focus.pump(&mut rep.port, false);
         if let Some(hb) = heartbeat {
             hb.pump(&mut rep.port);
@@ -340,22 +354,23 @@ fn main() {
 
     let mut focus = focus::Focus::new();
     let heartbeat = alive::Heartbeat::new();
+    let mut collector = collect::Collector::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
     let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
     if already {
         eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
     } else {
-        report_boot(&mut rep, &mut focus, heartbeat.as_ref());
+        report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector);
     }
     // Once after `ready` (or at agent start on a later session): current focus.
     focus.pump(&mut rep.port, true);
 
     // Idle until the session is torn down: block in ppoll(2) on the X
-    // connection (focus changes) and the heartbeat timer with the termination
-    // signals blocked everywhere except inside ppoll, so a SIGTERM can neither
-    // be lost between the flag check and the wait nor delay the shutdown
-    // report. Without an X connection (gamescope restarting) it retries once a
-    // second.
+    // connection (focus changes), the heartbeat timer, host requests on the
+    // port and finished log bundles, with the termination signals blocked
+    // everywhere except inside ppoll, so a SIGTERM can neither be lost between
+    // the flag check and the wait nor delay the shutdown report. Without an X
+    // connection (gamescope restarting) it retries once a second.
     unsafe {
         let mut block: libc::sigset_t = std::mem::zeroed();
         let mut old: libc::sigset_t = std::mem::zeroed();
@@ -366,6 +381,7 @@ fn main() {
         libc::sigprocmask(libc::SIG_BLOCK, &block, &mut old);
         while !terminated() {
             rep.port.flush();
+            collector.service(&mut rep.port);
             focus.pump(&mut rep.port, false);
             if let Some(hb) = heartbeat.as_ref() {
                 hb.pump(&mut rep.port);
@@ -373,6 +389,8 @@ fn main() {
             let mut pfds = [
                 libc::pollfd { fd: focus.fd().unwrap_or(-1), events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: heartbeat.as_ref().map_or(-1, |h| h.fd()), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: rep.port.read_fd().unwrap_or(-1), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: collector.wake_fd(), events: libc::POLLIN, revents: 0 },
             ];
             let wait_ms: i64 = if rep.port.has_pending() {
                 TICK_MS as i64
@@ -389,6 +407,12 @@ fn main() {
                 &ts as *const libc::timespec
             };
             libc::ppoll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, tsp, &old);
+            // Host side of the port closed: no input until the agent restarts
+            // (POLLHUP would otherwise end every wait at once).
+            if pfds[2].revents & libc::POLLHUP != 0 {
+                eprintln!("fx-progress: host closed the port; no more host requests");
+                rep.port.stop_reading();
+            }
         }
         libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
     }

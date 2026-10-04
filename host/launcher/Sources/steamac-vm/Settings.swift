@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -21,7 +22,8 @@ final class LauncherSettings: ObservableObject {
         // General
         case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports
         // Display
-        case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight
+        case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
+             windowSizePreset
         // Mouse
         case autoCaptureGames, gameNames
         // Controller
@@ -34,7 +36,8 @@ final class LauncherSettings: ObservableObject {
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled, .sshPort, .network,
+                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled,
+                 .sshPort, .network,
                  .diskImage:
                 return true
             default:
@@ -59,6 +62,36 @@ final class LauncherSettings: ObservableObject {
             case .safe: return 60
             }
         }
+    }
+
+    /// Default window size choices (window points = guest pixels).
+    struct SizePreset: Identifiable {
+        let width: Int, height: Int, label: String
+        var id: String { "\(width)x\(height)" }
+    }
+
+    static let sizePresets: [SizePreset] = [
+        .init(width: 1280, height: 800, label: "Steam Deck, 16:10"), .init(width: 1280, height: 720, label: "16:9"),
+        .init(width: 1440, height: 900, label: "16:10"), .init(width: 1600, height: 900, label: "16:9"),
+        .init(width: 1680, height: 1050, label: "16:10"), .init(width: 1920, height: 1080, label: "Full HD, 16:9"),
+        .init(width: 1920, height: 1200, label: "16:10"), .init(width: 2560, height: 1440, label: "QHD, 16:9"),
+        .init(width: 2560, height: 1600, label: "16:10"), .init(width: 3440, height: 1440, label: "21:9"),
+        .init(width: 3840, height: 2160, label: "4K, 16:9"),
+    ]
+    /// `windowSizePreset` values besides "<W>x<H>": the largest size that fits the screen
+    /// (re-evaluated at every start) and free W/H.
+    static let fitPreset = "fit", customPreset = "custom"
+
+    /// Largest window content size (even, >= the 800x500 minimum) that fits the visible frame of
+    /// the screen the VM window opens on (the one under the pointer), below the title bar.
+    static func fitToScreenSize() -> (Int, Int) {
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+        guard let vf = WindowController.targetScreen()?.visibleFrame else { return (1280, 800) }
+        let chrome = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: style).height - 100
+        let maxSide = VM.maxDisplaySide & ~1
+        let w = min(maxSide, max(Int(WindowController.minGuestSize.width), Int(vf.width) & ~1))
+        let h = min(maxSide, max(Int(WindowController.minGuestSize.height), Int(vf.height - chrome) & ~1))
+        return (w, h)
     }
 
     struct Game: Identifiable, Equatable {
@@ -94,6 +127,8 @@ final class LauncherSettings: ObservableObject {
     @Published var followWindowSize = true { didSet { save(.followWindowSize, followWindowSize) } }
     @Published var windowWidth = 1280 { didSet { save(.windowWidth, windowWidth) } }
     @Published var windowHeight = 800 { didSet { save(.windowHeight, windowHeight) } }
+    /// "<W>x<H>" (a sizePresets entry), `fitPreset` or `customPreset`; W/H always hold the size.
+    @Published var windowSizePreset = "1280x800" { didSet { save(.windowSizePreset, windowSizePreset) } }
     // Mouse
     @Published var autoCaptureGames = true { didSet { save(.autoCaptureGames, autoCaptureGames) } }
     @Published private(set) var games: [Game] = []
@@ -160,6 +195,13 @@ final class LauncherSettings: ObservableObject {
         bool(.followWindowSize, &followWindowSize)
         int(.windowWidth, &windowWidth)
         int(.windowHeight, &windowHeight)
+        if let p = d.string(forKey: Key.windowSizePreset.rawValue) {
+            windowSizePreset = p
+        } else {
+            // Saved before presets existed: the matching preset, else custom.
+            let id = "\(windowWidth)x\(windowHeight)"
+            windowSizePreset = LauncherSettings.sizePresets.contains { $0.id == id } ? id : LauncherSettings.customPreset
+        }
         bool(.autoCaptureGames, &autoCaptureGames)
         bool(.virtualPad, &virtualPad)
         string(.controllerID, &controllerID)
@@ -207,6 +249,10 @@ final class LauncherSettings: ObservableObject {
         case .followWindowSize: guard let b else { return false }; followWindowSize = b
         case .windowWidth: guard let i else { return false }; windowWidth = i
         case .windowHeight: guard let i else { return false }; windowHeight = i
+        case .windowSizePreset:
+            guard text == LauncherSettings.fitPreset || text == LauncherSettings.customPreset
+                || LauncherSettings.sizePresets.contains(where: { $0.id == text }) else { return false }
+            windowSizePreset = text
         case .autoCaptureGames: guard let b else { return false }; autoCaptureGames = b
         case .gameNames: return false
         case .virtualPad: guard let b else { return false }; virtualPad = b
@@ -241,7 +287,8 @@ final class LauncherSettings: ObservableObject {
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
-        windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; autoCaptureGames = fresh.autoCaptureGames
+        windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset
+        autoCaptureGames = fresh.autoCaptureGames
         virtualPad = fresh.virtualPad; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
@@ -275,7 +322,8 @@ final class LauncherSettings: ObservableObject {
             .openFullscreen: openFullscreen, .dpiSource: dpiSource.rawValue,
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
-            .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight, .virtualPad: virtualPad,
+            .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
+            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
             .diskImage: diskImage,
@@ -292,6 +340,7 @@ final class LauncherSettings: ObservableObject {
     var windowSizeChanged: Bool {
         let now = nextStartSnapshot()
         return now[.windowWidth] != bootSnapshot[.windowWidth] || now[.windowHeight] != bootSnapshot[.windowHeight]
+            || now[.windowSizePreset] != bootSnapshot[.windowSizePreset]
     }
 
     // MARK: mouse auto-capture
