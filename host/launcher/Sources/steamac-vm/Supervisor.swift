@@ -55,6 +55,7 @@ enum Supervisor {
         } catch {
             fatal("cannot create \(dir): \(error)")
         }
+        RollingLog.launcher.open(dir: dir)
 
         var savedTermios: termios?
         if Console.ownsTerminal {
@@ -71,12 +72,16 @@ enum Supervisor {
         }
 
         // Forward termination/dump signals to the VM process (it implements the policy:
-        // first request = guest power key, a later one = force quit).
+        // first request = guest power key, a later one = force quit). Without one (the offer
+        // after an unexpected exit is up) a termination signal closes that offer.
         let queue = DispatchQueue(label: "steamac.signals")
         for sig in [SIGINT, SIGTERM, SIGHUP, SIGUSR1] {
             signal(sig, SIG_IGN)
             let s = DispatchSource.makeSignalSource(signal: sig, queue: queue)
-            s.setEventHandler { if childPid > 0 { kill(childPid, sig) } }
+            s.setEventHandler {
+                if childPid > 0 { kill(childPid, sig) }
+                else if sig != SIGUSR1 { DispatchQueue.main.async { MainActor.assumeIsolated { CrashOffer.dismiss() } } }
+            }
             s.resume()
             signalSources.append(s)
         }
@@ -136,6 +141,11 @@ enum Supervisor {
                 frame = text
                 log("guest rebooted (VM exit status \(status)): starting boot #\(boot)")
                 continue
+            }
+            // Unexpected exit (crash, error): offer Report a Problem before cleaning up (the
+            // report reads this session's logs from the run dir).
+            if CrashReporting.unexpectedExit(status: status, runDir: dir), CrashOffer.wanted(o) {
+                MainActor.assumeIsolated { CrashOffer.run(status: status, options: o, runDir: dir) }
             }
             cleanup()
             exit(status)

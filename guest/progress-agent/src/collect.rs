@@ -63,18 +63,9 @@ impl Collector {
         self.wake_r
     }
 
-    /// Host requests from the port, finished bundles to the port. Cheap when
-    /// idle; call on every loop iteration.
-    pub fn service(&mut self, port: &mut Port) {
-        for line in port.read_lines() {
-            if let Some(id) = line.trim().strip_prefix("collect-logs ") {
-                self.start(id.trim(), port);
-            }
-        }
-        self.pump(port);
-    }
-
-    fn start(&mut self, id: &str, port: &mut Port) {
+    /// Host request `collect-logs <id>` (dispatched by main.rs): start
+    /// gathering in a worker thread; the bundle goes out from `pump`.
+    pub fn request(&mut self, id: &str, port: &mut Port) {
         if id.is_empty() || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             eprintln!("fx-progress: ignoring malformed collect-logs request");
             return;
@@ -94,7 +85,9 @@ impl Collector {
         self.pending = Some(rx);
     }
 
-    fn pump(&mut self, port: &mut Port) {
+    /// Finished bundles to the port. Cheap when idle; call on every loop
+    /// iteration.
+    pub fn pump(&mut self, port: &mut Port) {
         let mut buf = [0u8; 64];
         while unsafe { libc::read(self.wake_r, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) } > 0 {}
         let Some(rx) = &self.pending else { return };
@@ -432,6 +425,10 @@ fn steam64_ids(text: &str) -> String {
     out
 }
 
+/// systemd unit types: `name@instance.<type>` is a unit, not an email address.
+const UNIT_SUFFIXES: &[&str] =
+    &["service", "socket", "target", "mount", "automount", "timer", "path", "slice", "scope", "device", "swap"];
+
 fn emails(text: &str) -> String {
     if !text.contains('@') {
         return text.to_string();
@@ -457,9 +454,10 @@ fn emails(text: &str) -> String {
         while host.ends_with('.') || host.ends_with('-') {
             host = &host[..host.len() - 1];
         }
-        let tld_ok = host
-            .rsplit_once('.')
-            .is_some_and(|(h, t)| !h.is_empty() && t.len() >= 2 && t.bytes().all(|c| c.is_ascii_alphabetic()));
+        // systemd instance units (getty@tty1.service, user-runtime-dir@1000.service) are not addresses.
+        let tld_ok = host.rsplit_once('.').is_some_and(|(h, t)| {
+            !h.is_empty() && t.len() >= 2 && t.bytes().all(|c| c.is_ascii_alphabetic()) && !UNIT_SUFFIXES.contains(&t)
+        });
         if s < at && tld_ok {
             out.push_str(&text[last..s]);
             out.push_str("<email>");
@@ -511,6 +509,7 @@ mod tests {
     fn mail() {
         assert_eq!(emails("from a.b+c@example.com."), "from <email>.");
         assert_eq!(emails("x@y nope, user@host.co ok"), "x@y nope, <email> ok");
+        assert_eq!(emails("Started getty@tty1.service and dbus-:1.2-org@0.service"), "Started getty@tty1.service and dbus-:1.2-org@0.service");
     }
 
     #[test]

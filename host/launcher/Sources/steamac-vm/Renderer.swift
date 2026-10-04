@@ -15,6 +15,8 @@ final class Renderer {
     /// Self-test hook: copy the next presented drawable (requires layer.framebufferOnly = false)
     /// and hand back BGRA bytes + size on a Metal completion thread.
     var captureNextDraw: (([UInt8], Int, Int) -> Void)?
+    /// Called once, on the main queue, after a drawable has actually reached the screen.
+    var onFirstOnScreen: (() -> Void)?
     private var textureGeneration = -1
     private var lastCommandBuffer: MTLCommandBuffer?
     static let layerFormat: MTLPixelFormat = .bgra8Unorm
@@ -153,6 +155,16 @@ final class Renderer {
         guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1,
               let drawable = layer.nextDrawable(),
               let cb = queue.makeCommandBuffer() else { return }
+        if onFirstOnScreen != nil {
+            drawable.addPresentedHandler { [weak self] d in
+                guard d.presentedTime > 0 else { return }   // dropped, or the window is not on screen yet
+                DispatchQueue.main.async {
+                    guard let self, let f = self.onFirstOnScreen else { return }
+                    self.onFirstOnScreen = nil
+                    f()
+                }
+            }
+        }
         if let perf {
             perf.waitedForDrawable(ms: (CACurrentMediaTime() - t0) * 1000)
             cb.addCompletedHandler { _ in perf.rendered(flushedAt: flushedAt) }

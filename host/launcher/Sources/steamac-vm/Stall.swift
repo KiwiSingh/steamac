@@ -53,6 +53,8 @@ final class StallMonitor {
     var suppressed = true { didSet { if suppressed != oldValue { gateChanged() } } }
     /// A game has focus in the guest (`focus game <appid>`).
     var gameFocused = false { didSet { if gameFocused != oldValue { gateChanged() } } }
+    /// The focused game is frozen (GamePause): an idle GPU is expected.
+    var paused = false { didSet { if paused != oldValue { gateChanged() } } }
     /// The indicator is up (or about to fade in).
     var indicatorShown: Bool { shownSince != nil }
     /// Once per indicator stretch, when its wording turns to "SteamOS is not responding…"
@@ -85,7 +87,7 @@ final class StallMonitor {
         guestLoad = load
     }
 
-    private var gateOpen: Bool { enabled && !suppressed }
+    private var gateOpen: Bool { enabled && !suppressed && !paused }
 
     /// Any gate input changed: a newly opened window starts now; a closed one hides at once.
     private func gateChanged() {
@@ -129,6 +131,7 @@ final class StallMonitor {
         let starting = shownSince == nil
         if starting { shownSince = (lastActivity, cpuAtActivity) }
         let (title, detail) = text(now: now, idle: now - lastActivity)
+        view.showsReportLink = dead
         view.update(title: title, detail: detail)
         if starting {
             view.show()
@@ -231,14 +234,16 @@ final class StallMonitor {
 }
 
 /// The indicator: a translucent card in the lower third with a spinner and two lines of text,
-/// over the last guest frame (FX overlay colors). Never takes mouse events; when hidden it is
-/// `isHidden` with every animation removed.
+/// over the last guest frame (FX overlay colors). Never takes mouse events, except on its
+/// "Report…" link while it says SteamOS is not responding; when hidden it is `isHidden` with
+/// every animation removed.
 final class StallIndicatorView: NSView {
     private let card = CALayer()
     private let track = CAShapeLayer()
     private let arc = CAShapeLayer()
     private let titleLayer = CATextLayer()
     private let detailLayer = CATextLayer()
+    private let linkLayer = CATextLayer()
     private var title = ""
     private var detail = ""
     private(set) var shown = false
@@ -249,6 +254,20 @@ final class StallIndicatorView: NSView {
     /// The card and the spinner, in view coordinates (self-test pixel checks).
     var cardFrame: CGRect { card.frame }
     var spinnerFrame: CGRect { arc.frame.offsetBy(dx: card.frame.minX, dy: card.frame.minY) }
+    /// "Report…" on the card (Report a Problem), in view coordinates; empty when not shown.
+    var reportLinkFrame: CGRect {
+        showsReportLink && onReport != nil ? linkLayer.frame.offsetBy(dx: card.frame.minX, dy: card.frame.minY) : .zero
+    }
+    /// Opens Report a Problem (the link is shown only when this is set).
+    var onReport: (() -> Void)?
+    /// The "not responding" wording: show the link.
+    var showsReportLink = false {
+        didSet {
+            guard showsReportLink != oldValue else { return }
+            needsLayout = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -267,7 +286,7 @@ final class StallIndicatorView: NSView {
         arc.strokeColor = OverlayView.color(0x66c0f4)
         arc.lineCap = .round
         arc.strokeEnd = 0.7
-        for t in [titleLayer, detailLayer] {
+        for t in [titleLayer, detailLayer, linkLayer] {
             t.alignmentMode = .left
             t.truncationMode = .end
             t.isWrapped = false
@@ -282,7 +301,21 @@ final class StallIndicatorView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0, let superview else { return nil }
+        return reportLinkFrame.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard reportLinkFrame.contains(convert(event.locationInWindow, from: nil)) else { return }
+        log("stall: Report… clicked")
+        onReport?()
+    }
+
+    override func resetCursorRects() {
+        if !reportLinkFrame.isEmpty { addCursorRect(reportLinkFrame, cursor: .pointingHand) }
+    }
+
     override var isOpaque: Bool { false }
 
     // MARK: visibility
@@ -315,13 +348,13 @@ final class StallIndicatorView: NSView {
             self.fading = false
             guard !self.shown else { return }
             self.isHidden = true
-            for l in [self.layer!, self.card, self.track, self.arc, self.titleLayer, self.detailLayer] { l.removeAllAnimations() }
+            for l in [self.layer!, self.card, self.track, self.arc, self.titleLayer, self.detailLayer, self.linkLayer] { l.removeAllAnimations() }
         })
     }
 
     /// True when hidden and idle (no layer animations running).
     var isIdle: Bool {
-        isHidden && [layer!, card, track, arc, titleLayer, detailLayer].allSatisfy { ($0.animationKeys() ?? []).isEmpty }
+        isHidden && [layer!, card, track, arc, titleLayer, detailLayer, linkLayer].allSatisfy { ($0.animationKeys() ?? []).isEmpty }
     }
 
     private func startSpinner() {
@@ -358,6 +391,13 @@ final class StallIndicatorView: NSView {
             .foregroundColor: OverlayView.color(0x8f98a0)])
     }
 
+    private var linkString: NSAttributedString {
+        NSAttributedString(string: "Report…", attributes: [
+            .font: NSFont.systemFont(ofSize: 13 * scaleFactor, weight: .semibold),
+            .foregroundColor: OverlayView.color(0x66c0f4),
+            .underlineStyle: NSUnderlineStyle.single.rawValue])
+    }
+
     private func applyText() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -382,13 +422,16 @@ final class StallIndicatorView: NSView {
         let k = scaleFactor
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let t = titleString, d = detailString
+        let link = showsReportLink && onReport != nil ? linkString : nil
         let pad = 18 * k, spin = 26 * k, gap = 14 * k
         let textWidth = ceil(max(t.size().width, d.size().width)) + 2
-        let width = min(b.width - 32, pad + spin + gap + textWidth + pad + 4 * k)
+        let linkWidth = link.map { ceil($0.size().width) + 2 } ?? 0
+        let linkSpace = link == nil ? 0 : gap + linkWidth
+        let width = min(b.width - 32, pad + spin + gap + textWidth + linkSpace + pad + 4 * k)
         let height = 62 * k
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for l in [layer!, card, track, arc, titleLayer, detailLayer] { l.contentsScale = scale }
+        for l in [layer!, card, track, arc, titleLayer, detailLayer, linkLayer] { l.contentsScale = scale }
         card.frame = CGRect(x: (b.width - width) / 2, y: (b.height * 0.26 - height / 2).rounded(), width: width, height: height).integral
         card.cornerRadius = 14 * k
         card.shadowRadius = 18 * k
@@ -402,12 +445,16 @@ final class StallIndicatorView: NSView {
             s.lineWidth = line
         }
         let textX = pad + spin + gap
-        let textW = max(0, width - textX - pad)
+        let textW = max(0, width - textX - pad - linkSpace)
         titleLayer.frame = CGRect(x: textX, y: height / 2 + 1 * k, width: textW, height: 20 * k)
         detailLayer.frame = CGRect(x: textX, y: height / 2 - 18 * k, width: textW, height: 16 * k)
+        linkLayer.frame = link == nil ? .zero : CGRect(x: width - pad - linkWidth, y: (height - 18 * k) / 2, width: linkWidth, height: 18 * k)
         titleLayer.string = t
         detailLayer.string = d
+        linkLayer.string = link
+        linkLayer.isHidden = link == nil
         CATransaction.commit()
+        window?.invalidateCursorRects(for: self)
     }
 
     /// Render the indicator (model values) over `background` at `scale` pixels per point.

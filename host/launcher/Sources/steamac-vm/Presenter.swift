@@ -90,6 +90,13 @@ final class VMView: NSView {
         metalLayer.backgroundColor = NSColor.black.cgColor
         wantsLayer = true
         layerContentsRedrawPolicy = .never
+        renderer.onFirstOnScreen = { [weak self] in
+            guard let self else { return }
+            self.hudAttached = true
+            // "default" first, so that "off" is a change.
+            self.metalLayer.developerHUDProperties = ["mode": "default"]
+            if !self.metalHUD { self.metalLayer.developerHUDProperties = ["mode": "off"] }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -134,6 +141,14 @@ final class VMView: NSView {
 
     /// `flushedAt`: the guest flush time of a new frame (perf stats), 0 for a plain redraw.
     func redraw(flushedAt: CFTimeInterval = 0) { renderer.draw(to: metalLayer, flushedAt: flushedAt) }
+
+    /// Metal Performance HUD shown (WindowController). libMTLHud attaches to the layer once a
+    /// drawable has reached the screen, starts shown (MTL_HUD_ENABLED) and then acts only on
+    /// changes of developerHUDProperties["mode"]; the setting applies from then on.
+    var metalHUD = false {
+        didSet { if hudAttached { metalLayer.developerHUDProperties = ["mode": metalHUD ? "default" : "off"] } }
+    }
+    private var hudAttached = false
 
     /// The guest picture's rect in view points (same fit as the renderer).
     var fitRect: CGRect {

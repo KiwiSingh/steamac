@@ -53,6 +53,7 @@ longest-idle=…`. Выключается в Settings > General.
 |---|---|
 | Ctrl+Cmd+F | полный экран |
 | Ctrl+Cmd+G | захватить / отпустить мышь вручную |
+| Ctrl+Cmd+P | Metal Performance HUD Apple (FPS, интервал кадров, время GPU, память) вкл/выкл; то же View → Show Metal Performance HUD и Settings > Display |
 | Ctrl+Option | отпустить захваченную мышь |
 | закрыть окно | выключение гостя (кнопка питания) |
 
@@ -101,8 +102,8 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 
 | Вкладка | Сразу | При следующем запуске |
 |---|---|---|
-| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; отчёты о сбоях (`--no-crash-reports`, см. ниже); лог статистики кадров (`--perf-stats`) | полный экран при старте |
-| Display | гость следует за размером окна | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
+| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться); отчёты о сбоях (`--no-crash-reports`, см. ниже); лог статистики кадров (`--perf-stats`) | полный экран при старте |
+| Display | гость следует за размером окна; Metal Performance HUD Apple в правом верхнем углу окна (Ctrl+Cmd+P, View → Show Metal Performance HUD) | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
@@ -244,6 +245,63 @@ Rust в `krun_start_enter` из-за слишком длинной команд�
 virglrenderer и MoltenVK собраны без DWARF — там только таблицы символов). `dist.sh` загружает их и
 бинарники приложения через `sentry-cli --url https://sentry.fxgam.es debug-files upload`, если заданы
 `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` и `SENTRY_PROJECT`; иначе пишет, что загрузка пропущена.
+
+## Сообщить о проблеме (Report a Problem)
+
+Если что-то не работает, отправьте отчёт разработчикам прямо из лаунчера: **Help → Report a Problem…**
+(или в меню приложения), кнопка **Report a Problem…** в Settings → General, ссылка **Report…** на
+карточке «SteamOS is not responding…» и кнопка **Report…** в окне «FX Steam Launcher stopped
+unexpectedly», которое появляется после неожиданного завершения ВМ (падение, ошибка). В диалоге:
+email (обязателен, запоминается на этом Mac — чтобы разработчики могли ответить), описание (что
+делали, чего ждали, что произошло) и галочки, что приложить:
+
+- **Include launcher logs** (включено) — сообщения лаунчера, libkrun, virglrenderer и MoltenVK за эту
+  сессию (последние ~2 МБ, оба процесса) и строки `perf:`/`stall:`; пути `/Users/<имя>` → `~`, имя
+  пользователя и компьютера, email и IP вырезаются;
+- **Include SteamOS logs (system journal, Steam/Proton logs)** (включено) — консоль гостя (hvc0) за
+  сессию и архив `steamos-logs.tar.gz`, который собирает гостевой агент: журнал systemd текущей загрузки
+  (`journalctl -b`, последние 5000 строк, плюс пользовательский журнал), `coredumpctl list`/`info`,
+  `dmesg`, `systemctl --failed`, `os-release`, `layer-release`, `/proc/cmdline`, `df`/`free`, хвосты
+  логов клиента Steam (`console_log`, `stderr`, `bootstrap_log`, `compat_log`, `connection_log`,
+  `webhelper`, `cef_log`, `steamui_*`) и Proton (`~/steam-*.log` от `PROTON_LOG=1`, `version` и
+  `config_info` префиксов в `compatdata`). Steam ID (`[U:1:…]`, 7656119…), имена аккаунтов и
+  персон Steam (из `loginusers.vdf`/`registry.vdf`) и email заменяются заглушками до упаковки;
+  `collect-notes.txt` в архиве перечисляет, что удалось прочитать;
+- **Include a screenshot of the VM window** (выключено по умолчанию: на картинке может быть имя
+  аккаунта Steam и друзья).
+
+Всегда прикладываются `system-info.txt` (версии приложения и macOS, модель Mac, GPU, UUID сборок
+libkrun/virglrenderer/MoltenVK, ядро, BUILD_ID SteamOS, релиз слоя, размеры диска, параметры ВМ,
+заметки о сборе) и `settings.txt` (сохранённые настройки и переопределения из командной строки;
+пароль SSH лежит в связке ключей и никогда не попадает в отчёт, названия игр — тоже).
+**Show What Will Be Sent** собирает отчёт и открывает его папку в Finder — отправляется ровно её
+содержимое.
+
+Отчёт уходит как User Feedback в Sentry (`sentry.fxgam.es`, тот же проект): email, описание, связь с
+последним событием об ошибке этой сессии (если было) и файлы как вложения, одним конвертом напрямую
+на envelope-endpoint — так виден ответ сервера. Работает и при выключенных отчётах о сбоях (явное
+действие пользователя: SDK и обработчик падений при этом не запускаются). Вложения ограничены 20 МБ
+(сначала обрезаются старые части логов, потом выбрасываются скриншот и архив SteamOS); на ответ
+HTTP 413 лимит уменьшается вдвое и отчёт отправляется снова. После отправки показывается короткий
+Report ID (первые 8 знаков ID события). Не удалось отправить — папка остаётся в
+`~/Library/Logs/es.fxgam.steamac/reports/<дата>-<ID>/` (`report.json` с email и описанием плюс
+файлы); в диалоге **Retry** и **Reveal in Finder**, папку можно прислать почтой.
+
+Как это устроено: супервизор всегда пропускает stderr обоих процессов через канал и пишет его в
+`/tmp/steamac-<pid>/launcher.log` (с временем, ротация по 4 МБ), процесс ВМ пишет консоль hvc0 в
+`console.log` рядом; каталог удаляется при выходе лаунчера. Гостевые логи запрашиваются по тому же
+порту `fx.progress` в обратную сторону: лаунчер пишет `collect-logs <id>`, агент (от пользователя
+сессии, только то, что тому доступно) отвечает `logs-begin <id> <размер>`, строками
+`logs <id> <base64>` и `logs-end <id> <sha256>` (или `logs-failed <id> <причина>`), лаунчер собирает
+архив и проверяет размер и SHA-256. Нет ответа за 20 с или агент не работает (нет heartbeat) —
+отчёт уходит без гостевых логов, с пометкой в `system-info.txt`.
+
+Проверка: `--control-fifo PATH`, команды `report open`, `report fill EMAIL ТЕКСТ…` (событие с тегом
+`test=true`), `report include launcher|steamos|screenshot on|off`, `report preview`, `report send`,
+`report retry`, `report dsn DSN|default`, `report dump PNG`, `report close`; `STEAMAC_REPORT_DSN`
+подменяет DSN (путь отказа), `STEAMAC_SENTRY_DEBUG=1` печатает ответ сервера. Окно после падения:
+`--sentry-test-crash abort` с `STEAMAC_REPORT_DUMP=<каталог>` (PNG окна и диалога, затем закрывается
+само; `STEAMAC_REPORT_TEST_SEND=1` — заодно отправить тестовый отчёт).
 
 ## Как это устроено
 

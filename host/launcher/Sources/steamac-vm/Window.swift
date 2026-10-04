@@ -104,6 +104,12 @@ final class WindowController: NSObject, NSWindowDelegate {
             if self.captured && self.mouseMode == .auto && !self.clickCaptures { self.releasePointer() }
             self.updateTitle()
         })
+        // Metal Performance HUD (libMTLHud, loaded by MTL_HUD_ENABLED=1, see main.swift), shown and
+        // hidden at runtime through the layer (VMView.metalHUD).
+        applyMetalHUD(settings.metalHUD)
+        subscriptions.append(settings.$metalHUD.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
+            self?.applyMetalHUD(on)
+        })
     }
 
     func show() {
@@ -229,6 +235,17 @@ final class WindowController: NSObject, NSWindowDelegate {
         if overlay.shown { overlay.hide() } else { overlay.show() }
     }
 
+    /// Menu "Show Metal Performance HUD" / Ctrl+Cmd+P: flips the setting (persisted, Settings > Display).
+    func toggleMetalHUD() {
+        settings.metalHUD.toggle()
+    }
+
+    private func applyMetalHUD(_ on: Bool) {
+        view.metalHUD = on
+        log("display: Metal Performance HUD \(on ? "on" : "off")")
+        view.redraw()   // the HUD changes with the next present; an idle guest sends none
+    }
+
     /// The GPU-idle indicator follows `ready`, the overlay (never while it is up or the guest shuts
     /// down), game focus, the guest heartbeat and Settings > General.
     func attach(stall: StallMonitor) {
@@ -275,6 +292,17 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.redraw()
     }
 
+    /// The window as the window server composites it, Metal HUD included (the HUD is not part of
+    /// the drawable). CGWindowListCreateImage is unavailable in the macOS 15 SDK but still captures
+    /// the process's own windows without Screen Recording permission; looked up at run time.
+    func windowServerImage() -> CGImage? {
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }   // RTLD_DEFAULT
+        let create = unsafeBitCast(sym, to: CreateImage.self)
+        // kCGWindowListOptionIncludingWindow, kCGWindowImageBoundsIgnoreFraming
+        return create(.null, 1 << 3, UInt32(window.windowNumber), 1 << 0)?.takeRetainedValue()
+    }
+
     // MARK: NSWindowDelegate
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -305,6 +333,7 @@ final class WindowController: NSObject, NSWindowDelegate {
                 switch Int(e.keyCode) {
                 case kVK_ANSI_F: toggleFullScreen(); return true
                 case kVK_ANSI_G: captured ? releasePointer() : grabPointer(); return true
+                case kVK_ANSI_P: toggleMetalHUD(); return true
                 default: break
                 }
             }
@@ -655,14 +684,15 @@ extension WindowController {
 }
 
 enum MainMenu {
-    static func install(target: AnyObject, settings: Selector, restart: Selector, shutdown: Selector, forceQuit: Selector,
-                        fullscreen: Selector, grab: Selector, overlay: Selector) {
+    static func install(target: AnyObject, settings: Selector, report: Selector, restart: Selector, shutdown: Selector,
+                        forceQuit: Selector, fullscreen: Selector, grab: Selector, overlay: Selector, metalHUD: Selector) {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         appMenu.addItem(item("Settings…", settings, target, key: ","))
+        appMenu.addItem(item("Report a Problem…", report, target))
         appMenu.addItem(.separator())
         appMenu.addItem(item("Restart VM", restart, target))
         appMenu.addItem(item("Shut Down Guest", shutdown, target))
@@ -675,7 +705,15 @@ enum MainMenu {
         viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
         viewMenu.addItem(item("Grab Pointer (Ctrl+Cmd+G; Ctrl+Option releases)", grab, target))
         viewMenu.addItem(item("Show Boot Overlay", overlay, target))
+        // Ticked by the target's validateMenuItem (follows Settings > Display and Ctrl+Cmd+P).
+        viewMenu.addItem(item("Show Metal Performance HUD (Ctrl+Cmd+P)", metalHUD, target))
+        let help = NSMenu(title: "Help")
+        help.addItem(item("Report a Problem…", report, target))
+        let helpItem = NSMenuItem()
+        helpItem.submenu = help
+        main.addItem(helpItem)
         NSApp.mainMenu = main
+        NSApp.helpMenu = help
     }
 
     /// App menu with Settings… and Quit only (first-run sheet, --selftest-settings).

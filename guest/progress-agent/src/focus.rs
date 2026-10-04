@@ -75,6 +75,11 @@ impl Focus {
         self.conn.is_some()
     }
 
+    /// App id of the focused game (last reported), None for Steam / unknown.
+    pub fn game(&self) -> Option<u32> {
+        self.last.as_deref()?.strip_prefix("focus game ")?.parse().ok()
+    }
+
     /// Connect if needed (rate limited to 1/s), drain pending X events and send
     /// `focus ...` when the focused app changed. `force` resends the current
     /// value even if unchanged (after `ready`, after the port was opened).

@@ -20,10 +20,10 @@ final class LauncherSettings: ObservableObject {
     /// Preference keys. `nextStart` keys are read once per boot (see Options.applySettings).
     enum Key: String, CaseIterable {
         // General
-        case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports
+        case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
-             windowSizePreset
+             windowSizePreset, metalHUD
         // Mouse
         case autoCaptureGames, gameNames
         // Controller
@@ -118,6 +118,9 @@ final class LauncherSettings: ObservableObject {
     @Published var perfStats = false { didSet { save(.perfStats, perfStats) } }
     /// Crash reports and diagnostics through Sentry (CrashReporting); applies now.
     @Published var sendCrashReports = true { didSet { save(.sendCrashReports, sendCrashReports) } }
+    /// While the app is not active: mute the guest's sound / freeze the focused game.
+    @Published var muteInBackground = true { didSet { save(.muteInBackground, muteInBackground) } }
+    @Published var pauseInBackground = false { didSet { save(.pauseInBackground, pauseInBackground) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }
     @Published var fixedDPI = 110 { didSet { save(.fixedDPI, fixedDPI) } }
@@ -129,6 +132,8 @@ final class LauncherSettings: ObservableObject {
     @Published var windowHeight = 800 { didSet { save(.windowHeight, windowHeight) } }
     /// "<W>x<H>" (a sizePresets entry), `fitPreset` or `customPreset`; W/H always hold the size.
     @Published var windowSizePreset = "1280x800" { didSet { save(.windowSizePreset, windowSizePreset) } }
+    /// Apple's Metal Performance HUD on the VM window (FPS, frame interval, GPU time, memory); applies now.
+    @Published var metalHUD = false { didSet { save(.metalHUD, metalHUD) } }
     // Mouse
     @Published var autoCaptureGames = true { didSet { save(.autoCaptureGames, autoCaptureGames) } }
     @Published private(set) var games: [Game] = []
@@ -187,6 +192,8 @@ final class LauncherSettings: ObservableObject {
         bool(.openFullscreen, &openFullscreen)
         bool(.perfStats, &perfStats)
         bool(.sendCrashReports, &sendCrashReports)
+        bool(.muteInBackground, &muteInBackground)
+        bool(.pauseInBackground, &pauseInBackground)
         if let s = d.string(forKey: Key.dpiSource.rawValue).flatMap(DPISource.init(rawValue:)) { dpiSource = s }
         int(.fixedDPI, &fixedDPI)
         int(.fixedWidthMM, &fixedWidthMM)
@@ -202,6 +209,7 @@ final class LauncherSettings: ObservableObject {
             let id = "\(windowWidth)x\(windowHeight)"
             windowSizePreset = LauncherSettings.sizePresets.contains { $0.id == id } ? id : LauncherSettings.customPreset
         }
+        bool(.metalHUD, &metalHUD)
         bool(.autoCaptureGames, &autoCaptureGames)
         bool(.virtualPad, &virtualPad)
         string(.controllerID, &controllerID)
@@ -241,6 +249,8 @@ final class LauncherSettings: ObservableObject {
         case .openFullscreen: guard let b else { return false }; openFullscreen = b
         case .perfStats: guard let b else { return false }; perfStats = b
         case .sendCrashReports: guard let b else { return false }; sendCrashReports = b
+        case .muteInBackground: guard let b else { return false }; muteInBackground = b
+        case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
         case .dpiSource: guard let v = DPISource(rawValue: text) else { return false }; dpiSource = v
         case .fixedDPI: guard let i else { return false }; fixedDPI = i
         case .fixedWidthMM: guard let i else { return false }; fixedWidthMM = i
@@ -253,6 +263,7 @@ final class LauncherSettings: ObservableObject {
             guard text == LauncherSettings.fitPreset || text == LauncherSettings.customPreset
                 || LauncherSettings.sizePresets.contains(where: { $0.id == text }) else { return false }
             windowSizePreset = text
+        case .metalHUD: guard let b else { return false }; metalHUD = b
         case .autoCaptureGames: guard let b else { return false }; autoCaptureGames = b
         case .gameNames: return false
         case .virtualPad: guard let b else { return false }; virtualPad = b
@@ -285,9 +296,11 @@ final class LauncherSettings: ObservableObject {
         loading = true
         showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
+        muteInBackground = fresh.muteInBackground; pauseInBackground = fresh.pauseInBackground
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset
+        metalHUD = fresh.metalHUD
         autoCaptureGames = fresh.autoCaptureGames
         virtualPad = fresh.virtualPad; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID

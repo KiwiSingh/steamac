@@ -348,12 +348,13 @@ struct LineSplitter {
     }
 }
 
-/// The `fx.progress` virtio-console port: guest writes lines, the launcher reads them.
+/// The `fx.progress` virtio-console port: guest writes lines, the launcher reads them; the
+/// launcher writes requests the other way (`collect-logs <id>`, GuestLogs).
 final class ProgressPort {
     static let name = "fx.progress"
     /// Handed to libkrun: guest -> host data is written here.
     let guestOutputFd: Int32
-    /// Handed to libkrun: host -> guest direction (never written; keeps the port's input open).
+    /// Handed to libkrun: host -> guest data is read from here.
     let guestInputFd: Int32
     private let readFd: Int32
     private let inputWriteFd: Int32
@@ -364,6 +365,16 @@ final class ProgressPort {
         readFd = out[0]; guestOutputFd = out[1]
         guestInputFd = inp[0]; inputWriteFd = inp[1]
         for fd in out + inp { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        // Requests are tiny; never block the main thread if libkrun stops draining the pipe.
+        _ = fcntl(inputWriteFd, F_SETFL, fcntl(inputWriteFd, F_GETFL) | O_NONBLOCK)
+    }
+
+    /// One host -> guest line; false if the pipe did not take it whole.
+    func send(_ line: String) -> Bool {
+        let bytes = Array((line + "\n").utf8)
+        var n: Int
+        repeat { n = Darwin.write(inputWriteFd, bytes, bytes.count) } while n < 0 && errno == EINTR
+        return n == bytes.count
     }
 
     /// Reader thread: every complete line goes to `handler` on the main queue.

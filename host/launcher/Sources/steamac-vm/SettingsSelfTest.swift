@@ -102,6 +102,48 @@ enum SettingsSelfTest {
             return rep
         }
 
+        /// Background mute: a SoundControl with a recording krun_snd_set_volume shim, driven by
+        /// simulated NSApplication resign/become-active notifications and user mute changes.
+        func backgroundMute(then done: @escaping () -> Void) {
+            var calls: [(Float, Bool)] = []
+            let sound = SoundControl(volumeShim: { _, g, m in calls.append((g, m)); return 0 })
+            let nc = NotificationCenter.default
+            var steps: [(String, () -> Void, ([(Float, Bool)]) -> Bool)] = [
+                ("attach", { sound.attach(ctx: 7, volume: 0.8, mute: false, muteInBackground: true) },
+                 { $0.count == 1 && $0[0] == (0.8, false) }),
+                ("resign active: fade out + mute", { nc.post(name: NSApplication.didResignActiveNotification, object: nil) },
+                 { c in c.last! == (0.8, true) && c.count >= 3 && c.dropLast().allSatisfy { !$0.1 }
+                     && zip(c.dropLast(), c.dropLast().dropFirst()).allSatisfy { $0.0 > $1.0 } }),
+                ("become active: unmute + fade in", { nc.post(name: NSApplication.didBecomeActiveNotification, object: nil) },
+                 { c in c.first! == (0, false) && c.last! == (0.8, false) && c.allSatisfy { !$0.1 } }),
+                ("user mute", { sound.setUser(volume: 0.8, mute: true) }, { $0.count == 1 && $0[0] == (0.8, true) }),
+                ("resign while user-muted", { nc.post(name: NSApplication.didResignActiveNotification, object: nil) }, { $0.isEmpty }),
+                ("become active while user-muted", { nc.post(name: NSApplication.didBecomeActiveNotification, object: nil) }, { $0.isEmpty }),
+                ("user unmute", { sound.setUser(volume: 0.8, mute: false) }, { $0.count == 1 && $0[0] == (0.8, false) }),
+                ("option off", { sound.setMuteInBackground(false) }, { $0.isEmpty }),
+                ("resign with option off", { nc.post(name: NSApplication.didResignActiveNotification, object: nil) }, { $0.isEmpty }),
+                ("option on while inactive: fade out + mute", { sound.setMuteInBackground(true) }, { $0.last.map { $0 == (0.8, true) } ?? false }),
+                ("become active", { nc.post(name: NSApplication.didBecomeActiveNotification, object: nil) }, { $0.last.map { $0 == (0.8, false) } ?? false }),
+            ]
+            func step() {
+                guard !steps.isEmpty else {
+                    sound.detach(reason: "selftest done")
+                    return done()
+                }
+                let (name, action, check) = steps.removeFirst()
+                calls.removeAll()
+                action()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    let text = calls.map { "(\(String(format: "%.2f", $0.0)), \($0.1 ? "mute" : "on"))" }.joined(separator: " ")
+                    let ok = check(calls)
+                    log("selftest-settings: background mute: \(name): \(ok ? "ok" : "FAIL") \(text)")
+                    if !ok { failures.append("background mute: \(name): \(text)") }
+                    step()
+                }
+            }
+            step()
+        }
+
         /// Display tab: open the real window-size popup, check its items (11 presets, Fit to screen,
         /// Custom…) → DIR/settings-display-presets.{txt,png}, then reveal "Custom…"
         /// (settings-display-custom.png). The saved window size is restored afterwards.
@@ -169,7 +211,7 @@ enum SettingsSelfTest {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                             capture("what-is-sent", SettingsWindowController.snapshot(w))
                             w.orderOut(nil)
-                            displayPresets(then: finish)
+                            displayPresets { backgroundMute(then: finish) }
                         }
                     }
                 }

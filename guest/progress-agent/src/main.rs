@@ -22,7 +22,9 @@
 //!                                 launcher's Report a Problem)
 //!
 //! Host -> guest (same port): `collect-logs <id>`, served at any point of the
-//! lifecycle below (worker thread; the bundle goes out from the main loop).
+//! lifecycle below (worker thread; the bundle goes out from the main loop);
+//! `freeze-game <appid>` / `thaw-game` / `still-background` (freeze.rs: pause
+//! the focused game while the launcher is in the background).
 //!
 //! Lifecycle
 //!   1. port missing (older launcher) -> exit 0 quietly.
@@ -57,6 +59,7 @@ mod port;
 mod shutdown;
 mod steamlog;
 mod ui;
+mod freeze;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -256,6 +259,29 @@ fn ready_marker() -> String {
     format!("/tmp/.fx-progress-ready-{}", unsafe { libc::getuid() })
 }
 
+/// Host -> guest requests on the port: `<command> [args]`, one per line,
+/// never blocking (each handler only starts work or answers right away).
+fn serve_host(port: &mut Port, collector: &mut collect::Collector, freezer: &mut freeze::Freezer, focus: &focus::Focus) {
+    for line in port.read_lines() {
+        let line = line.trim();
+        let (cmd, arg) = line.split_once(' ').map_or((line, ""), |(c, a)| (c, a.trim()));
+        match cmd {
+            "collect-logs" => collector.request(arg, port),
+            "freeze-game" => match arg.parse::<u32>() {
+                // Only the game that has the focus (the host may be a step behind).
+                Ok(id) if focus.game() == Some(id) => freezer.freeze(id),
+                Ok(id) => eprintln!("fx-progress: freeze-game {id}: not the focused game ({:?})", focus.game()),
+                Err(_) => eprintln!("fx-progress: freeze-game: bad app id {arg:?}"),
+            },
+            "thaw-game" => freezer.thaw("launcher active again"),
+            "still-background" => freezer.keepalive(),
+            "" => {}
+            _ => eprintln!("fx-progress: ignoring unknown host request {cmd:?}"),
+        }
+    }
+    freezer.pump(focus.game());
+}
+
 /// Boot progress until `ready` (or give-up / SIGTERM); focus changes are
 /// reported along the way.
 fn report_boot(
@@ -263,6 +289,7 @@ fn report_boot(
     focus: &mut focus::Focus,
     heartbeat: Option<&alive::Heartbeat>,
     collector: &mut collect::Collector,
+    freezer: &mut freeze::Freezer,
 ) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
     let log_path = std::env::var("FX_PROGRESS_STEAM_LOG")
@@ -318,7 +345,8 @@ fn report_boot(
             }
         }
         rep.port.flush();
-        collector.service(&mut rep.port);
+        serve_host(&mut rep.port, collector, freezer, focus);
+        collector.pump(&mut rep.port);
         focus.pump(&mut rep.port, false);
         if let Some(hb) = heartbeat {
             hb.pump(&mut rep.port);
@@ -355,12 +383,13 @@ fn main() {
     let mut focus = focus::Focus::new();
     let heartbeat = alive::Heartbeat::new();
     let mut collector = collect::Collector::new();
+    let mut freezer = freeze::Freezer::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
     let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
     if already {
         eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
     } else {
-        report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector);
+        report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector, &mut freezer);
     }
     // Once after `ready` (or at agent start on a later session): current focus.
     focus.pump(&mut rep.port, true);
@@ -381,7 +410,8 @@ fn main() {
         libc::sigprocmask(libc::SIG_BLOCK, &block, &mut old);
         while !terminated() {
             rep.port.flush();
-            collector.service(&mut rep.port);
+            serve_host(&mut rep.port, &mut collector, &mut freezer, &focus);
+            collector.pump(&mut rep.port);
             focus.pump(&mut rep.port, false);
             if let Some(hb) = heartbeat.as_ref() {
                 hb.pump(&mut rep.port);
@@ -394,6 +424,8 @@ fn main() {
             ];
             let wait_ms: i64 = if rep.port.has_pending() {
                 TICK_MS as i64
+            } else if let Some(ms) = freezer.wait_ms() {
+                ms   // keepalive deadline while a game is frozen
             } else if focus.connected() {
                 -1
             } else {
@@ -416,6 +448,8 @@ fn main() {
         }
         libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
     }
+    // Never leave a game frozen behind (shutdown, session end).
+    freezer.thaw("agent exiting");
     let sig = SIGNAL.load(Ordering::SeqCst);
     match shutdown::detect() {
         Some(kind) => rep.port.send(&format!("shutdown {}", kind.word())),

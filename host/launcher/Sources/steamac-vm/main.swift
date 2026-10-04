@@ -27,6 +27,11 @@ do {
 // MoltenVK (loaded by virglrenderer in this process) logs every instance/device creation at info
 // level, which buries the guest console. Errors only, unless the user asks for more.
 setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
+// Metal Performance HUD (Settings > Display, View menu, Ctrl+Cmd+P): loads libMTLHud for this VM
+// process before Metal is first used; the window's layer then shows or hides it at runtime
+// (developerHUDProperties `mode`, default "off" in WindowController). Without this variable
+// macOS 15 ignores those properties. Command buffers that present nothing (MoltenVK's) get no HUD.
+if Supervisor.isChild && !options.headless { setenv("MTL_HUD_ENABLED", "1", 1) }
 
 // Crash reporting (Settings > General; both the supervisor and each VM process).
 CrashReporting.setUp(options: options, settings: settings)
@@ -75,6 +80,8 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     weak var window: WindowController?
     var settingsWindow: SettingsWindowController?
     var settingsContext: SettingsContext?
+    /// Opens Report a Problem over the VM window.
+    var report: (() -> Void)?
     private var requestedAt: Date?
     /// SteamOS can take ~2 min to stop (systemd stop-job timeouts) before libkrun exits.
     static let gracePeriod: TimeInterval = 180
@@ -141,7 +148,16 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     @objc func menuFullscreen() { window?.window.toggleFullScreen(nil) }
     @objc func menuGrab() { window?.grabPointer() }
     @objc func menuOverlay() { window?.toggleOverlay() }
+    @objc func menuMetalHUD() { window?.toggleMetalHUD() }
     @objc func menuSettings() { settingsWindow?.show() }
+    @objc func menuReport() { report?() }
+}
+
+extension Lifecycle: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(menuMetalHUD) { item.state = LauncherSettings.shared.metalHUD ? .on : .off }
+        return true
+    }
 }
 
 let lifecycle = Lifecycle()
@@ -164,12 +180,17 @@ do {
 
     let progress = BootProgress(restarting: Supervisor.bootNumber > 1)
     lifecycle.progress = progress
+    // Session console log for Report a Problem (run dir, removed when the launcher exits).
+    if let dir = Supervisor.runDir { RollingLog.console.open(dir: dir) }
     console.onLine = { line in
+        RollingLog.console.append(BootProgress.stripANSI(line))
         progress.consoleLine(line)
         CrashReporting.consoleLine(line)
     }
     let progressPort = try ProgressPort()
-    progressPort.start { progress.guestLine($0) }
+    // Log bundles requested by Report a Problem arrive on the same port.
+    let guestLogs = GuestLogs(port: progressPort)
+    progressPort.start { line in if !guestLogs.handle(line) { progress.guestLine(line) } }
     progress.onRebootIntent = {
         // Tell the supervisor to boot again once libkrun exits; remember where the window was
         // (unless Settings changed the default window size: then the next boot opens at that).
@@ -205,7 +226,8 @@ do {
         onSignal(sig) { lifecycle.requestShutdown() }
     }
     // SIGUSR1: dump the guest's last frame (and, with a window, what the window shows:
-    // <name>-window.png = Metal drawable, <name>-overlay.png = drawable + overlay at 2x).
+    // <name>-window.png = Metal drawable, <name>-overlay.png = drawable + overlay at 2x,
+    // <name>-screen.png = the window as composited on screen, Metal Performance HUD included).
     var windowController: WindowController?
     func dumpFrames(to path: String, done: (() -> Void)? = nil) {
         do {
@@ -216,11 +238,15 @@ do {
         }
         guard let wc = windowController else { done?(); return }
         let base = (path as NSString).deletingPathExtension
+        if let screen = wc.windowServerImage() {
+            do { try PNG.write(screen, to: base + "-screen.png") } catch { log("window screen dump failed: \(error)") }
+        }
         wc.captureWindow { drawable, composite in
             do {
                 if let drawable { try PNG.write(drawable, to: base + "-window.png") }
                 if let composite { try PNG.write(composite, to: base + "-overlay.png") }
-                log("window dumped to \(base)-window.png, \(base)-overlay.png (overlay \(wc.overlay.shown ? "shown" : "hidden"))")
+                log("window dumped to \(base)-window.png, \(base)-overlay.png, \(base)-screen.png"
+                    + " (overlay \(wc.overlay.shown ? "shown" : "hidden"), Metal HUD \(settings.metalHUD ? "on" : "off"))")
             } catch {
                 log("window dump failed: \(error)")
             }
@@ -279,6 +305,9 @@ do {
     }
     stall.onNotResponding = { CrashReporting.stallNotResponding(seconds: $0) }
     wc.attach(stall: stall)
+    // Settings > General "Pause the game" in the background; no GPU-idle card while frozen.
+    let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
+    gamePause.onChange = { stall.paused = $0 }
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
                                           vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
@@ -287,14 +316,31 @@ do {
     lifecycle.settingsContext = settingsContext
     lifecycle.settingsWindow = settingsWindow
     wc.onOpenSettings = { settingsWindow.show() }
-    MainMenu.install(target: lifecycle, settings: #selector(Lifecycle.menuSettings), restart: #selector(Lifecycle.menuRestart),
-                     shutdown: #selector(Lifecycle.menuShutdown), forceQuit: #selector(Lifecycle.menuForceQuit),
-                     fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
-                     overlay: #selector(Lifecycle.menuOverlay))
+    func openReport(_ origin: String, on parent: NSWindow) {
+        wc.releasePointer()
+        let context = ReportContext(origin: origin, options: options, runDir: Supervisor.runDir, guest: guestLogs,
+                                    captureScreenshot: { done in wc.captureWindow { drawable, _ in done(drawable) } })
+        MainActor.assumeIsolated { _ = ReportSheet.present(on: parent, context: context) }
+    }
+    lifecycle.report = { openReport("menu", on: wc.window) }
+    settingsContext.reportProblem = { openReport("settings", on: settingsWindow.window) }
+    wc.stallView.onReport = { openReport("stall", on: wc.window) }
+    MainActor.assumeIsolated { ReportControl.open = { openReport("control", on: wc.window) } }
+    MainMenu.install(target: lifecycle, settings: #selector(Lifecycle.menuSettings), report: #selector(Lifecycle.menuReport),
+                     restart: #selector(Lifecycle.menuRestart), shutdown: #selector(Lifecycle.menuShutdown),
+                     forceQuit: #selector(Lifecycle.menuForceQuit), fullscreen: #selector(Lifecycle.menuFullscreen),
+                     grab: #selector(Lifecycle.menuGrab), overlay: #selector(Lifecycle.menuOverlay),
+                     metalHUD: #selector(Lifecycle.menuMetalHUD))
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
     let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings) }
     wc.show()
+    // Not active after all (launched in the background): start muted / paused; the activation
+    // notifications take over from here.
+    DispatchQueue.main.async {
+        sound.setAppActive(NSApp.isActive)
+        gamePause.setAppActive(NSApp.isActive)
+    }
     if settings.showOverlay { wc.overlay.show() }
     if options.fullscreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
     gamepad?.start()
@@ -308,7 +354,7 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch, perfSubscription)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch, perfSubscription, gamePause)) { app.run() }
 } catch {
     fatal("\(error)")
 }

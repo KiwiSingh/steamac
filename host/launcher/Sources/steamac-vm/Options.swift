@@ -174,12 +174,15 @@ struct Options {
                            frames to <--frame-dump>-resize-N-*.png
       --control-fifo PATH  create a FIFO that accepts scripted window input, one command per line:
                            move UX UY (0..1 in the picture) | button left|right|middle down|up |
-                           click left|right|middle | wheel NOTCHES | rel DX DY | key KEYCODE |
+                           click left|right|middle | wheel NOTCHES | rel DX DY |
+                           key KEYCODE [ctrl+cmd+opt+shift] (macOS virtual key code) |
                            grab | release | menu game|global (toggle the Mouse menu checkboxes) |
-                           guest LINE (as if sent on fx.progress) | dump PNG |
+                           guest LINE (as if sent on fx.progress) | dump PNG (+ -window, -overlay,
+                           -screen = as composited on screen, Metal HUD included) |
                            settings TAB|close | settings-dump PNG | set KEY VALUE | restart
 
-    Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release.
+    Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release,
+    Ctrl+Cmd+P Metal Performance HUD on/off (Settings > Display).
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
     Console: hvc0 <-> this terminal (raw mode when stdin is a TTY; Ctrl+] twice force-quits).
     """

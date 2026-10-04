@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import CoreAudio
 import Darwin
@@ -6,10 +7,15 @@ import Foundation
 /// Runtime audio controls of libkrun's virtio-snd CoreAudio backend (krun_snd_set_output_device,
 /// krun_snd_set_volume, krun_snd_set_buffer_ms). Looked up with dlsym: an older libkrun without
 /// them still boots, and the Sound settings explain why they are disabled.
+///
+/// Volume sent to libkrun: gain = the user's volume, mute = user mute || (Settings > General
+/// "Mute sound in the background" && the app is not active). Background transitions fade over
+/// ~150 ms (5 gain steps). STEAMAC_SND_TRACE=1 logs every krun_snd_set_volume call.
 final class SoundControl {
     private typealias SetOutput = @convention(c) (UInt32, UnsafePointer<CChar>?) -> Int32
-    private typealias SetVolume = @convention(c) (UInt32, Float, Bool) -> Int32
+    private typealias SetVolumeC = @convention(c) (UInt32, Float, Bool) -> Int32
     private typealias SetBuffer = @convention(c) (UInt32, UInt32) -> Int32
+    typealias SetVolume = (UInt32, Float, Bool) -> Int32
 
     private let setOutput: SetOutput?
     private let setVolume: SetVolume?
@@ -19,12 +25,32 @@ final class SoundControl {
     /// Why this boot has no sound device (shown in Settings), nil if it has one.
     private(set) var noDeviceReason: String?
 
-    init() {
+    private var volume = 1.0
+    private var userMute = false
+    private var muteInBackground = true
+    private var appActive = true
+    /// Last (gain, mute) sent to libkrun.
+    private var applied: (gain: Float, mute: Bool)?
+    /// Bumped to cancel a running fade.
+    private var fadeGeneration = 0
+    private var activationObservers: [NSObjectProtocol] = []
+    static let trace = ProcessInfo.processInfo.environment["STEAMAC_SND_TRACE"].map { !$0.isEmpty && $0 != "0" } ?? false
+    static let fadeSteps = 5
+    static let fadeDuration = 0.15
+
+    /// `volumeShim` replaces krun_snd_set_volume (selftest).
+    init(volumeShim: SetVolume? = nil) {
         func sym<T>(_ name: String, _: T.Type) -> T? {
             dlsym(UnsafeMutableRawPointer(bitPattern: -2), name).map { unsafeBitCast($0, to: T.self) }   // RTLD_DEFAULT
         }
         setOutput = sym("krun_snd_set_output_device", SetOutput.self)
-        setVolume = sym("krun_snd_set_volume", SetVolume.self)
+        if let volumeShim {
+            setVolume = volumeShim
+        } else if let f = sym("krun_snd_set_volume", SetVolumeC.self) {
+            setVolume = { f($0, $1, $2) }
+        } else {
+            setVolume = nil
+        }
         setBuffer = sym("krun_snd_set_buffer_ms", SetBuffer.self)
     }
 
@@ -42,21 +68,43 @@ final class SoundControl {
     private var subscriptions: [AnyCancellable] = []
 
     /// Before krun_start_enter: apply the saved output device, volume and buffer, then follow the
-    /// Settings window ("applies now").
+    /// Settings window and the app's activation ("applies now").
     func attach(ctx: UInt32, settings: LauncherSettings) {
-        self.ctx = ctx
-        noDeviceReason = nil
+        attach(ctx: ctx, volume: settings.soundVolume, mute: settings.soundMute, muteInBackground: settings.muteInBackground)
         apply(outputUID: settings.soundOutputUID)
-        apply(volume: settings.soundVolume, mute: settings.soundMute)
         apply(latency: settings.soundLatency)
         // @Published emits the new value before it is stored: use the emitted values.
         subscriptions = [
             settings.$soundOutputUID.dropFirst().removeDuplicates().sink { [weak self] in self?.apply(outputUID: $0) },
             settings.$soundVolume.combineLatest(settings.$soundMute).dropFirst()
                 .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
-                .sink { [weak self] v, m in self?.apply(volume: v, mute: m) },
+                .sink { [weak self] v, m in self?.setUser(volume: v, mute: m) },
+            settings.$muteInBackground.dropFirst().removeDuplicates().sink { [weak self] in self?.setMuteInBackground($0) },
             settings.$soundLatency.dropFirst().removeDuplicates().sink { [weak self] in self?.apply(latency: $0) },
         ]
+    }
+
+    /// Volume state + activation observers (no Settings model: the selftest drives it directly).
+    func attach(ctx: UInt32, volume: Double, mute: Bool, muteInBackground: Bool) {
+        self.ctx = ctx
+        noDeviceReason = nil
+        self.volume = volume
+        userMute = mute
+        self.muteInBackground = muteInBackground
+        applied = nil
+        let nc = NotificationCenter.default
+        activationObservers.forEach(nc.removeObserver)
+        activationObservers = [
+            nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setAppActive(false)
+            },
+            nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setAppActive(true)
+            },
+        ]
+        log("sound: volume \(Int((volume * 100).rounded()))%\(mute ? " (muted)" : "")"
+            + (muteInBackground ? ", muted while in the background" : ""))
+        push(fade: false)
     }
 
     func detach(reason: String) {
@@ -70,9 +118,76 @@ final class SoundControl {
         report("output device \(outputUID.isEmpty ? "system default" : outputUID)", r)
     }
 
-    func apply(volume: Double, mute: Bool) {
+    func setUser(volume: Double, mute: Bool) {
+        self.volume = volume
+        userMute = mute
+        log("sound: volume \(Int((volume * 100).rounded()))%\(mute ? " (muted)" : "")")
+        push(fade: false)
+    }
+
+    func setMuteInBackground(_ on: Bool) {
+        let was = backgroundMuted
+        muteInBackground = on
+        noteBackground(was)
+        push(fade: true)
+    }
+
+    func setAppActive(_ active: Bool) {
+        guard active != appActive else { return }
+        let was = backgroundMuted
+        appActive = active
+        noteBackground(was)
+        push(fade: true)
+    }
+
+    /// Muted only because the app is in the background.
+    var backgroundMuted: Bool { muteInBackground && !appActive && !userMute }
+
+    private func noteBackground(_ was: Bool) {
+        if ctx != nil, backgroundMuted != was { log("sound: background mute \(backgroundMuted ? "on" : "off")") }
+    }
+
+    /// Send the effective (gain, mute); fade when only the mute state flips and `fade` is set.
+    private func push(fade: Bool) {
+        guard ctx != nil, setVolume != nil else { return }
+        fadeGeneration += 1
+        let gain = Float(max(0, min(1, volume)))
+        let mute = userMute || (muteInBackground && !appActive)
+        guard let prev = applied else { return send(gain, mute) }
+        if prev.gain == gain && prev.mute == mute { return }
+        guard fade, prev.mute != mute, gain > 0 else { return send(gain, mute) }
+        let generation = fadeGeneration
+        let n = SoundControl.fadeSteps
+        let step = SoundControl.fadeDuration / Double(n)
+        if mute {
+            // Ramp down from the current gain, then mute (gain stays the user's volume).
+            let from = prev.gain
+            for i in 1...n {
+                DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(i)) { [weak self] in
+                    guard let self, self.fadeGeneration == generation else { return }
+                    if i < n { self.send(from * Float(n - i) / Float(n), false) } else { self.send(gain, true) }
+                }
+            }
+        } else {
+            send(0, false)
+            for i in 1...n {
+                DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(i)) { [weak self] in
+                    guard let self, self.fadeGeneration == generation else { return }
+                    self.send(gain * Float(i) / Float(n), false)
+                }
+            }
+        }
+    }
+
+    private func send(_ gain: Float, _ mute: Bool) {
         guard let ctx, let setVolume else { return }
-        report("volume \(Int((volume * 100).rounded()))%\(mute ? " (muted)" : "")", setVolume(ctx, Float(max(0, min(1, volume))), mute))
+        let r = setVolume(ctx, gain, mute)
+        applied = (gain, mute)
+        if SoundControl.trace {
+            log("sound: krun_snd_set_volume(gain=\(String(format: "%.2f", gain)), mute=\(mute)) = \(r)")
+        } else if r != 0 {
+            log("sound: krun_snd_set_volume failed: \(r) (\(String(cString: strerror(-r))))")
+        }
     }
 
     func apply(latency: LauncherSettings.Latency) {

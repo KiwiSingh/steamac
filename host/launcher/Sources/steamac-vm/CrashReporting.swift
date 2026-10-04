@@ -100,6 +100,8 @@ enum CrashReporting {
     /// Supervisor: run dir of the current boot (VM-process tags, user-exit marker).
     nonisolated(unsafe) private static var runDir: String?
     nonisolated(unsafe) private static var lineScanner = LineScanner()
+    /// Most recent event this process sent (Report a Problem associates its feedback with it).
+    nonisolated(unsafe) private static var lastEvent: String?
 
     private static func locked<T>(_ body: () -> T) -> T {
         lock.lock()
@@ -114,7 +116,7 @@ enum CrashReporting {
         return "\(LauncherSettings.defaultDomain)@\(version)+\(commit)"
     }
 
-    private static var environment: String {
+    static var environment: String {
         test || !AppBundle.releaseDefaults ? "development" : "release"
     }
 
@@ -124,7 +126,7 @@ enum CrashReporting {
 
     /// Random install ID shared by both processes (the SDK's own one is per cache directory):
     /// counts affected Macs, nothing else.
-    private static let installID: String = {
+    static let installID: String = {
         let path = AppBundle.appSupportDir + "/crash-reports-install-id"
         if let s = try? String(contentsOfFile: path, encoding: .utf8), UUID(uuidString: s) != nil { return s }
         let id = UUID().uuidString
@@ -151,6 +153,14 @@ enum CrashReporting {
         runOverride = options.noCrashReports
             ? (options.explicit.contains(noFlag) ? noFlag : "\(disableEnv)=0") : nil
         configured = true
+        // Supervisor: tap stderr of both processes: the session log Report a Problem attaches
+        // (always) and, while reporting is on, breadcrumbs and error patterns.
+        if role == .launcher && !options.isSelftest {
+            tap = StderrTap.install { line in
+                RollingLog.launcher.append(line)
+                observe(line: line)
+            }
+        }
         if let reason = runOverride {
             log("crash reporting: off for this run (\(reason))")
             return
@@ -169,8 +179,6 @@ enum CrashReporting {
             return
         }
         start()
-        // Supervisor: tap stderr for breadcrumbs and error patterns of both processes.
-        if role == .launcher && !options.isSelftest { tap = StderrTap.install { observe(line: $0) } }
     }
 
     private static func start() {
@@ -221,6 +229,31 @@ enum CrashReporting {
         SentrySDK.close()
         locked { running = false }
         log("crash reporting: off (\(reason))")
+    }
+
+    /// For reports: on / off and why.
+    static var statusSummary: String {
+        if let r = runOverride { return "off for this run (\(r))" }
+        return locked({ running }) ? "on" : "off (Settings > General)"
+    }
+
+    /// Tags of this process plus, in the supervisor, the VM process's (run dir file).
+    static func tagSnapshot(runDir dir: String?) -> [String: String] {
+        var t = locked { tags }
+        if let dir, let data = FileManager.default.contents(atPath: dir + "/sentry-tags.json"),
+           let vm = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] {
+            t.merge(vm) { old, _ in old }
+        }
+        return t
+    }
+
+    /// The last event either process of this session sent (run dir file), else this process's.
+    static func lastEventId(runDir dir: String?) -> String? {
+        if let dir, let s = try? String(contentsOfFile: dir + "/last-event-id", encoding: .utf8) {
+            let id = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if id.count == 32 { return id }
+        }
+        return locked { lastEvent }
     }
 
     /// The setting decides whether the SDK runs (supervisor, main thread only: before each boot
@@ -322,19 +355,32 @@ enum CrashReporting {
         FileManager.default.createFile(atPath: dir + "/user-exit", contents: nil)
     }
 
+    /// The VM process ended in a way the user did not ask for: a crash signal, or a non-zero exit
+    /// without a user request (window close, menu, signal, restart).
+    static func unexpectedExit(status: Int32, runDir dir: String) -> Bool {
+        guard status != 0 else { return false }
+        let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
+        let signal = status > 128 ? status - 128 : 0
+        if signal == 0 && userExit { return false }
+        return !(userExit && [SIGKILL, SIGTERM, SIGINT, SIGHUP].contains(signal))
+    }
+
+    /// "VM process crashed (SIGABRT)" / "VM process exited with status 1".
+    static func exitSummary(status: Int32) -> String {
+        status > 128 ? "VM process crashed (\(signalName(status - 128)))" : "VM process exited with status \(status)"
+    }
+
     /// Supervisor: the VM process ended. Reports non-zero exits the user did not ask for and
     /// every crash (signal); flushes before the supervisor exits.
     static func vmExited(status: Int32) {
-        guard configured, role == .launcher, status != 0, let dir = runDir else { return }
+        guard configured, role == .launcher, let dir = runDir, unexpectedExit(status: status, runDir: dir) else { return }
         let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
         let signal = status > 128 ? status - 128 : 0
-        if signal == 0 && userExit { return }
-        if userExit && [SIGKILL, SIGTERM, SIGINT, SIGHUP].contains(signal) { return }
         followSetting()
         tap?.waitIdle()   // the VM process's last lines are breadcrumbs of this report
         let (pending, last) = locked { (lineScanner.flushPending(), lineScanner.lastError) }
         for (kind, key, message) in pending { report(kind, key: key, message: message) }
-        let what = signal != 0 ? "VM process crashed (\(signalName(signal)))" : "VM process exited with status \(status)"
+        let what = exitSummary(status: status)
         let lastError = last.map { ": \($0)" } ?? ""
         report(.vmExited, key: signal != 0 ? signalName(signal) : "status \(status)", message: what + lastError,
                tags: ["exit_status": String(status), "signal": signal != 0 ? signalName(signal) : "none",
@@ -435,8 +481,12 @@ enum CrashReporting {
             t.merge(vm) { old, _ in old }
         }
         let scoped = t.mapValues { String(scrub($0).prefix(200)) }
-        SentrySDK.capture(event: event) { scope in scope.setTags(scoped) }
-        log("crash reporting: sent \(kind.rawValue) report")
+        let id = SentrySDK.capture(event: event) { scope in scope.setTags(scoped) }.sentryIdString
+        locked { lastEvent = id }
+        if let dir = role == .launcher ? runDir : Supervisor.runDir {
+            try? id.write(toFile: dir + "/last-event-id", atomically: true, encoding: .utf8)
+        }
+        log("crash reporting: sent \(kind.rawValue) report (\(id.prefix(8)))")
     }
 
     // MARK: test flags
@@ -479,7 +529,9 @@ enum CrashReporting {
     // MARK: scrubbing
 
     private static let homeRegex = try! NSRegularExpression(pattern: "/Users/[^/\\s\"':,;)]+")
-    private static let emailRegex = try! NSRegularExpression(pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
+    /// Not systemd instance units (getty@tty1.service) in the guest console.
+    private static let emailRegex = try! NSRegularExpression(
+        pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.(?!(?:service|socket|target|mount|automount|timer|path|slice|scope|device|swap)\\b)[A-Za-z]{2,}")
     private static let ipv4Regex = try! NSRegularExpression(pattern: "(?<![\\w.~-])(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\w.~-])")
     /// Names that identify the user or the Mac (whole words, 4+ characters).
     private static let identityRegexes: [NSRegularExpression] = {

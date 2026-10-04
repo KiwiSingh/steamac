@@ -20,7 +20,11 @@ import Foundation
 ///                         sound, advanced) or close it
 ///   settings-dump PATH    PNG of the Settings window
 ///   restart               Restart VM (as the menu / Settings button)
+///   activate              bring the app to the front (tests of the background mute / pause)
+///   keepalive off|on      stop / resume the paused game's keepalives (guest auto-thaw test)
 ///   set KEY VALUE         change a setting as the Settings window would (LauncherSettings.Key names)
+///   report …              Report a Problem sheet (ReportControl: open, fill, include, preview, send,
+///                         retry, close, dsn, dump)
 enum DebugControl {
     nonisolated(unsafe) private static var settingsWindow: SettingsWindowController?
 
@@ -99,10 +103,20 @@ enum DebugControl {
         case "rel":
             guard args.count == 2, let dx = Double(args[0]), let dy = Double(args[1]) else { break }
             wc.moveRelative(dx: dx, dy: dy)
-        case "key":
+        case "key":   // key KEYCODE [ctrl+cmd+opt+shift]
             guard let code = UInt16(args.first ?? "") else { break }
+            var mods: NSEvent.ModifierFlags = []
+            for m in (args.count > 1 ? args[1] : "").split(separator: "+") {
+                switch m {
+                case "ctrl": mods.insert(.control)
+                case "cmd": mods.insert(.command)
+                case "opt": mods.insert(.option)
+                case "shift": mods.insert(.shift)
+                default: break
+                }
+            }
             for type in [NSEvent.EventType.keyDown, .keyUp] {
-                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: mods, timestamp: ProcessInfo.processInfo.systemUptime,
                                             windowNumber: wc.window.windowNumber, context: nil, characters: "",
                                             charactersIgnoringModifiers: "", isARepeat: false, keyCode: code) {
                     _ = wc.processKey(e)
@@ -126,10 +140,13 @@ enum DebugControl {
             do { try png.write(to: URL(fileURLWithPath: out)); log("control: settings window dumped to \(out)") }
             catch { log("control: settings dump failed: \(error)") }
         case "restart": lifecycle.requestRestart()
+        case "activate": NSApp.activate(ignoringOtherApps: true)
+        case "keepalive": GamePause.keepaliveSuppressed = args.first == "off"
         case "set":
             guard args.count >= 2 else { break }
             let value = args.dropFirst().joined(separator: " ")
             if !LauncherSettings.shared.set(args[0], value) { log("control: set: unknown key or bad value") }
+        case "report": MainActor.assumeIsolated { ReportControl.handle(args) }
         default: log("control: unknown command")
         }
     }

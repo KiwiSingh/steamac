@@ -17,6 +17,8 @@ final class SettingsContext: ObservableObject {
     var vmHasSound: Bool
     /// The running VM's main disk (nil without a VM).
     let diskPath: String?
+    /// Opens Report a Problem over the Settings window (nil without a VM; set after the window exists).
+    @Published var reportProblem: (() -> Void)?
     @Published var restartRequested = false
 
     init(settings: LauncherSettings, sound: SoundControl?, restart: (() -> Void)?, vmHasPad: Bool, vmHasSound: Bool,
@@ -60,8 +62,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         /// Fixed content height per tab (grouped forms scroll beyond it).
         var height: CGFloat {
             switch self {
-            case .general: return 470
-            case .display: return 520
+            case .general: return 680
+            case .display: return 600
             case .mouse: return 470
             case .controller: return 620
             case .sound: return 440
@@ -250,6 +252,7 @@ private func intBinding(_ b: Binding<Int>, _ range: ClosedRange<Int>) -> Binding
 
 private struct GeneralTab: View {
     @EnvironmentObject var settings: LauncherSettings
+    @EnvironmentObject var context: SettingsContext
 
     var body: some View {
         Form {
@@ -268,6 +271,19 @@ private struct GeneralTab: View {
                 }
             }
             Section {
+                Toggle(isOn: $settings.muteInBackground) {
+                    Label2(title: "Mute sound", detail: "Short fade; the volume comes back when you switch back.", now: true)
+                }
+                Toggle(isOn: $settings.pauseInBackground) {
+                    Label2(title: "Pause the game",
+                           detail: "Freezes the focused game (Steam, downloads and updates keep running). "
+                               + "Online games may disconnect while paused.",
+                           now: true)
+                }
+            } header: {
+                Text("When FX Steam Launcher is in the background")
+            }
+            Section {
                 CrashReportsToggle(settings: settings, showsApplies: true)
                 Toggle(isOn: $settings.perfStats) {
                     Label2(title: "Log frame-pacing statistics",
@@ -278,6 +294,19 @@ private struct GeneralTab: View {
                 if AppBundle.resources != nil {
                     Text("Log: \((AppBundle.logPath as NSString).abbreviatingWithTildeInPath)")
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            Section {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Report a Problem")
+                        Text("Describe what went wrong and send it with the logs you choose to the developers "
+                             + "(works with crash reports off, too).")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Report a Problem…") { context.reportProblem?() }
+                        .disabled(context.reportProblem == nil)
                 }
             }
         }
@@ -373,6 +402,14 @@ private struct DisplayTab: View {
                             .frame(width: 64).multilineTextAlignment(.trailing)
                         Text("pt")
                     }
+                }
+            }
+            Section {
+                Toggle(isOn: $settings.metalHUD) {
+                    Label2(title: "Metal Performance HUD",
+                           detail: "Apple's frame-rate overlay in the top-right corner of the window: FPS, frame "
+                               + "interval, GPU time, memory (Ctrl+Cmd+P, View menu).",
+                           now: true)
                 }
             }
         }

@@ -79,6 +79,8 @@ enum StallSelfTest {
         activity.start()
 
         let view = wc.stallView
+        // The card's "Report…" link (only with the not-responding wording).
+        view.onReport = { log("stall selftest: Report… link activated") }
         let working = "Still working — loading or compiling shaders…"
         func expectHidden(_ what: String) -> String? {
             !monitor.indicatorShown && !view.shown ? nil : "\(what): indicator should be hidden"
@@ -105,6 +107,7 @@ enum StallSelfTest {
             },
             Step(name: "05-game-idle-2.5s-shown", action: {}, wait: 1.0) {
                 expectShown(title: working, detail: "guest alive")
+                    ?? (view.reportLinkFrame.isEmpty ? nil : "Report… link shown while the guest is alive")
             },
             Step(name: "06-resized", action: { wc.window.setContentSize(NSSize(width: 1000, height: 700)) }, wait: 0.6) {
                 let card = view.cardFrame, b = view.bounds
@@ -128,6 +131,8 @@ enum StallSelfTest {
             },
             Step(name: "11-steam-ui-not-responding", action: {}, wait: 2.5) {
                 expectShown(title: "SteamOS is not responding…", detail: "waiting (")
+                    ?? (view.cardFrame.contains(view.reportLinkFrame) && !view.reportLinkFrame.isEmpty
+                        ? nil : "Report… link missing on the not-responding card: \(view.reportLinkFrame) in \(view.cardFrame)")
             },
             Step(name: "12-heartbeat-back", action: { heartbeats.store(true, ordering: .relaxed) }, wait: 1.8) {
                 view.isIdle ? expectHidden("heartbeat back in the Steam UI") : "indicator view not hidden + idle after heartbeat"
