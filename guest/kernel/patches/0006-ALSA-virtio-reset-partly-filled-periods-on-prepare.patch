@@ -1,0 +1,75 @@
+From: steamac <steamac@localhost>
+Subject: [PATCH] ALSA: virtio: reset partly filled periods on prepare
+
+Since "ALSA: virtio: use ack callback" the driver enqueues a playback
+message only once the application has filled its whole period
+(msg->length == period_bytes), and msg->length is only cleared when the
+device completes the message. ops->prepare() resets hw_ptr, msg_count and
+the pcm_indirect state but not the message lengths, so a period that was
+partly filled when the stream stopped (an xrun, or a drop by an
+application such as PipeWire whose quantum is not a multiple of the
+period) keeps its stale length. After the restart that period overshoots
+period_bytes on its next fill, is never enqueued again, and the device
+never sees it: hw_ptr falls one period behind the application pointer per
+buffer cycle until the buffer is full, and the stream stalls for good
+while staying RUNNING (seen with PipeWire, 128-frame periods: playback
+hangs about 0.6 s after the restart, avail = 1 period).
+
+Clear every message's length in ops->prepare(), together with the rest
+of the per-run state.
+---
+--- a/sound/virtio/virtio_pcm.h
++++ b/sound/virtio/virtio_pcm.h
+@@ -118,6 +118,8 @@
+ 
+ void virtsnd_pcm_msg_free(struct virtio_pcm_substream *vss);
+ 
++void virtsnd_pcm_msg_reset(struct virtio_pcm_substream *vss);
++
+ int virtsnd_pcm_msg_send(struct virtio_pcm_substream *vss, unsigned long offset,
+ 			 unsigned long bytes);
+ 
+--- a/sound/virtio/virtio_pcm_msg.c
++++ b/sound/virtio/virtio_pcm_msg.c
+@@ -183,6 +183,31 @@
+ }
+ 
+ /**
++ * virtsnd_pcm_msg_reset() - Forget the fill level of all I/O messages.
++ * @vss: VirtIO PCM substream.
++ *
++ * A message is only enqueued once the application has filled its whole
++ * period (msg->length == period_bytes), and the length is only cleared when
++ * the device completes the message. A period that was partly filled when the
++ * substream stopped (e.g. on an xrun, or a drop by an application writing in
++ * chunks that are not a multiple of the period) therefore kept its stale
++ * length across ops->prepare(): after the restart that period overshoots
++ * period_bytes, is never enqueued again, and the substream stalls once the
++ * device has played everything else (hw_ptr stops one period short of the
++ * application pointer per buffer cycle until the buffer is full).
++ *
++ * Context: Process context, no I/O messages pending.
++ */
++void virtsnd_pcm_msg_reset(struct virtio_pcm_substream *vss)
++{
++	unsigned int i;
++
++	guard(spinlock_irqsave)(&vss->lock);
++	for (i = 0; vss->msgs && i < vss->nmsgs; ++i)
++		vss->msgs[i]->length = 0;
++}
++
++/**
+  * virtsnd_pcm_msg_send() - Send asynchronous I/O messages.
+  * @vss: VirtIO PCM substream.
+  * @offset: starting position that has been updated
+--- a/sound/virtio/virtio_pcm_ops.c
++++ b/sound/virtio/virtio_pcm_ops.c
+@@ -299,6 +299,7 @@
+ 	vss->xfer_xrun = false;
+ 	vss->suspended = false;
+ 	vss->msg_count = 0;
++	virtsnd_pcm_msg_reset(vss);
+ 
+ 	memset(&vss->pcm_indirect, 0, sizeof(vss->pcm_indirect));
+ 	vss->pcm_indirect.sw_buffer_size =

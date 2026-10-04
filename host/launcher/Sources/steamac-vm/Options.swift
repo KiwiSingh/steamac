@@ -53,18 +53,36 @@ struct Options {
     var fullscreen = false
     /// No main disk configured or found (app bundle launch): the first-run sheet asks for one.
     var needsDisk = false
+    /// This boot attaches the first-boot provisioning payload (Provision.attachPending).
+    var provisionPayload: String?
+    /// This boot attaches the disk's pending generated guest password (Provision.attachConfig).
+    var configPayload: Provision.ConfigPayload?
+    /// --create-disk PATH (no VM): build a new SteamOS disk without Docker (DiskCreator).
+    var createDisk: String?
+    var createBranch: String?
+    var createHomeGiB = DiskLayout.defaultHomeGiB
+    var createPassword: String?
+    var keepCache = false
+    var selftestProvision = false
+    var referenceDisk: String?
+    /// --ssh-password DISK: print the disk's generated guest password (GuestPassword) and exit.
+    var showSSHPassword: String?
     /// Flags given on the command line (they override the saved settings for this run).
     var explicit: Set<String> = []
 
     static let usage = """
     usage: steamac-vm --kernel PATH [--initrd PATH] [--cmdline STR] --disk PATH[:ro] ...
                       [--cpus N] [--mem MiB] [--display WxH] [--refresh HZ] [--headless]
-                      [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT] [--shm-mib MiB]
+                      [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT | --no-ssh] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
                       [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-settings [--selftest-out DIR]
+           steamac-vm --selftest-provision [--reference-disk IMG]
+           steamac-vm --create-disk PATH [--branch stable|rc|beta|preview|main] [--home-gib N]
+                      [--password PW] [--keep-cache]
+           steamac-vm --ssh-password DISK
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
     vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
@@ -93,7 +111,10 @@ struct Options {
       --no-sound           no virtio-snd (default: guest audio plays on the Mac's default output
                            device and follows it when it changes; guest recording uses the default
                            input device, asking for microphone permission the first time)
-      --ssh-port PORT      host 127.0.0.1:PORT -> guest 192.168.127.2:22 (0 disables; default 2222)
+      --ssh-port PORT      SSH on: host 127.0.0.1:PORT -> guest 192.168.127.2:22 (default 2222)
+      --no-ssh             SSH off: no port forward, guest sshd masked (kernel cmdline steamac.ssh=0/1
+                           is added on every boot; the default comes from Settings > Advanced "Enable
+                           SSH": on for this dev launcher, off in the release .app)
       --shm-mib MiB        virtio-gpu host-visible shared memory window (default 8192)
       --gpu-flags HEX      virglrenderer flags (default VENUS|NO_VIRGL = 0xc0)
       --gvproxy PATH       gvproxy binary (default: <exe dir>/host/bin/gvproxy, Homebrew, PATH)
@@ -106,6 +127,20 @@ struct Options {
       --no-gamepad         do not create the virtual Xbox 360 pad
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
 
+    Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
+      --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
+                           else stable), verify it against Valve's CA, rebuild the rootfs with desync
+                           (cache: ~/Library/Caches/es.fxgam.steamac/desync, resumable), write a sparse
+                           GPT disk to PATH (never overwritten) plus PATH's .provision.img payload, which
+                           the first boot uses to format and fill the remaining partitions
+      --home-gib N         size of the home partition (default 64; sparse)
+      --password PW        password of the guest user steamos (default: steamos for this dev launcher,
+                           none in the release .app; "" = none)
+      --keep-cache         keep the bundle and chunk cache after success
+
+    SSH: --ssh-password DISK prints user, generated password and state (pending / applied) of DISK
+    (the password Settings > Advanced shows; it exists once SSH was enabled for that disk).
+
     Diagnostics:
       --perf-stats         every 5 s log frame pacing (also STEAMAC_PERF_STATS=1): guest flush and
                            on-screen frame intervals (p50/p95/p99/max, count > 25 / > 50 ms), libkrun's
@@ -117,6 +152,9 @@ struct Options {
       --selftest-overlay   drive the FX boot/shutdown overlay with synthetic console and fx.progress
                            input and write window captures at several progress points
       --selftest-settings  open the Settings window and write a PNG of every tab to --selftest-out
+      --selftest-provision unit tests of the disk creator: GPT writer vs the layout of --reference-disk
+                           (default work/out/steamos.img, opened read-only), squashfs + CMS verification of
+                           the cached bundle, cpio payload, SHA-512 crypt, desync progress parsing
       --resize-selftest S  S seconds after Steam is ready, resize the window 1600x1000 -> fullscreen ->
                            windowed -> 1280x800, wait for the guest's new scanout each time and dump
                            frames to <--frame-dump>-resize-N-*.png
@@ -183,6 +221,7 @@ struct Options {
             case "--no-net": o.network = false
             case "--no-sound": o.sound = false
             case "--ssh-port": o.sshPort = try int(a)
+            case "--no-ssh": o.sshPort = 0
             case "--shm-mib": o.shmMiB = try int(a)
             case "--gpu-flags":
                 let v = try value(a)
@@ -207,6 +246,14 @@ struct Options {
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true
             case "--selftest-settings": o.selftestSettings = true
+            case "--selftest-provision": o.selftestProvision = true
+            case "--reference-disk": o.referenceDisk = try value(a)
+            case "--create-disk": o.createDisk = try value(a)
+            case "--branch": o.createBranch = try value(a)
+            case "--home-gib": o.createHomeGiB = try int(a)
+            case "--password": o.createPassword = try value(a)
+            case "--keep-cache": o.keepCache = true
+            case "--ssh-password": o.showSSHPassword = try value(a)
             case "--resize-selftest":
                 let v = try value(a)
                 guard let d = Double(v), d >= 0 else { throw OptionError("--resize-selftest: seconds") }
@@ -230,14 +277,23 @@ struct Options {
         return o
     }
 
-    var isSelftest: Bool { selftestDisplay || selftestOverlay || selftestSettings }
+    var isSelftest: Bool {
+        selftestDisplay || selftestOverlay || selftestSettings || selftestProvision || createDisk != nil || showSSHPassword != nil
+    }
 
     /// Command line + saved settings (+ app bundle resources): what this boot runs with, and which
     /// settings keys the command line overrides.
     static func resolve(_ argv: [String], settings: LauncherSettings) throws -> (Options, [LauncherSettings.Key: String]) {
         var o = try parse(argv)
         var overrides = o.applySettings(settings)
-        if !o.isSelftest { AppBundle.fill(&o, settings: settings, overrides: &overrides) }
+        if !o.isSelftest {
+            AppBundle.fill(&o, settings: settings, overrides: &overrides)
+            Provision.attachPending(&o)
+            Provision.attachConfig(&o)
+            if !o.cmdline.split(separator: " ").contains(where: { $0.hasPrefix("steamac.ssh=") }) {
+                o.cmdline += " steamac.ssh=\(o.sshPort == 0 ? 0 : 1)"
+            }
+        }
         try o.validate()
         return (o, overrides)
     }
@@ -248,8 +304,15 @@ struct Options {
         func given(_ flag: String) -> Bool { explicit.contains(flag) }
         if given("--cpus") { ov[.cpus] = "--cpus \(cpus)" } else { cpus = min(255, max(1, s.cpus)) }
         if given("--mem") { ov[.memMiB] = "--mem \(memMiB)" } else { memMiB = max(1024, s.memMiB) }
-        if given("--ssh-port") { ov[.sshPort] = "--ssh-port \(sshPort)" }
-        else { sshPort = s.sshPort == 0 || (1024...65535).contains(s.sshPort) ? s.sshPort : 2222 }
+        if given("--no-ssh") {
+            ov[.sshEnabled] = "--no-ssh"
+            ov[.sshPort] = "--no-ssh"
+        } else if given("--ssh-port") {
+            ov[.sshPort] = "--ssh-port \(sshPort)"
+            ov[.sshEnabled] = ov[.sshPort]
+        } else {
+            sshPort = !s.sshEnabled || s.sshPort == 0 ? 0 : (1024...65535).contains(s.sshPort) ? s.sshPort : 2222
+        }
         if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
         if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
         if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" } else { gamepad = s.virtualPad }

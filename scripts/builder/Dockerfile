@@ -17,7 +17,8 @@ RUN set -eux; \
         ca-certificates curl openssl jq xxd file binutils \
         squashfs-tools btrfs-progs e2fsprogs dosfstools mtools gdisk fdisk util-linux \
         erofs-utils busybox-static cpio gzip zstd xz-utils rsync kmod \
-        gcc make libc6-dev pkgconf; \
+        gcc make libc6-dev pkgconf \
+        uuid-dev libblkid-dev zlib1g-dev; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \

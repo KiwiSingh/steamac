@@ -36,6 +36,10 @@
 #   steamac.shell=1    interactive shell on the console just before switch_root
 #   steamac.nomask=1   do not apply runtime unit masks
 #   steamac.layer=/dev/vdX  layer device (default: autodetect erofs disk)
+#   steamac.provision=1  first boot of a launcher-created disk: format and fill
+#                      the blank partitions from the payload disk (see "provisioning")
+#   steamac.config=1   apply the launcher's config payload disk (see "config payload")
+#   steamac.ssh=0|1    0: no SSH server this boot (see "SSH switch"); 1/absent: as enabled
 #   init=PATH          init in the new root (default /sbin/init)
 
 PATH=/bin
@@ -117,6 +121,417 @@ wait_part() { # wait up to 30 s for a partition label to appear
 
 wait_part esp || fatal "no partition labelled 'esp' (is steamos.img attached as the first disk?)"
 ESP_DEV=$(part_dev esp)
+
+# ---------------------------------------------------------------- provisioning
+# First boot of a disk the launcher created without Docker (contract "Docker-
+# free disk provisioning", host = launcher, guest = this stage). The launcher
+# writes the GPT (names/order/types/sizes of scripts/steps/40-disk.sh) and
+# byte-exact copies of the OTA rootfs.img into rootfs-A and rootfs-B, leaves
+# every other partition zeroed, and attaches a read-only payload disk with
+# kernel parameter steamac.provision=1. This stage then does what 40-disk.sh
+# does in the builder container, with the same tool versions (static mkfs.fat,
+# mke2fs + the builder's /etc/mke2fs.conf, btrfstune in this initramfs):
+#   esp, efi-A, efi-B  mkfs.fat -F 32 (efi-X: -s 1), label = partition name
+#   var-A, var-B       mke2fs -t ext4 -L var-X; home: -O casefold -T huge -m 0
+#   rootfs-B           btrfstune -f -u (own fsid; rootfs-A stays byte-exact)
+#   efi-X              SteamOS/partsets/{all,self,other,shared,A,B}
+#   esp                SteamOS/conf/{A,B}.conf by rootfs-A's own (static)
+#                      /usr/lib/steamos-efi/steamos-bootconf, invoked exactly as
+#                      40-disk.sh does; steamac/bootenv (A B, 3/3)
+#   var-X              lib/overlays/etc/{upper,work}; upper: shadow (payload
+#                      hash; none if empty = stock field, release disks),
+#                      sshd enablement, machine-id (payload), hostname
+#                      (only if the payload's differs from the image's);
+#                      var-A: lib/steamos-atomupd/rootfs.caibx (payload)
+# Payload v1: raw disk, uncompressed cpio newc archive at byte 0 whose first
+# member is provision.env (KEY='value' lines, parsed, never sourced), then
+# rootfs.caibx. Keys: PROVISION_VERSION=1, STEAMOS_BUILDID, STEAMOS_VERSION,
+# STEAMOS_BRANCH, ROOTFS_SHA256, HOSTNAME, PASSWORD_HASH ($6$ crypt for user
+# steamos), MACHINE_ID (32 hex), DISK_GUID, PARTUUID_<ESP|EFI_A|...|HOME>.
+# Safety: nothing is formatted unless DISK_GUID and every PARTUUID_* equal the
+# GPT of the disk holding esp, and rootfs-A carries the payload's BUILD_ID.
+# Idempotent: the very last step writes esp:/steamac/provisioned
+# ("<MACHINE_ID> <DISK_GUID>"); with that marker present every step is skipped
+# and only "done" is reported again. A run interrupted before the marker redoes
+# every step on the next boot (all of them are repeatable).
+# Reporting: fx.progress lines "provision <pct> <text>", "provision done",
+# "provision failed <reason>"; the same on hvc0 as "steamac-provision: ...".
+# On failure the VM powers off (steamac.shell=1: after a shell); a half
+# provisioned disk is never booted, and nothing loops.
+PROV_NAMES="esp efi-A efi-B rootfs-A rootfs-B var-A var-B home"
+PROV_MARK_REL=steamac/provisioned
+PROV_TMP=/tmp/provision
+PROV_PORT=
+
+fx_find_port() { # the fx.progress virtio-console port (no udev: by sysfs name)
+    [ -n "$PROV_PORT" ] && return 0
+    _i=0
+    while [ $_i -lt 10 ]; do
+        for _n in /sys/class/virtio-ports/*/name; do
+            [ -f "$_n" ] && [ "$(cat "$_n")" = fx.progress ] || continue
+            _p=${_n%/name}
+            [ -c "/dev/${_p##*/}" ] && { PROV_PORT=/dev/${_p##*/}; return 0; }
+        done
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    warn "no fx.progress port; payload results are reported on the console only"
+    return 1
+}
+fx_say() { # fx_say <topic> <words>: hvc0 "steamac-<topic>: <words>", fx.progress "<topic> <words>"
+    _t=$1; shift
+    echo "steamac-$_t: $*"
+    echo "<6>steamac-$_t: $*" > /dev/kmsg 2>/dev/null
+    [ -n "$PROV_PORT" ] && echo "$_t $*" > "$PROV_PORT" 2>/dev/null
+    return 0
+}
+prov_say() { fx_say provision "$@"; }
+prov_umount_all() {
+    for _d in var-A var-B efi-A efi-B esp root; do
+        grep -q " $PROV_TMP/mnt/$_d " /proc/mounts && umount "$PROV_TMP/mnt/$_d"
+    done
+    return 0
+}
+prov_fail() { # prov_fail <reason (one line)>
+    echo "steamac-init: FATAL: disk provisioning failed: $*"
+    echo "<2>steamac-init: FATAL: disk provisioning failed: $*" > /dev/kmsg 2>/dev/null
+    prov_say "failed $*"
+    sync
+    prov_umount_all
+    [ "$(getarg steamac.shell)" = 1 ] && shell "provisioning failed"
+    echo "steamac-init: the disk is not provisioned; powering off (the next start with the payload retries)"
+    poweroff -f
+}
+prov_cmd() { # prov_cmd <cmd...>: run quietly, show its output on failure
+    _o=$("$@" 2>&1); _r=$?
+    if [ $_r != 0 ]; then
+        warn "$* failed (exit $_r):"
+        echo "$_o" | while IFS= read -r _l; do [ -n "$_l" ] && warn "  $_l"; done
+    fi
+    return $_r
+}
+prov_key() { echo "$1" | tr 'a-z-' 'A-Z_'; }   # efi-A -> EFI_A
+prov_uuid() { eval "echo \"\$P_PARTUUID_$(prov_key "$1")\""; }
+prov_is_uuid() {
+    echo "$1" | grep -qx '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}'
+}
+
+find_payload() { # find_payload <first member> -> PAYLOAD_DEV: whole disk starting with a cpio newc header for it
+    PAYLOAD_DEV=
+    _i=0
+    while [ $_i -lt 25 ]; do
+        for _d in /sys/class/block/*; do
+            grep -qx DEVTYPE=disk "$_d/uevent" 2>/dev/null || continue
+            [ "$(dd if="/dev/${_d##*/}" bs=1 count=6 2>/dev/null)" = 070701 ] || continue
+            [ "$(dd if="/dev/${_d##*/}" bs=1 skip=110 count=$((${#1} + 1)) 2>/dev/null | tr -d '\000')" = "$1" ] \
+                || continue
+            PAYLOAD_DEV=/dev/${_d##*/}
+            return 0
+        done
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    return 1
+}
+
+kv_parse() { # kv_parse <file> <var prefix> <key>...: KEY='value' lines -> <prefix><KEY>; 1 = bad quoting (KV_BAD)
+    _f=$1; _pre=$2; shift 2
+    KV_BAD=
+    while IFS= read -r _l || [ -n "$_l" ]; do
+        _l=${_l%"$(printf '\r')"}
+        case $_l in ''|'#'*) continue ;; esac
+        _k=${_l%%=*}; _v=${_l#*=}
+        case " $* " in *" $_k "*) ;; *) continue ;; esac
+        case $_v in "'"*"'") _v=${_v#"'"}; _v=${_v%"'"} ;; esac
+        case $_v in *"'"*) KV_BAD=$_k; return 1 ;; esac
+        eval "$_pre$_k=\$_v"
+    done < "$_f"
+    return 0
+}
+
+prov_parse() { # prov_parse <provision.env> -> P_<KEY>
+    kv_parse "$1" P_ PROVISION_VERSION STEAMOS_BUILDID STEAMOS_VERSION STEAMOS_BRANCH ROOTFS_SHA256 HOSTNAME \
+        PASSWORD_HASH MACHINE_ID DISK_GUID PARTUUID_ESP PARTUUID_EFI_A PARTUUID_EFI_B \
+        PARTUUID_ROOTFS_A PARTUUID_ROOTFS_B PARTUUID_VAR_A PARTUUID_VAR_B PARTUUID_HOME \
+        || prov_fail "payload: bad quoting in $KV_BAD"
+    [ "$P_PROVISION_VERSION" = 1 ] || prov_fail "payload: unsupported PROVISION_VERSION '$P_PROVISION_VERSION'"
+    [ -n "$P_STEAMOS_BUILDID" ] || prov_fail "payload: no STEAMOS_BUILDID"
+    echo "$P_MACHINE_ID" | grep -qx '[0-9a-f]\{32\}' || prov_fail "payload: bad MACHINE_ID"
+    # empty = no password: the stock shadow stays (release disks)
+    case $P_PASSWORD_HASH in ''|'$6$'*) ;; *) prov_fail "payload: PASSWORD_HASH is not a SHA-512 crypt hash" ;; esac
+    echo "$P_HOSTNAME" | grep -qx '[a-zA-Z0-9-]\{0,63\}' || prov_fail "payload: bad HOSTNAME"
+    P_DISK_GUID=$(echo "$P_DISK_GUID" | tr 'A-F' 'a-f')
+    prov_is_uuid "$P_DISK_GUID" || prov_fail "payload: bad DISK_GUID"
+    for _n in $PROV_NAMES; do
+        _k=$(prov_key "$_n")
+        eval "P_PARTUUID_$_k=\$(echo \"\$P_PARTUUID_$_k\" | tr 'A-F' 'a-f')"
+        prov_is_uuid "$(prov_uuid "$_n")" || prov_fail "payload: bad PARTUUID_$_k"
+    done
+}
+
+prov_disk_guid() { # prov_disk_guid <disk> -> GPT disk GUID (lowercase) from the primary header
+    _bs=$(cat "/sys/class/block/${1#/dev/}/queue/logical_block_size" 2>/dev/null)
+    [ -n "$_bs" ] || _bs=512
+    set -- $(dd if="$1" bs="$_bs" skip=1 count=1 2>/dev/null | od -An -tx1 -v -N72)
+    [ $# = 72 ] && [ "$1$2$3$4$5$6$7$8" = 4546492050415254 ] || return 1   # "EFI PART"
+    shift 56
+    echo "$4$3$2$1-$6$5-$8$7-$9${10}-${11}${12}${13}${14}${15}${16}"
+}
+esp_disk() { # the whole disk holding esp, e.g. /dev/vda
+    _p=$(readlink -f "/sys/class/block/${ESP_DEV#/dev/}")   # .../block/vda/vda1
+    _p=${_p%/*}; echo "/dev/${_p##*/}"
+}
+set_shadow_hash() { # set_shadow_hash <src shadow> <dst> <hash>: dst = src with steamos's password field = hash
+    awk -F: -v OFS=: -v h="$3" '$1 == "steamos" { $2 = h } { print }' "$1" > "$2.new" \
+        && chmod 0600 "$2.new" \
+        && awk -F: -v h="$3" '$1 == "steamos" && $2 == h { f = 1 } END { exit !f }' "$2.new" \
+        && sync "$2.new" && mv -f "$2.new" "$2" \
+        || { rm -f "$2.new"; return 1; }
+}
+
+prov_check_disk() { # payload must describe exactly the disk that holds esp
+    _disk=$(esp_disk)
+    _g=$(prov_disk_guid "$_disk") || prov_fail "$_disk has no readable primary GPT header"
+    [ "$_g" = "$P_DISK_GUID" ] || prov_fail "payload DISK_GUID $P_DISK_GUID does not match $_disk ($_g)"
+    # (own variable names: wait_part/part_dev use _i, _n, _u)
+    _pc_num=1
+    for _pc_name in $PROV_NAMES; do
+        wait_part "$_pc_name" || prov_fail "partition '$_pc_name' not found"
+        _pc_uuid=$(part_field "$_pc_name" PARTUUID | tr 'A-F' 'a-f')
+        [ "$_pc_uuid" = "$(prov_uuid "$_pc_name")" ] \
+            || prov_fail "PARTUUID of '$_pc_name' is $_pc_uuid, payload says $(prov_uuid "$_pc_name")"
+        [ "$(part_field "$_pc_name" PARTN)" = $_pc_num ] || prov_fail "'$_pc_name' is not partition $_pc_num of $_disk"
+        _pc_num=$((_pc_num + 1))
+    done
+    msg "provisioning: payload matches $_disk (GUID $_g)"
+}
+
+prov_partsets() { # prov_partsets <slot> <dir>: same algorithm/output as 40-disk.sh write_partsets
+    _self=$1; _dir=$2
+    [ "$_self" = A ] && _other=B || _other=A
+    rm -rf "$_dir" && mkdir -p "$_dir" || return 1
+    for _f in all self other shared A B; do : > "$_dir/$_f" || return 1; done
+    for _n in $PROV_NAMES; do
+        _u=$(prov_uuid "$_n")
+        _set=${_n##*-}; _link=${_n%-*}
+        [ "$_set" = "$_n" ] && _set=
+        case $_set in
+            "")        echo "$_link $_u" >> "$_dir/shared" ;;
+            "$_self")  echo "$_link $_u" >> "$_dir/$_set"; echo "$_link $_u" >> "$_dir/self" ;;
+            "$_other") echo "$_link $_u" >> "$_dir/$_set"; echo "$_link $_u" >> "$_dir/other" ;;
+        esac
+        echo "$_n $_u" >> "$_dir/all"
+    done
+}
+
+prov_marker_state() { # -> "match" | "other" | "none" (esp unformatted or no marker)
+    _st=none
+    if mount -t vfat -o ro "$ESP_DEV" /esp 2>/dev/null; then
+        if [ -f "/esp/$PROV_MARK_REL" ]; then
+            [ "$(cat "/esp/$PROV_MARK_REL")" = "$1" ] && _st=match || _st=other
+        fi
+        umount /esp
+    fi
+    echo $_st
+}
+
+provision() {
+    _t0=$(date +%s)
+    fx_find_port
+    if ! find_payload provision.env; then
+        if [ "$(prov_marker_state x)" != none ]; then
+            warn "steamac.provision=1 but no payload disk; the disk is already provisioned"
+            prov_say done
+            return 0
+        fi
+        prov_fail "steamac.provision=1 but no payload disk attached"
+    fi
+    msg "provisioning: payload on $PAYLOAD_DEV"
+    rm -rf "$PROV_TMP"; mkdir -p "$PROV_TMP/payload" "$PROV_TMP/mnt"
+    (cd "$PROV_TMP/payload" && cpio -i -d -m provision.env rootfs.caibx < "$PAYLOAD_DEV") 2>/dev/null
+    [ -s "$PROV_TMP/payload/provision.env" ] || prov_fail "payload: cannot extract provision.env from $PAYLOAD_DEV"
+    [ -s "$PROV_TMP/payload/rootfs.caibx" ] || prov_fail "payload: no rootfs.caibx"
+    prov_parse "$PROV_TMP/payload/provision.env"
+    msg "provisioning: SteamOS $P_STEAMOS_BUILDID ($P_STEAMOS_VERSION, branch '${P_STEAMOS_BRANCH:-?}')"
+    prov_check_disk
+    case $(prov_marker_state "$P_MACHINE_ID $P_DISK_GUID") in
+        match) msg "provisioning: already done for this payload (esp:/$PROV_MARK_REL); skipping"
+               rm -rf "$PROV_TMP"
+               prov_say done
+               return 0 ;;
+        other) prov_fail "esp:/$PROV_MARK_REL belongs to another payload; refusing to reformat" ;;
+    esac
+
+    for _n in $PROV_NAMES; do eval "D_$(prov_key "$_n")=\$(part_dev \"\$_n\")"; done
+    _m=$PROV_TMP/mnt
+    for _d in root esp efi-A efi-B var-A var-B; do mkdir -p "$_m/$_d"; done
+    # rootfs-A must be the payload's build and carry what the later steps use;
+    # checked before anything is written. Unmounted again before btrfstune:
+    # rootfs-B still has the same fsid, and btrfs-progs treats a device whose
+    # fsid is mounted elsewhere as mounted.
+    mount -t btrfs -o ro "$D_ROOTFS_A" "$_m/root" || prov_fail "cannot mount rootfs-A ($D_ROOTFS_A)"
+    _bid=$(sed -n 's/^BUILD_ID=//p' "$_m/root/usr/lib/os-release" | tr -d '"')
+    _ok=1
+    [ -x "$_m/root/usr/lib/steamos-efi/steamos-bootconf" ] && [ -f "$_m/root/etc/shadow" ] || _ok=0
+    umount "$_m/root"
+    [ "$_bid" = "$P_STEAMOS_BUILDID" ] || prov_fail "rootfs-A is build '$_bid', the payload is for $P_STEAMOS_BUILDID"
+    [ $_ok = 1 ] || prov_fail "rootfs-A lacks /usr/lib/steamos-efi/steamos-bootconf or /etc/shadow"
+
+    prov_say "2 Formatting esp, efi-A, efi-B"
+    prov_cmd mkfs.fat -F 32 -n esp "$D_ESP" || prov_fail "mkfs.fat esp"
+    prov_cmd mkfs.fat -F 32 -s 1 -n efi-A "$D_EFI_A" || prov_fail "mkfs.fat efi-A"
+    prov_cmd mkfs.fat -F 32 -s 1 -n efi-B "$D_EFI_B" || prov_fail "mkfs.fat efi-B"
+    prov_say "10 Formatting var-A, var-B, home"
+    # Absolute path: this busybox prefers its own applets for bare command
+    # names, and it has a (minimal) mke2fs applet.
+    export MKE2FS_CONFIG=/etc/mke2fs.conf
+    prov_cmd /bin/mke2fs -t ext4 -q -F -L var-A "$D_VAR_A" || prov_fail "mke2fs var-A"
+    prov_cmd /bin/mke2fs -t ext4 -q -F -L var-B "$D_VAR_B" || prov_fail "mke2fs var-B"
+    prov_cmd /bin/mke2fs -t ext4 -q -F -L home -O casefold -T huge -m 0 "$D_HOME" || prov_fail "mke2fs home"
+    prov_say "30 Giving rootfs-B its own filesystem ID"
+    prov_cmd btrfstune -f -u "$D_ROOTFS_B" || prov_fail "btrfstune -f -u rootfs-B"
+
+    prov_say "80 Writing the boot configuration"
+    mount -t btrfs -o ro "$D_ROOTFS_A" "$_m/root" || prov_fail "cannot mount rootfs-A"
+    for _d in esp efi-A efi-B; do
+        mount -t vfat "$(eval echo "\$D_$(prov_key "$_d")")" "$_m/$_d" || prov_fail "cannot mount $_d"
+    done
+    for _d in var-A var-B; do
+        mount -t ext4 "$(eval echo "\$D_$(prov_key "$_d")")" "$_m/$_d" || prov_fail "cannot mount $_d"
+    done
+    prov_partsets A "$_m/efi-A/SteamOS/partsets" || prov_fail "cannot write efi-A partsets"
+    prov_partsets B "$_m/efi-B/SteamOS/partsets" || prov_fail "cannot write efi-B partsets"
+    mkdir -p "$_m/esp/SteamOS/conf" "$_m/esp/steamac" || prov_fail "cannot create esp directories"
+    for _s in A B; do
+        prov_cmd "$_m/root/usr/lib/steamos-efi/steamos-bootconf" create --image "$_s" \
+            --conf-dir "$_m/esp/SteamOS/conf" --efi-dir "$_m/efi-$_s" --set title "$_s" \
+            || prov_fail "steamos-bootconf create --image $_s"
+        [ -s "$_m/esp/SteamOS/conf/$_s.conf" ] || prov_fail "steamos-bootconf wrote no $_s.conf"
+    done
+    {
+        echo "# steamac A/B boot state (splctl semantics); written by initramfs and /usr/bin/splctl"
+        echo "BOOT_ORDER=A B"
+        echo "BOOT_A_LEFT=$MAX_TRIES"
+        echo "BOOT_B_LEFT=$MAX_TRIES"
+    } > "$_m/esp/$STATE_REL" || prov_fail "cannot write esp:/$STATE_REL"
+
+    prov_say "90 Writing the system settings"
+    _host=$(cat "$_m/root/etc/hostname" 2>/dev/null)
+    for _s in A B; do
+        _v=$_m/var-$_s
+        _up=$_v/lib/overlays/etc/upper
+        install -d -m 0755 "$_v/lib" "$_v/lib/overlays" "$_v/lib/overlays/etc" "$_up" "$_v/lib/overlays/etc/work" \
+            || prov_fail "cannot create var-$_s overlay directories"
+        # shadow: stock file with the steamos password field filled in; no
+        # hash in the payload (release disks) = no upper shadow, stock field
+        if [ -n "$P_PASSWORD_HASH" ]; then
+            set_shadow_hash "$_m/root/etc/shadow" "$_up/shadow" "$P_PASSWORD_HASH" \
+                || prov_fail "cannot set the steamos password on var-$_s"
+        fi
+        # sshd enabled (kept across updates by atomic-update-keep.conf: *.wants/**)
+        install -d -m 0755 "$_up/systemd" "$_up/systemd/system" "$_up/systemd/system/multi-user.target.wants" \
+            && ln -sfn /usr/lib/systemd/system/sshd.service "$_up/systemd/system/multi-user.target.wants/sshd.service" \
+            || prov_fail "cannot enable sshd on var-$_s"
+        # the stock rootfs ships one fixed machine-id for every device
+        echo "$P_MACHINE_ID" > "$_up/machine-id" && chmod 0444 "$_up/machine-id" \
+            || prov_fail "cannot write machine-id on var-$_s"
+        if [ -n "$P_HOSTNAME" ] && [ "$P_HOSTNAME" != "$_host" ]; then
+            echo "$P_HOSTNAME" > "$_up/hostname" || prov_fail "cannot write hostname on var-$_s"
+        fi
+    done
+    install -d -m 0755 "$_m/var-A/lib/steamos-atomupd" \
+        && cp "$PROV_TMP/payload/rootfs.caibx" "$_m/var-A/lib/steamos-atomupd/rootfs.caibx" \
+        || prov_fail "cannot store rootfs.caibx on var-A"
+
+    # everything else on disk first, the completion marker last
+    sync
+    for _d in var-A var-B efi-A efi-B; do
+        umount "$_m/$_d" || prov_fail "cannot unmount $_d"
+    done
+    echo "$P_MACHINE_ID $P_DISK_GUID" > "$_m/esp/$PROV_MARK_REL.new" && sync "$_m/esp/$PROV_MARK_REL.new" \
+        && mv -f "$_m/esp/$PROV_MARK_REL.new" "$_m/esp/$PROV_MARK_REL" && sync \
+        || prov_fail "cannot write esp:/$PROV_MARK_REL"
+    umount "$_m/esp" || prov_fail "cannot unmount esp"
+    umount "$_m/root"
+    rm -rf "$PROV_TMP"
+    msg "provisioning: complete in $(($(date +%s) - _t0)) s"
+    prov_say "100 SteamOS disk ready"
+    prov_say done
+}
+
+[ "$(getarg steamac.provision)" = 1 ] && provision
+
+# ---------------------------------------------------------------- config payload
+# Launcher settings that must reach the disk while the VM is off (contract
+# "SSH policy", Config payload v1). With steamac.config=1 a read-only disk
+# carries an uncompressed cpio newc archive whose first member is config.env
+# (KEY='value' lines: CONFIG_VERSION=1, DISK_GUID = GPT disk GUID of the disk
+# holding esp, PASSWORD_HASH = $6$ crypt for user steamos). The hash replaces
+# steamos's password field in the /etc overlay upper shadow of var-A and var-B
+# (an upper without shadow gets the slot's stock /etc/shadow - or the other
+# slot's if that rootfs does not mount, e.g. after a failed update - with
+# that field set). Reported as "config applied" / "config failed <reason>" on
+# fx.progress, "steamac-config: ..." on hvc0. A failure never stops the boot:
+# the launcher keeps the payload and retries on the next start. Runs after a
+# first-boot provisioning if both payloads are attached.
+CFG_TMP=/tmp/config
+cfg_fail() {
+    warn "config payload not applied: $*"
+    for _d in var root; do grep -q " $CFG_TMP/$_d " /proc/mounts && umount "$CFG_TMP/$_d"; done
+    rm -rf "$CFG_TMP"
+    fx_say config "failed $*"
+    return 1
+}
+apply_config() {
+    fx_find_port
+    find_payload config.env || { cfg_fail "steamac.config=1 but no config payload disk attached"; return 1; }
+    rm -rf "$CFG_TMP"; mkdir -p "$CFG_TMP/payload" "$CFG_TMP/var" "$CFG_TMP/root"
+    (cd "$CFG_TMP/payload" && cpio -i -d -m config.env < "$PAYLOAD_DEV") 2>/dev/null
+    [ -s "$CFG_TMP/payload/config.env" ] || { cfg_fail "cannot extract config.env from $PAYLOAD_DEV"; return 1; }
+    C_CONFIG_VERSION=; C_DISK_GUID=; C_PASSWORD_HASH=
+    kv_parse "$CFG_TMP/payload/config.env" C_ CONFIG_VERSION DISK_GUID PASSWORD_HASH \
+        || { cfg_fail "bad quoting in $KV_BAD"; return 1; }
+    [ "$C_CONFIG_VERSION" = 1 ] || { cfg_fail "unsupported CONFIG_VERSION '$C_CONFIG_VERSION'"; return 1; }
+    _disk=$(esp_disk)
+    _g=$(prov_disk_guid "$_disk") || { cfg_fail "$_disk has no readable primary GPT header"; return 1; }
+    C_DISK_GUID=$(echo "$C_DISK_GUID" | tr 'A-F' 'a-f')
+    [ "$C_DISK_GUID" = "$_g" ] || { cfg_fail "payload DISK_GUID $C_DISK_GUID does not match $_disk ($_g)"; return 1; }
+    case $C_PASSWORD_HASH in
+        '$6$'*) ;;
+        *) cfg_fail "PASSWORD_HASH is not a SHA-512 crypt hash"; return 1 ;;
+    esac
+    msg "config: payload on $PAYLOAD_DEV for $_disk"
+    for _cs in A B; do
+        _vd=$(part_dev "var-$_cs") && mount -t ext4 "$_vd" "$CFG_TMP/var" \
+            || { cfg_fail "cannot mount var-$_cs"; return 1; }
+        _v=$CFG_TMP/var
+        _up=$_v/lib/overlays/etc/upper
+        _src=$_up/shadow
+        if [ ! -f "$_src" ]; then
+            [ "$_cs" = A ] && _co=B || _co=A   # (other_of is defined further down)
+            for _r in "rootfs-$_cs" "rootfs-$_co"; do
+                _rd=$(part_dev "$_r") && mount -t btrfs -o ro "$_rd" "$CFG_TMP/root" 2>/dev/null \
+                    && [ -f "$CFG_TMP/root/etc/shadow" ] && break
+                grep -q " $CFG_TMP/root " /proc/mounts && umount "$CFG_TMP/root"
+                warn "config: no stock /etc/shadow from $_r"
+            done
+            grep -q " $CFG_TMP/root " /proc/mounts || { cfg_fail "no stock /etc/shadow for var-$_cs"; return 1; }
+            _src=$CFG_TMP/root/etc/shadow
+            install -d -m 0755 "$_v/lib" "$_v/lib/overlays" "$_v/lib/overlays/etc" "$_up" "$_v/lib/overlays/etc/work" \
+                || { cfg_fail "cannot create var-$_cs overlay directories"; return 1; }
+        fi
+        set_shadow_hash "$_src" "$_up/shadow" "$C_PASSWORD_HASH" \
+            || { cfg_fail "cannot set the steamos password on var-$_cs"; return 1; }
+        sync
+        grep -q " $CFG_TMP/root " /proc/mounts && umount "$CFG_TMP/root"
+        umount "$CFG_TMP/var" || { cfg_fail "cannot unmount var-$_cs"; return 1; }
+        msg "config: steamos password set in var-$_cs (/etc overlay upper shadow)"
+    done
+    rm -rf "$CFG_TMP"
+    fx_say config applied
+}
+
+[ "$(getarg steamac.config)" = 1 ] && apply_config
 
 # ---------------------------------------------------------------- FAT check
 # esp and efi-X are vfat. Linux sets the FAT "dirty" bit on every read-write
@@ -404,10 +819,19 @@ fi
 # Consumers: splctl get-current, kernelsetup.sh, anything grepping rauc.slot=.
 # Kernel parameters go before the first standalone "--" (libkrun always appends
 # one); anything after it belongs to init and is kept verbatim at the end.
+# steamac.ssh=0 adds systemd.ssh_auto=no: systemd-ssh-generator then creates
+# none of its sshd-unix-local/-vsock/-unix-export sockets (see "SSH switch").
+SSH=$(getarg steamac.ssh)
+case $SSH in 0|1|"") ;; *) warn "ignoring steamac.ssh='$SSH' (0 or 1)"; SSH= ;; esac
 _keep=
 for _a in $KARGS; do
-    case $_a in root=*|rauc.slot=*|steamos.efi=*|init=*) ;; *) _keep="$_keep $_a" ;; esac
+    case $_a in
+        root=*|rauc.slot=*|steamos.efi=*|init=*) ;;
+        systemd.ssh_auto=*) [ "$SSH" = 0 ] || _keep="$_keep $_a" ;;
+        *) _keep="$_keep $_a" ;;
+    esac
 done
+[ "$SSH" = 0 ] && _keep="$_keep systemd.ssh_auto=no"
 echo "${_keep# } root=PARTLABEL=rootfs-$SLOT rauc.slot=$SLOT steamos.efi=PARTUUID=$EFI_UUID init=$INIT${HAVE_DDASH:+ --$IARGS}" > /run/steamac/cmdline
 
 # ---------------------------------------------------------------- unit masks
@@ -423,6 +847,22 @@ if [ -n "$HAVE_LAYER" ] && [ "$(getarg steamac.nomask)" != 1 ]; then
         done < "$_f"
     done
     msg "runtime-masked $_n units"
+fi
+
+# ---------------------------------------------------------------- SSH switch
+# Contract "SSH policy": the launcher passes steamac.ssh=0|1 on every boot
+# (release app default 0). 0 = no SSH server at all this boot: runtime masks
+# (independent of steamac.nomask) for the rootfs's sshd.service and every unit
+# systemd-ssh-generator (systemd 257) can create, on top of systemd.ssh_auto=no
+# above. 1 or absent = sshd as enabled in /etc (var-X upper enables it).
+if [ "$SSH" = 0 ]; then
+    for _unit in sshd.service sshd@.service sshd.socket \
+                 sshd-unix-local.socket sshd-unix-local@.service sshd-vsock.socket sshd-vsock@.service \
+                 sshd-unix-export.socket sshd-unix-export@.service sshd-extra.socket sshd-extra@.service \
+                 sshd-generated@.service; do
+        ln -sfn /dev/null "/run/systemd/system/$_unit"
+    done
+    msg "steamac.ssh=0: SSH server disabled for this boot (sshd units runtime-masked)"
 fi
 
 # ---------------------------------------------------------------- switch_root

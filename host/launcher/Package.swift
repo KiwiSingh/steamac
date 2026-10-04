@@ -8,9 +8,11 @@ let package = Package(
     platforms: [.macOS(.v15)],
     targets: [
         .systemLibrary(name: "CKrun", path: "Sources/CKrun"),
+        // zstd decoder (sources fetched by fetch-zstd.sh into Sources/CZstd/zstd, included by czstd.c).
+        .target(name: "CZstd", path: "Sources/CZstd", exclude: ["zstd"]),
         .executableTarget(
             name: "steamac-vm",
-            dependencies: ["CKrun"],
+            dependencies: ["CKrun", "CZstd"],
             path: "Sources/steamac-vm",
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -21,6 +23,7 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("SwiftUI"),
+                .linkedFramework("Security"),
             ]
         ),
     ],

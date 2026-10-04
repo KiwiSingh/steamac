@@ -28,6 +28,14 @@
 #             implementer, AIDR_EL1 bit 9 and a read-back test showing ACTLR_EL1.TSO is
 #             writable; otherwise the prctl returns -EINVAL. libkrunfw ships the same
 #             code (ARM64_MEMORY_MODEL_CONTROL=y) for libkrun on macOS.
+#   0006      ALSA: virtio: clear the fill level of every period in ops->prepare(). Upstream
+#             (still in 7.3) keeps the length of a period that was partly filled when the
+#             stream stopped; after the restart that period is never sent to the device
+#             and playback stalls ~0.6 s later (PipeWire restarting after an xrun).
+#   0007      ALSA: virtio: report an xrun when the device completed a whole buffer since the
+#             last pointer callback. Upstream reports the wrapped position only, so a buffer
+#             completed while the guest was busy looks like no progress (pcm_indirect and the
+#             PCM core both lose it) and playback stalls for good with a full buffer.
 #   Not taken from libkrunfw: 0018 fence passing (claims feature bit 5 = BLOB_ALIGNMENT),
 #   0003-0012 vsock dgram/TSI (we use virtio-net), 0019 compat input (muvm-specific),
 #   0023 hard-coded 64K placement (superseded by 0001).

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build the steamac-vm launcher (release), sign it with the hypervisor entitlement and
-# install it as work/out/steamac-vm. Also fetches the pinned gvproxy into work/out/host/bin and
-# assembles work/out/FX Steam Launcher.app (bundle.sh; skipped with STEAMAC_NO_BUNDLE=1 or when
-# the kernel/initramfs/layer images are not built yet).
+# install it as work/out/steamac-vm. Also fetches the pinned zstd decoder sources (compiled in),
+# gvproxy and desync into work/out/host/bin and assembles work/out/FX Steam Launcher.app
+# (bundle.sh; skipped with STEAMAC_NO_BUNDLE=1 or when the kernel/initramfs/layer images are
+# not built yet).
 #
 # libkrun (v1.19.6 C API, built with GPU=1 INPUT=1 BLK=1 NET=1) is taken from
 # $KRUN_PREFIX (default: work/out/host, produced by host/libkrun). The binary's rpath is
@@ -30,6 +31,7 @@ SWIFT_FLAGS=(
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$HERE/Info.plist"
 )
 
+"$HERE/fetch-zstd.sh"
 swift build "${SWIFT_FLAGS[@]}"
 BIN="$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)/steamac-vm"
 
@@ -48,6 +50,7 @@ codesign --force --sign - --entitlements "$HERE/steamac-vm.entitlements" "$tmp"
 mv -f "$tmp" "$OUT/steamac-vm"
 
 "$HERE/fetch-gvproxy.sh"
+"$HERE/fetch-desync.sh"
 
 echo "built $OUT/steamac-vm"
 otool -L "$OUT/steamac-vm" | awk '/libkrun/'

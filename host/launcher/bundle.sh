@@ -3,9 +3,13 @@
 #   Contents/MacOS/steamac-vm           launcher, rpath @executable_path/../Frameworks only
 #   Contents/Frameworks/*.dylib         libkrun, libvirglrenderer, libMoltenVK + their non-system
 #                                       dependencies (libepoxy), install names @rpath/<name>
-#   Contents/Resources/                 gvproxy, Image, initramfs.cpio.gz, steamac-layer.img
-# The SteamOS disk is not bundled (Settings > Advanced "Disk image"). Ad-hoc signed with the
-# hypervisor + disable-library-validation entitlements. Built in a temp dir, then moved in place.
+#   Contents/Resources/                 gvproxy, Image, initramfs.cpio.gz, steamac-layer.img,
+#                                       desync + steamdeck-images.pem (Valve RAUC CA) for
+#                                       "Create New Disk…", licenses/ (desync, zstd),
+#                                       Assets.car + AppIcon.icns (app icon, see below)
+# The SteamOS disk is not bundled (Settings > Advanced "Disk image" / "Create New Disk…"). Ad-hoc
+# signed with the hypervisor + disable-library-validation entitlements. Built in a temp dir,
+# then moved in place.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -18,9 +22,11 @@ APP="$OUT/$NAME.app"
 STAGE="$OUT/.bundle.$$"
 TMP="$STAGE/$NAME.app"
 
-for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy; do
+ZSTD_LICENSE="$HERE/Sources/CZstd/zstd/LICENSE"
+for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy host/bin/desync host/share/desync/LICENSE; do
     [[ -f "$OUT/$f" ]] || { echo "bundle.sh: missing $OUT/$f" >&2; exit 1; }
 done
+[[ -f "$ZSTD_LICENSE" ]] || { echo "bundle.sh: missing $ZSTD_LICENSE (run fetch-zstd.sh)" >&2; exit 1; }
 
 rm -rf "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
@@ -29,6 +35,9 @@ mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Frameworks" "$TMP/Contents/Resourc
 cp "$HERE/Info.plist" "$TMP/Contents/Info.plist"
 # Lets the app find the repo's work/out/steamos.img as its default disk when moved elsewhere.
 /usr/libexec/PlistBuddy -c "Add :SteamacBuildOut string $OUT" "$TMP/Contents/Info.plist"
+# Release defaults (AppBundle.releaseDefaults): SSH off, generated guest password, no default
+# password on created disks. The dev launcher work/out/steamac-vm (embedded Info.plist) has none.
+/usr/libexec/PlistBuddy -c "Add :SteamacReleaseDefaults bool true" "$TMP/Contents/Info.plist"
 printf 'APPL????' > "$TMP/Contents/PkgInfo"
 
 exe="$TMP/Contents/MacOS/steamac-vm"
@@ -85,10 +94,28 @@ for f in Image initramfs.cpio.gz steamac-layer.img; do
     cp -c "$OUT/$f" "$TMP/Contents/Resources/$f" 2>/dev/null || cp "$OUT/$f" "$TMP/Contents/Resources/$f"
 done
 cp "$OUT/host/bin/gvproxy" "$TMP/Contents/Resources/gvproxy"
-chmod 755 "$TMP/Contents/Resources/gvproxy"
+cp "$OUT/host/bin/desync" "$TMP/Contents/Resources/desync"
+chmod 755 "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"
+cp "$ROOT/scripts/keys/steamdeck-images.pem" "$TMP/Contents/Resources/steamdeck-images.pem"
+mkdir -p "$TMP/Contents/Resources/licenses"
+cp "$OUT/host/share/desync/LICENSE" "$TMP/Contents/Resources/licenses/desync-LICENSE"
+cp "$ZSTD_LICENSE" "$TMP/Contents/Resources/licenses/zstd-LICENSE"
 
-# Sign inside-out: libraries, gvproxy, then the bundle (executable + sealed resources).
-for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy"; do
+# App icon: AppIcon.icon (Icon Composer document) compiled by Xcode 26's actool into Assets.car
+# (layered Liquid Glass icon for macOS 26, pre-rendered squircle renditions for macOS 15) and an
+# AppIcon.icns fallback; Info.plist names them (CFBundleIconName / CFBundleIconFile = AppIcon).
+if ! log=$(xcrun actool "$HERE/AppIcon.icon" --compile "$TMP/Contents/Resources" --platform macosx \
+        --minimum-deployment-target 15.0 --app-icon AppIcon \
+        --output-partial-info-plist "$STAGE/icon-info.plist" 2>&1) \
+        || [[ ! -f "$TMP/Contents/Resources/Assets.car" || ! -f "$TMP/Contents/Resources/AppIcon.icns" ]]; then
+    echo "$log" >&2
+    echo "bundle.sh: actool did not compile $HERE/AppIcon.icon (needs Xcode 26 or newer)" >&2
+    exit 1
+fi
+rm -f "$STAGE/icon-info.plist"
+
+# Sign inside-out: libraries, helper executables, then the bundle (executable + sealed resources).
+for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"; do
     codesign --force --sign - --timestamp=none "$f"
 done
 codesign --force --sign - --timestamp=none --entitlements "$HERE/steamac-vm.entitlements" "$TMP"

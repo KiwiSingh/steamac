@@ -16,7 +16,7 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 ## Требования
 
 - Mac на Apple Silicon, macOS 15+, ~150 ГБ свободного места (образ диска разреженный).
-- Xcode (полный), Homebrew, rustup.
+- Xcode 26+ (полный: его `actool` собирает иконку приложения из Icon Composer-документа), Homebrew, rustup.
 - OrbStack (или Docker с arm64 и `--privileged`): ядро, Mesa и образ диска собираются в Linux-контейнерах.
 - Homebrew-пакеты: `meson ninja pkg-config dtc xz lld libepoxy sshpass`.
 
@@ -67,6 +67,20 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 Доступ в гостя: `ssh -p 2222 steamos@127.0.0.1`, пароль `steamos` (меняется через
 `STEAMOS_PASSWORD=... scripts/build-image.sh disk`). Консоль hvc0 — в терминале, где запущен `run.sh`.
 
+SSH включается и выключается одним переключателем: **Settings → Advanced → Enable SSH** (или
+`--ssh-port N` / `--no-ssh`). Лаунчер на каждой загрузке передаёт `steamac.ssh=0|1`: при 0 порт на
+Mac не открывается вовсе (gvproxy без проброса), а initramfs маскирует sshd в SteamOS. По умолчанию
+SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, порт 2222) и выключен в
+`FX Steam Launcher.app` (ключ `SteamacReleaseDefaults` в Info.plist, ставит `bundle.sh`). При
+включении лаунчер генерирует пароль пользователя `steamos` (20 символов, SecRandomCopyBytes),
+хранит его в связке ключей отдельно для каждого диска (по GUID его GPT) и на следующей загрузке
+передаёт гостю только хеш SHA-512 crypt (диск-«config payload», `steamac.config=1`; гость отвечает
+`config applied`). В настройках видны пользователь, пароль (Show/Copy), готовая строка
+`ssh -p … steamos@127.0.0.1`, статус «applied / will apply on next start» и **Regenerate Password**;
+у dev-лаунчера пароль генерируется только кнопкой (диски Docker-сборки сохраняют `steamos`). Диски,
+созданные в приложении, получают пароль только так — пароля по умолчанию у них нет. Из терминала:
+`steamac-vm --ssh-password <диск>` печатает пользователя, пароль и статус.
+
 ## Окно настроек
 
 **FX Steam Launcher → Settings…** (Cmd+, — работает и когда клавиатура у гостя). У каждого поля
@@ -83,7 +97,7 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
-| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), порт SSH (`--ssh-port`), сеть (`--no-net`), образ диска (`--disk`) |
+| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk… |
 
 Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
 --selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
@@ -94,16 +108,19 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 `host/launcher/build.sh` (и `./build.sh host`) кроме `work/out/steamac-vm` собирает
 `work/out/FX Steam Launcher.app` (`host/launcher/bundle.sh`): `es.fxgam.steamac`, библиотеки
 (libkrun, libvirglrenderer, libMoltenVK, libepoxy) в `Contents/Frameworks` через `@rpath`,
-в `Contents/Resources` — gvproxy, ядро `Image`, `initramfs.cpio.gz`, `steamac-layer.img`;
+в `Contents/Resources` — gvproxy, ядро `Image`, `initramfs.cpio.gz`, `steamac-layer.img`, desync и
+CA Valve для создания диска (лицензии — в `Resources/licenses`), иконка: `host/launcher/AppIcon.icon`
+(документ Icon Composer) `actool` компилирует в `Assets.car` (Liquid Glass на macOS 26, готовые
+рендеры для macOS 15) и запасной `AppIcon.icns`;
 подпись ad-hoc с entitlements hypervisor + disable-library-validation. Приложение можно
 перенести в `/Applications`.
 
 Запуск из Finder (без аргументов) берёт ядро, initramfs и слой из бандла, а диск SteamOS — из
 Settings → Advanced → Disk image. По умолчанию:
 `~/Library/Application Support/es.fxgam.steamac/steamos.img`, иначе `work/out/steamos.img`
-репозитория (рядом с бандлом или там, где он был собран). Если диска нет — окно первого запуска
-с выбором существующего образа («Use Existing Disk…»); образ используется на месте и никогда не
-копируется (собирается `scripts/build-image.sh`). Консоль гостя и лог лаунчера в этом режиме
+репозитория (рядом с бандлом или там, где он был собран). Если диска нет — окно первого запуска:
+**Create New Disk…** (см. следующий раздел) или **Use Existing Disk…** (образ используется на
+месте и никогда не копируется; собирается и `scripts/build-image.sh`). Консоль гостя и лог лаунчера в этом режиме
 пишутся в `~/Library/Logs/es.fxgam.steamac/steamac-vm.log`, SIGUSR1-дампы кадра — туда же.
 `./run.sh` и `work/out/steamac-vm` работают как раньше (настройки из окна действуют и для них,
 если не заданы флагами).
@@ -111,6 +128,67 @@ Settings → Advanced → Disk image. По умолчанию:
 Если образ лежит на внешнем диске, при первом запуске из Finder macOS спрашивает «FX Steam
 Launcher хочет получить доступ к файлам на съёмном томе» — нужно разрешить (до ответа ВМ ждёт
 на открытии диска). Подпись ad-hoc, поэтому после пересборки бандла macOS может спросить снова.
+
+## Создание диска SteamOS без Docker (Creating the SteamOS disk without Docker)
+
+Пользователю приложения Docker не нужен: диск создаёт сам лаунчер — окно первого запуска
+**Create New Disk…** или **Settings → Advanced → Create New Disk…** (ветка stable/rc/beta/preview/main,
+размер home, место, пароль пользователя `steamos`; прогресс, Stop и Resume). То же без окна:
+
+```sh
+work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache]
+```
+
+1. `https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/<ветка>.json` → свежий
+   кандидат (`update_path`, `chunks_store_path`).
+2. Скачивается `.raucb` (~2 МБ); CMS-подпись проверяется Security.framework только против
+   закреплённого CA Valve `CN=steamdeck-images` (`scripts/keys/steamdeck-images.pem`, SHA-256 отпечаток
+   зашит в код); системное хранилище доверия не используется. Свой читатель squashfs (zstd из
+   закреплённого релиза zstd, `fetch-zstd.sh`) достаёт `manifest.raucm` и `rootfs.img.caibx`;
+   проверяются `compatible=steamos-aarch64`, версия и размер слота.
+3. Официальный desync (`fetch-desync.sh`, версия и sha256 закреплены) собирает 10-гигабайтный
+   `rootfs.img` из хранилищ чанков Valve (~4,4 ГБ данных); кеш чанков —
+   `~/Library/Caches/es.fxgam.steamac/desync`, частичный `<диск>.rootfs-tmp` остаётся, поэтому
+   Stop/Resume (или повтор команды после Ctrl+C) продолжает с места остановки.
+4. Разреженный файл диска: защитный MBR + GPT (основная и резервная, CRC32) ровно с именами,
+   порядком, типами, размерами и выравниванием `scripts/steps/40-disk.sh`, случайные PARTUUID.
+   За один проход `rootfs.img` хешируется (sha256 должен совпасть с подписанным манифестом) и
+   ненулевые блоки по 16 КиБ пишутся в rootfs-A и rootfs-B; остальные разделы — нули. Диск
+   появляется под своим именем только после всех проверок и никогда не перезаписывает файл.
+5. Рядом кладётся `<диск без .img>.provision.img` — cpio newc с `provision.env` (сборка, PARTUUID,
+   хеш пароля SHA-512 crypt, machine-id) и `rootfs.caibx` (формат — «Payload v1» в контракте
+   провижининга). Пока этот файл есть, лаунчер подключает его только для чтения (vdc) и добавляет
+   `steamac.provision=1`: initramfs форматирует esp/efi-X/var-X/home, делает fsid rootfs-B
+   уникальным, пишет partsets/bootconf/bootenv/var и сообщает `provision done` — после этого лаунчер
+   удаляет payload, следующие загрузки идут без него.
+
+Место: ~14 ГБ на томе диска на время создания (потом ~9 ГБ), ~6 ГБ кеша (удаляется после успеха,
+если не указан `--keep-cache`). Проверки: `work/out/steamac-vm --selftest-provision` — GPT против
+диска из Docker-сборки (`work/out/steamos.img` открывается только на чтение; `--reference-disk IMG`),
+CMS/squashfs против кеша `work/cache/rootfs`, cpio, SHA-512 crypt.
+
+## Дистрибутив (DMG)
+
+`host/launcher/dist.sh` делает из собранного `work/out/FX Steam Launcher.app` то, что выкладывается
+для скачивания: `work/out/dist/FX-Steam-Launcher-<версия>.dmg` (приложение + ссылка на
+`/Applications`). Копия бандла без ключа `SteamacBuildOut` (путь к этому дереву сборки)
+переподписывается Developer ID с hardened runtime и secure timestamp: сначала все вложенные Mach-O
+(`Frameworks/*.dylib`, вспомогательные программы в `Resources`), затем бандл с
+`steamac-vm.entitlements` (hypervisor, disable-library-validation и audio-input — без него hardened
+runtime молча запрещает микрофон). Приложение нотаризуется и стейплится, затем DMG подписывается,
+нотаризуется и стейплится — Gatekeeper пропускает его и офлайн (остаётся обычный вопрос
+«загружено из интернета» при первом запуске).
+
+```sh
+host/launcher/build.sh      # свежий бандл
+host/launcher/dist.sh       # подпись, нотаризация, DMG
+```
+
+Один раз нужен профиль notarytool в связке ключей:
+`xcrun notarytool store-credentials steamac-notary --apple-id <Apple ID> --team-id V25VKGTW55
+--password <app-specific password>`. Переменные: `STEAMAC_SIGN_IDENTITY` (по умолчанию
+единственная «Developer ID Application» в связке), `NOTARY_PROFILE` (по умолчанию `steamac-notary`);
+`--no-notarize` — только подпись, для локальной проверки (скачанную копию Gatekeeper не пустит).
 
 ## Как это устроено
 
@@ -122,9 +200,9 @@ Launcher хочет получить доступ к файлам на съём�
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, виртуальный Xbox 360 pad из GameController.framework, сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
 | `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
-| `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr` |
+| `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos` |
 | `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`) |
-| `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home) |
+| `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
 Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому
 официальные обновления Valve (RAUC + atomupd) ставятся в другой слот и откатываются штатно —

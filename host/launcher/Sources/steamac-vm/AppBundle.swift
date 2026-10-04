@@ -3,13 +3,19 @@ import Darwin
 import Foundation
 
 /// Running inside "FX Steam Launcher.app" (build.sh / bundle.sh): the kernel, initramfs, layer
-/// disk and gvproxy are bundled in Contents/Resources; the SteamOS disk comes from Settings >
-/// Advanced "Disk image", else the default locations below. Never copied anywhere: the user
-/// picks an existing image.
+/// disk, gvproxy, desync and Valve's RAUC CA are bundled in Contents/Resources; the SteamOS disk
+/// comes from Settings > Advanced "Disk image", else the default locations below. Never copied
+/// anywhere: the user picks an existing image or creates a new one (DiskCreator).
 enum AppBundle {
     /// Contents/Resources when this executable lives in an .app bundle.
     static var resources: String? {
         Bundle.main.bundlePath.hasSuffix(".app") ? Bundle.main.resourcePath : nil
+    }
+
+    /// Release defaults (Info.plist `SteamacReleaseDefaults`, set by bundle.sh for the .app):
+    /// SSH off and no default guest password on created disks. The dev launcher has neither.
+    static var releaseDefaults: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "SteamacReleaseDefaults") as? Bool ?? false
     }
 
     static var appSupportDir: String {
@@ -96,8 +102,9 @@ enum AppBundle {
     }
 }
 
-/// First start of the app without a usable disk image: explain, let the user pick an existing
-/// image (Settings > Advanced "Disk image"), then the supervisor boots it.
+/// First start of the app without a usable disk image: explain, then create a new disk
+/// (CreateDiskWindowController, no Docker) or let the user pick an existing image (Settings >
+/// Advanced "Disk image"); the supervisor then boots it.
 enum FirstRun {
     static func run(settings: LauncherSettings) -> Never {
         let app = NSApplication.shared
@@ -113,27 +120,35 @@ enum FirstRun {
             info += "The image chosen in Settings is not readable:\n\((settings.diskImage as NSString).abbreviatingWithTildeInPath)\n\n"
         }
         info += "Looked in:\n\(looked.joined(separator: "\n"))\n\n"
-        info += "Build one from the repository with scripts/build-image.sh (see README), or choose an existing image. "
-        info += "The image is used in place; it is never copied."
+        info += "Create a new one: the official SteamOS image is downloaded from Valve and verified (about 4.5 GB; the disk "
+        info += "uses ~10 GB on your Mac at first). Or choose an existing image, which is used in place and never copied."
         alert.informativeText = info
+        alert.addButton(withTitle: "Create New Disk…")
         alert.addButton(withTitle: "Use Existing Disk…")
         alert.addButton(withTitle: "Quit")
         while true {
-            guard alert.runModal() == .alertFirstButtonReturn else {
+            let choice = alert.runModal()
+            var chosen: String?
+            if choice == .alertFirstButtonReturn {
+                chosen = CreateDiskWindowController.runModal(settings: settings)
+            } else if choice == .alertSecondButtonReturn {
+                let panel = NSOpenPanel()
+                panel.title = "Choose a SteamOS disk image"
+                panel.message = "Raw GPT disk image (e.g. steamos.img). It stays where it is."
+                panel.canChooseFiles = true
+                panel.canChooseDirectories = false
+                panel.allowsMultipleSelection = false
+                panel.treatsFilePackagesAsDirectories = false
+                if panel.runModal() == .OK, let url = panel.url, FileManager.default.isReadableFile(atPath: url.path) {
+                    chosen = url.path
+                }
+            } else {
                 log("first run: no disk chosen; quitting")
                 exit(0)
             }
-            let panel = NSOpenPanel()
-            panel.title = "Choose a SteamOS disk image"
-            panel.message = "Raw GPT disk image (e.g. steamos.img). It stays where it is."
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = false
-            panel.allowsMultipleSelection = false
-            panel.treatsFilePackagesAsDirectories = false
-            guard panel.runModal() == .OK, let url = panel.url else { continue }
-            guard FileManager.default.isReadableFile(atPath: url.path) else { continue }
-            settings.diskImage = url.path
-            log("first run: disk image \(url.path)")
+            guard let path = chosen else { continue }
+            settings.diskImage = path
+            log("first run: disk image \(path)")
             // Tell the supervisor to start the VM now (same marker as a guest reboot).
             if let dir = Supervisor.runDir {
                 FileManager.default.createFile(atPath: Supervisor.rebootMarker(dir), contents: Data(Supervisor.firstRunMarker.utf8))

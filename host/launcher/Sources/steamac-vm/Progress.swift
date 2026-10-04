@@ -25,7 +25,7 @@ enum GuestFocus: Equatable {
 final class BootProgress {
     /// Overall-bar segment for each stage: (start, weight) in percent.
     static let segments: [String: (Double, Double)] = [
-        "vm": (0, 3), "kernel": (3, 7), "init": (10, 0), "systemd": (10, 20), "graphical": (30, 0),
+        "vm": (0, 3), "kernel": (3, 7), "provision": (3, 7), "init": (10, 0), "systemd": (10, 20), "graphical": (30, 0),
         "session": (30, 5), "steam-check": (35, 5), "steam-download": (40, 45),
         "steam-install": (85, 10), "steam-start": (95, 5),
     ]
@@ -44,6 +44,11 @@ final class BootProgress {
     var onFocus: ((GuestFocus) -> Void)?
     /// `game <appid> <name>`: the display name of a game the guest focused.
     var onGameName: ((Int, String) -> Void)?
+    /// First-boot provisioning ended (`provision done` / `provision failed <reason>`, fx.progress
+    /// or hvc0 `steamac-provision: …`); may be reported on both channels.
+    var onProvision: ((_ ok: Bool, _ reason: String) -> Void)?
+    /// Guest password payload: `config applied` / `config failed <reason>` (or hvc0 `steamac-config: …`).
+    var onConfig: ((_ ok: Bool, _ reason: String) -> Void)?
 
     private var sawConsole = false
     private var okLines = 0
@@ -79,7 +84,11 @@ final class BootProgress {
             return
         }
         guard state.phase == .boot else { return }
-        if let r = line.range(of: "steamac-init: switching to rootfs-") {
+        if let r = line.range(of: "steamac-provision: ") {
+            provisionLine(String(line[r.upperBound...]))
+        } else if let r = line.range(of: "steamac-config: ") {
+            configLine(String(line[r.upperBound...]))
+        } else if let r = line.range(of: "steamac-init: switching to rootfs-") {
             let slot = line[r.upperBound...].prefix(1)
             set(stage: "init", title: "Mounting SteamOS (slot \(slot))…", percent: 100)
         } else if line.contains("Welcome to SteamOS") {
@@ -107,6 +116,10 @@ final class BootProgress {
             let text = parts.count > 3 ? parts[3] : state.title
             set(stage: parts[1], title: text, percent: Double(max(0, min(100, pct))), indeterminate: pct < 0,
                 detail: parts[1] == state.stageId ? state.detail : "")
+        case "provision":
+            provisionLine(parts.dropFirst().joined(separator: " "))
+        case "config":
+            configLine(parts.dropFirst().joined(separator: " "))
         case "log":
             guard line.count > 4 else { return }
             var s = state
@@ -163,6 +176,28 @@ final class BootProgress {
         guard !hostRequestedPowerOff else { return }
         beginShutdown(reboot: true)
         noteReboot()
+    }
+
+    /// "applied" | "failed <reason>" (Config payload v1).
+    private func configLine(_ rest: String) {
+        let words = rest.split(separator: " ", maxSplits: 1).map(String.init)
+        if words.first == "applied" { onConfig?(true, "") }
+        else if words.first == "failed" { onConfig?(false, words.count > 1 ? words[1] : "") }
+    }
+
+    /// "done" | "failed <reason>" | "<pct> <text>" (Payload v1, local://provision-contract.md).
+    private func provisionLine(_ rest: String) {
+        let words = rest.split(separator: " ", maxSplits: 1).map(String.init)
+        guard let first = words.first else { return }
+        if first == "done" {
+            if state.phase == .boot { set(stage: "provision", title: "SteamOS set up", percent: 100) }
+            onProvision?(true, "")
+        } else if first == "failed" {
+            onProvision?(false, words.count > 1 ? words[1] : "")
+        } else if let pct = Int(first), state.phase == .boot {
+            set(stage: "provision", title: "Setting up SteamOS (first start)…", percent: Double(max(0, min(100, pct))),
+                detail: words.count > 1 ? words[1] : "")
+        }
     }
 
     // MARK: shutdown

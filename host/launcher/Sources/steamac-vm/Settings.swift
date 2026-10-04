@@ -29,12 +29,13 @@ final class LauncherSettings: ObservableObject {
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
-        case cpus, memMiB, sshPort, network, diskImage
+        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch
 
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshPort, .network, .diskImage:
+                 .windowWidth, .windowHeight, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled, .sshPort, .network,
+                 .diskImage:
                 return true
             default:
                 return false
@@ -110,10 +111,15 @@ final class LauncherSettings: ObservableObject {
     // Advanced
     @Published var cpus = 8 { didSet { save(.cpus, cpus) } }
     @Published var memMiB = 16384 { didSet { save(.memMiB, memMiB) } }
+    /// SSH into the guest (gvproxy forward + guest sshd; `steamac.ssh=0|1`). Off by default in
+    /// release bundles (Info.plist SteamacReleaseDefaults), on for the dev launcher.
+    @Published var sshEnabled = !AppBundle.releaseDefaults { didSet { save(.sshEnabled, sshEnabled) } }
     @Published var sshPort = 2222 { didSet { save(.sshPort, sshPort) } }
     @Published var network = true { didSet { save(.network, network) } }
     /// "" = default (see AppBundle.defaultDisk()).
     @Published var diskImage = "" { didSet { save(.diskImage, diskImage) } }
+    /// SteamOS update branch "Create New Disk…" installs (atomupd vr/<branch>.json).
+    @Published var steamosBranch = "stable" { didSet { save(.steamosBranch, steamosBranch) } }
 
     init() {
         let domain = LauncherSettings.domain
@@ -161,9 +167,12 @@ final class LauncherSettings: ObservableObject {
         if let s = d.string(forKey: Key.soundLatency.rawValue).flatMap(Latency.init(rawValue:)) { soundLatency = s }
         int(.cpus, &cpus)
         int(.memMiB, &memMiB)
+        bool(.sshEnabled, &sshEnabled)
         int(.sshPort, &sshPort)
         bool(.network, &network)
         string(.diskImage, &diskImage)
+        string(.steamosBranch, &steamosBranch)
+        if !DiskCreator.branches.contains(steamosBranch) { steamosBranch = "stable" }
         reloadGames()
     }
 
@@ -204,9 +213,11 @@ final class LauncherSettings: ObservableObject {
         case .soundLatency: guard let v = Latency(rawValue: text) else { return false }; soundLatency = v
         case .cpus: guard let i else { return false }; cpus = i
         case .memMiB: guard let i else { return false }; memMiB = i
+        case .sshEnabled: guard let b else { return false }; sshEnabled = b
         case .sshPort: guard let i else { return false }; sshPort = i
         case .network: guard let b else { return false }; network = b
         case .diskImage: diskImage = text == "default" ? "" : text
+        case .steamosBranch: guard DiskCreator.branches.contains(text) else { return false }; steamosBranch = text
         }
         return true
     }
@@ -226,8 +237,8 @@ final class LauncherSettings: ObservableObject {
         virtualPad = fresh.virtualPad; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
-        cpus = fresh.cpus; memMiB = fresh.memMiB; sshPort = fresh.sshPort; network = fresh.network
-        diskImage = fresh.diskImage
+        cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network
+        diskImage = fresh.diskImage; steamosBranch = fresh.steamosBranch
         loading = false
         reloadGames()
         log("settings: reset to defaults")
@@ -257,7 +268,8 @@ final class LauncherSettings: ObservableObject {
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight, .virtualPad: virtualPad,
-            .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshPort: sshPort, .network: network,
+            .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
+            .network: network,
             .diskImage: diskImage,
         ]
         var s: [Key: String] = [:]

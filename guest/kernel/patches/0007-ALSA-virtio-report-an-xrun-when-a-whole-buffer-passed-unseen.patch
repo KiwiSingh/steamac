@@ -1,0 +1,143 @@
+From: steamac <steamac@localhost>
+Subject: [PATCH] ALSA: virtio: report an xrun when a whole buffer passed unseen
+
+The pointer callbacks hand the wrapped hw_ptr to
+snd_pcm_indirect_{playback,capture}_pointer(), and both these helpers and
+the PCM core derive the progress since the previous call from that
+position modulo the buffer size. When the device completes a whole
+buffer between two pointer calls - the elapsed-period work is delayed by
+a buffer time or more under guest load while the device keeps completing
+messages, easy with PipeWire's 2048-frame buffers - the progress looks
+like zero. For playback the bytes then stay in pcm_indirect.hw_ready, so
+snd_pcm_indirect_playback_transfer() never sends another message, and the
+core's hw_ptr stays a buffer behind (the jiffies-based correction only
+runs from the period interrupt, and PipeWire's own avail queries usually
+come first), so the application sees a full buffer forever: the stream
+stalls for good while staying RUNNING, with appl_ptr - hw_ptr equal to
+the buffer size and the device idle.
+
+Count the bytes completed since the last pointer call. A whole buffer
+means the device consumed (or filled) everything the application had
+provided for, i.e. an xrun: report SNDRV_PCM_POS_XRUN so the application
+recovers through the usual stop/prepare path instead of stalling.
+---
+--- a/sound/virtio/virtio_pcm.h
++++ b/sound/virtio/virtio_pcm.h
+@@ -29,6 +29,7 @@
+  *        substream operators.
+  * @buffer_bytes: Current buffer size in bytes.
+  * @hw_ptr: Substream hardware pointer value in bytes [0 ... buffer_bytes).
++ * @hw_unseen: Bytes completed since the last pointer callback.
+  * @xfer_enabled: Data transfer state (0 - off, 1 - on).
+  * @xfer_xrun: Data underflow/overflow state (0 - no xrun, 1 - xrun).
+  * @stopped: True if the substream is stopped and must be released on the device
+@@ -53,6 +54,7 @@
+ 	spinlock_t lock;
+ 	size_t buffer_bytes;
+ 	size_t hw_ptr;
++	size_t hw_unseen;
+ 	bool xfer_enabled;
+ 	bool xfer_xrun;
+ 	bool stopped;
+--- a/sound/virtio/virtio_pcm_msg.c
++++ b/sound/virtio/virtio_pcm_msg.c
+@@ -321,6 +321,7 @@
+ 				     size_t written_bytes)
+ {
+ 	struct virtio_pcm_substream *vss = msg->substream;
++	size_t bytes;
+ 
+ 	/*
+ 	 * hw_ptr always indicates the buffer position of the first I/O message
+@@ -334,9 +335,12 @@
+ 	 */
+ 	if (vss->direction == SNDRV_PCM_STREAM_PLAYBACK ||
+ 	    written_bytes <= sizeof(msg->status))
+-		vss->hw_ptr += msg->length;
++		bytes = msg->length;
+ 	else
+-		vss->hw_ptr += written_bytes - sizeof(msg->status);
++		bytes = written_bytes - sizeof(msg->status);
++
++	vss->hw_ptr += bytes;
++	vss->hw_unseen += bytes;
+ 
+ 	if (vss->hw_ptr >= vss->buffer_bytes)
+ 		vss->hw_ptr -= vss->buffer_bytes;
+--- a/sound/virtio/virtio_pcm_ops.c
++++ b/sound/virtio/virtio_pcm_ops.c
+@@ -300,6 +300,7 @@
+ 	vss->suspended = false;
+ 	vss->msg_count = 0;
+ 	virtsnd_pcm_msg_reset(vss);
++	vss->hw_unseen = 0;
+ 
+ 	memset(&vss->pcm_indirect, 0, sizeof(vss->pcm_indirect));
+ 	vss->pcm_indirect.sw_buffer_size =
+@@ -430,6 +431,38 @@
+ 	return 0;
+ }
+ 
++/*
++ * The pointer callback can only report a position inside the buffer, and both
++ * snd_pcm_indirect_{playback,capture}_pointer() and the PCM core derive the
++ * progress from it modulo the buffer size. A whole buffer completed since the
++ * previous call (the elapsed-period work delayed by a buffer time or more while
++ * the device kept completing messages) therefore looks like no progress: for
++ * playback the bytes stay in pcm_indirect.hw_ready and the core's hw_ptr stays a
++ * buffer behind, so nothing more is ever transferred and the stream stalls with
++ * a full buffer while still RUNNING. The device has then played (or captured)
++ * everything the application had provided for, which is an xrun: report it.
++ */
++static snd_pcm_uframes_t
++virtsnd_pcm_pointer(struct snd_pcm_substream *substream,
++		    snd_pcm_uframes_t (*pointer)(struct snd_pcm_substream *,
++						 struct snd_pcm_indirect *,
++						 unsigned int))
++{
++	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
++	size_t hw_ptr, unseen;
++
++	scoped_guard(spinlock_irqsave, &vss->lock) {
++		hw_ptr = vss->hw_ptr;
++		unseen = vss->hw_unseen;
++		vss->hw_unseen = 0;
++	}
++
++	if (unseen >= vss->buffer_bytes)
++		return SNDRV_PCM_POS_XRUN;
++
++	return pointer(substream, &vss->pcm_indirect, hw_ptr);
++}
++
+ /**
+  * virtsnd_pcm_pb_pointer() - Get the current hardware position for the PCM
+  *                         substream for playback.
+@@ -441,11 +474,8 @@
+ static snd_pcm_uframes_t
+ virtsnd_pcm_pb_pointer(struct snd_pcm_substream *substream)
+ {
+-	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+-
+-	return snd_pcm_indirect_playback_pointer(substream,
+-		&vss->pcm_indirect,
+-		vss->hw_ptr);
++	return virtsnd_pcm_pointer(substream,
++				   snd_pcm_indirect_playback_pointer);
+ }
+ 
+ /**
+@@ -459,11 +489,8 @@
+ static snd_pcm_uframes_t
+ virtsnd_pcm_cp_pointer(struct snd_pcm_substream *substream)
+ {
+-	struct virtio_pcm_substream *vss = snd_pcm_substream_chip(substream);
+-
+-	return snd_pcm_indirect_capture_pointer(substream,
+-		&vss->pcm_indirect,
+-		vss->hw_ptr);
++	return virtsnd_pcm_pointer(substream,
++				   snd_pcm_indirect_capture_pointer);
+ }
+ 
+ static void virtsnd_pcm_trans_copy(struct snd_pcm_substream *substream,

@@ -31,6 +31,16 @@ setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
 if options.selftestDisplay { SelfTest.run(options) }
 if options.selftestOverlay { OverlaySelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
+if options.selftestProvision { ProvisionSelfTest.run(options) }
+if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
+if let disk = options.showSSHPassword {
+    guard let id = GuestPassword.identity(ofDisk: disk) else { fatal("\(disk): not a GPT disk image") }
+    guard let state = GuestPassword.state(disk: id), let pw = GuestPassword.password(disk: id) else {
+        fatal("no generated SSH password for \(disk) (disk \(id)); enable SSH in Settings > Advanced")
+    }
+    print("user \(GuestPassword.user)\npassword \(pw)\nstate \(state.rawValue)\ndisk \(id)")
+    exit(0)
+}
 // The process the user runs supervises one VM process per boot (see Supervisor); it re-reads
 // the settings before every boot.
 if !Supervisor.isChild {
@@ -159,6 +169,10 @@ do {
         log("guest is rebooting: the VM will be restarted")
     }
     progress.onGameName = { id, name in settings.setGameName(name, for: id) }
+    progress.onProvision = { ok, reason in Provision.finished(ok: ok, reason: reason, payload: options.provisionPayload) }
+    if let p = options.provisionPayload { log("provision: first boot of this disk: payload \(p) attached read-only, \(Provision.cmdlineFlag)") }
+    progress.onConfig = { ok, reason in Provision.configFinished(ok: ok, reason: reason, payload: options.configPayload) }
+    if let c = options.configPayload { log("config: new SteamOS password pending: \(c.path) attached read-only, \(Provision.configFlag)") }
 
     var inputs: VMInputs?
     if !options.headless {
@@ -249,7 +263,8 @@ do {
     wc.attach(progress: progress)
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
-                                          vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound)
+                                          vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
+                                          diskPath: options.disks.first?.path)
     let settingsWindow = SettingsWindowController(context: settingsContext)
     lifecycle.settingsContext = settingsContext
     lifecycle.settingsWindow = settingsWindow

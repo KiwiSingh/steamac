@@ -15,14 +15,18 @@ final class SettingsContext: ObservableObject {
     /// Whether the running VM has the virtual Xbox pad / a sound device (next-start state).
     var vmHasPad: Bool
     var vmHasSound: Bool
+    /// The running VM's main disk (nil without a VM).
+    let diskPath: String?
     @Published var restartRequested = false
 
-    init(settings: LauncherSettings, sound: SoundControl?, restart: (() -> Void)?, vmHasPad: Bool, vmHasSound: Bool) {
+    init(settings: LauncherSettings, sound: SoundControl?, restart: (() -> Void)?, vmHasPad: Bool, vmHasSound: Bool,
+         diskPath: String? = nil) {
         self.settings = settings
         self.sound = sound
         self.restart = restart
         self.vmHasPad = vmHasPad
         self.vmHasSound = vmHasSound
+        self.diskPath = diskPath
     }
 }
 
@@ -61,7 +65,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             case .mouse: return 470
             case .controller: return 620
             case .sound: return 440
-            case .advanced: return 560
+            case .advanced: return 720
             }
         }
     }
@@ -121,7 +125,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// The window as drawn (title bar + toolbar + content) at the screen's backing scale, for
     /// --selftest-settings and the control FIFO.
-    func snapshot() -> NSBitmapImageRep? {
+    func snapshot() -> NSBitmapImageRep? { SettingsWindowController.snapshot(window) }
+
+    static func snapshot(_ window: NSWindow) -> NSBitmapImageRep? {
         guard let frameView = window.contentView?.superview else { return nil }
         frameView.layoutSubtreeIfNeeded()
         let scale = window.backingScaleFactor
@@ -685,9 +691,17 @@ private struct SoundTab: View {
 
 private struct AdvancedTab: View {
     @EnvironmentObject var settings: LauncherSettings
+    @EnvironmentObject var context: SettingsContext
     @State private var confirmReset = false
+    @StateObject private var password = GuestPasswordModel()
     static let maxCPUs = ProcessInfo.processInfo.activeProcessorCount
     static let maxGiB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) - 4)
+
+    /// The disk the next start boots (its generated SSH password is shown): Settings value, else
+    /// the running VM's disk, else the default location.
+    private var nextDisk: String? {
+        settings.diskImage.isEmpty ? (context.diskPath ?? AppBundle.defaultDisk()) : settings.diskImage
+    }
 
     private var diskStatus: (String, Bool) {
         if !settings.diskImage.isEmpty {
@@ -719,14 +733,56 @@ private struct AdvancedTab: View {
                 }
             }
             Section {
+                Toggle(isOn: Binding(get: { settings.sshEnabled }, set: { on in
+                    settings.sshEnabled = on
+                    if on { password.ensure() }
+                })) {
+                    Label2(title: "Enable SSH", detail: "Off: no port on the Mac and sshd masked in SteamOS. Turning it on "
+                           + "generates a password for the user steamos (kept on, but unused, when SSH is off).",
+                           now: false, key: .sshEnabled)
+                }
                 HStack {
-                    Label2(title: "SSH port", detail: "ssh -p PORT deck@127.0.0.1 — 0 disables.", now: false, key: .sshPort)
+                    Label2(title: "SSH port", now: false, key: .sshPort)
                     Spacer()
                     TextField("", value: Binding(get: { settings.sshPort },
-                                                 set: { if $0 == 0 || (1024...65535).contains($0) { settings.sshPort = $0 } }),
+                                                 set: { if (1024...65535).contains($0) { settings.sshPort = $0 } }),
                               format: .number.grouping(.never))
                         .frame(width: 70).multilineTextAlignment(.trailing)
                 }
+                .disabled(!settings.sshEnabled)
+                if password.disk == nil {
+                    LabeledContent("Login") { Text("no disk image").foregroundStyle(.secondary) }
+                } else if let state = password.state {
+                    LabeledContent("User") { Text(GuestPassword.user).textSelection(.enabled) }
+                    LabeledContent("Password") {
+                        HStack {
+                            Text(password.shown ?? "••••••••••••••••••••").font(.body.monospaced()).textSelection(.enabled)
+                            Button(password.shown == nil ? "Show" : "Hide") { password.toggleShown() }
+                            Button("Copy") { password.copy(password: true, port: settings.sshPort) }
+                        }
+                    }
+                    LabeledContent("Command") {
+                        HStack {
+                            Text("ssh -p \(settings.sshPort) \(GuestPassword.user)@127.0.0.1").font(.callout.monospaced())
+                                .textSelection(.enabled)
+                            Button("Copy") { password.copy(password: false, port: settings.sshPort) }
+                        }
+                    }
+                    HStack {
+                        Text(state == .applied ? "Password applied in SteamOS" : "Password will apply on next start")
+                            .font(.caption).foregroundStyle(state == .applied ? Color.secondary : Color.orange)
+                        Spacer()
+                        Button("Regenerate Password") { password.regenerate() }
+                    }
+                } else {
+                    HStack {
+                        Text("No generated password for this disk (disks built with Docker use steamos).")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Generate Password") { password.ensure() }
+                    }
+                }
+                if let error = password.error { Text(error).font(.caption).foregroundStyle(.red) }
                 Toggle(isOn: $settings.network) {
                     Label2(title: "Network", detail: "Off: no virtio-net / gvproxy (offline guest, also no SSH).",
                            now: false, key: .network)
@@ -734,14 +790,19 @@ private struct AdvancedTab: View {
             }
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label2(title: "Disk image", detail: "SteamOS raw GPT disk, used in place (never copied).",
+                    Label2(title: "Disk image", detail: "SteamOS raw GPT disk, used in place (never copied). "
+                           + "Create New Disk… downloads SteamOS from Valve (no Docker needed).",
                            now: false, key: .diskImage)
                     HStack {
                         Text(diskStatus.0)
                             .font(.callout).foregroundStyle(diskStatus.1 ? Color.secondary : Color.red)
                             .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                         Spacer()
-                        Button("Choose…") { chooseDisk() }
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Create New Disk…") { CreateDiskWindowController.show(settings: settings) }
+                        Button("Use Existing Disk…") { chooseDisk() }
                         Button("Use Default") { settings.diskImage = "" }.disabled(settings.diskImage.isEmpty)
                     }
                 }
@@ -756,6 +817,8 @@ private struct AdvancedTab: View {
                 }
             }
         }
+        .onAppear { password.load(disk: nextDisk) }
+        .onChange(of: settings.diskImage) { password.load(disk: nextDisk) }
         .confirmationDialog("Reset all FX Steam Launcher settings to their defaults?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { settings.resetAll() }
         } message: {
@@ -773,5 +836,57 @@ private struct AdvancedTab: View {
             panel.directoryURL = URL(fileURLWithPath: (settings.diskImage as NSString).deletingLastPathComponent)
         }
         if panel.runModal() == .OK, let url = panel.url { settings.diskImage = url.path }
+    }
+}
+
+/// Settings > Advanced view of the next-start disk's generated SSH password (GuestPassword).
+/// The plaintext is read from the Keychain only for Show/Copy.
+private final class GuestPasswordModel: ObservableObject {
+    @Published private(set) var disk: String?
+    @Published private(set) var state: GuestPassword.State?
+    @Published private(set) var shown: String?
+    @Published private(set) var error: String?
+
+    func load(disk path: String?) {
+        disk = path.flatMap { GuestPassword.identity(ofDisk: $0) }
+        shown = nil
+        error = nil
+        refresh()
+    }
+
+    private func refresh() { state = disk.flatMap { GuestPassword.state(disk: $0) } }
+
+    /// SSH switched on: a disk without a generated password gets one.
+    func ensure() {
+        guard let disk, GuestPassword.state(disk: disk) == nil else { return }
+        regenerate()
+    }
+
+    func regenerate() {
+        guard let disk else { return }
+        do {
+            let pw = try GuestPassword.generate(disk: disk)
+            if shown != nil { shown = pw }
+            error = nil
+        } catch {
+            self.error = "\(error)"
+        }
+        refresh()
+    }
+
+    func toggleShown() {
+        if shown != nil { shown = nil; return }
+        guard let disk else { return }
+        shown = GuestPassword.password(disk: disk)
+        if shown == nil { error = "The password could not be read from the Keychain." }
+    }
+
+    func copy(password: Bool, port: Int) {
+        let text: String?
+        if password { text = disk.flatMap { GuestPassword.password(disk: $0) } }
+        else { text = "ssh -p \(port) \(GuestPassword.user)@127.0.0.1" }
+        guard let text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }

@@ -46,7 +46,9 @@ tail -n1 "$obj/check-config.log"
 
 echo ">> building Image with -j$JOBS"
 make $make_args -j"$JOBS" Image
-cp "$obj/arch/arm64/boot/Image" /out/Image
+# temp + rename: a VM booting meanwhile reads either the old or the new Image, never half.
+cp "$obj/arch/arm64/boot/Image" /out/Image.tmp
+mv -f /out/Image.tmp /out/Image
 cp "$obj/.config" /out/kernel.config
 cp "$obj/check-config.log" /out/kernel-check-config.log
 echo ">> $(cat "$obj/include/config/kernel.release")"
