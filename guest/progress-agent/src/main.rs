@@ -10,6 +10,8 @@
 //!   log <text>                    detail line ("583 / 662 MB · 12.4 MB/s")
 //!   ready                         Steam UI is on screen
 //!   shutdown <poweroff|reboot>    session torn down by a system shutdown
+//!   focus steam | focus game <appid>   gamescope's focused app (GAMESCOPE_FOCUSED_APP;
+//!                                 0 and 769 = Steam UI), for the launcher's pointer grab
 //!
 //! Lifecycle
 //!   1. port missing (older launcher) -> exit 0 quietly.
@@ -18,7 +20,9 @@
 //!      window has been on screen for 1.5 s -> `ready`.
 //!   3. `ready` is sent at most once per boot (marker in /tmp, keyed by
 //!      boot_id): a restarted session/agent goes straight to step 4.
-//!   4. Idle in sigsuspend(2) (no polling, no CPU) only to report the shutdown:
+//!   4. Idle in ppoll(2) on the X connection (no polling, no CPU): report
+//!      focus changes (focus.rs; also once at start, after `ready` and after
+//!      every X reconnect) and wait for the shutdown:
 //!      SIGTERM -> classify (shutdown.rs, bounded ~1.5 s) -> `shutdown <kind>`
 //!      or nothing if only the session ends -> close port, exit 0.
 //!
@@ -31,6 +35,7 @@
 //!   FX_PROGRESS_STEAM_LOG=<path>  bootstrapper log to follow
 //!   FX_PROGRESS_FORCE=1       ignore the once-per-boot `ready` marker
 
+mod focus;
 mod port;
 mod shutdown;
 mod steamlog;
@@ -234,8 +239,9 @@ fn ready_marker() -> String {
     format!("/tmp/.fx-progress-ready-{}", unsafe { libc::getuid() })
 }
 
-/// Boot progress until `ready` (or give-up / SIGTERM).
-fn report_boot(rep: &mut Reporter) {
+/// Boot progress until `ready` (or give-up / SIGTERM); focus changes are
+/// reported along the way.
+fn report_boot(rep: &mut Reporter, focus: &mut focus::Focus) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
     let log_path = std::env::var("FX_PROGRESS_STEAM_LOG")
         .unwrap_or_else(|_| format!("{home}/.local/share/Steam/logs/bootstrap_log.txt"));
@@ -290,6 +296,7 @@ fn report_boot(rep: &mut Reporter) {
             }
         }
         rep.port.flush();
+        focus.pump(&mut rep.port, false);
         if now.duration_since(begin) > GIVE_UP {
             eprintln!("fx-progress: no Steam UI after {} min, stop reporting boot progress", GIVE_UP.as_secs() / 60);
             return;
@@ -319,17 +326,22 @@ fn main() {
         pct: -1,
     };
 
+    let mut focus = focus::Focus::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
     let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
     if already {
-        eprintln!("fx-progress: ready already reported this boot; waiting for shutdown only");
+        eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
     } else {
-        report_boot(&mut rep);
+        report_boot(&mut rep, &mut focus);
     }
+    // Once after `ready` (or at agent start on a later session): current focus.
+    focus.pump(&mut rep.port, true);
 
-    // Idle until the session is torn down. The signals are blocked around the
-    // flag check and atomically unblocked by sigsuspend(2), so a SIGTERM can
-    // not slip in between check and wait; no wake-ups while idle.
+    // Idle until the session is torn down: block in ppoll(2) on the X
+    // connection (focus changes) with the termination signals blocked
+    // everywhere except inside ppoll, so a SIGTERM can neither be lost between
+    // the flag check and the wait nor delay the shutdown report. Without an X
+    // connection (gamescope restarting) it retries once a second.
     unsafe {
         let mut block: libc::sigset_t = std::mem::zeroed();
         let mut old: libc::sigset_t = std::mem::zeroed();
@@ -339,14 +351,24 @@ fn main() {
         }
         libc::sigprocmask(libc::SIG_BLOCK, &block, &mut old);
         while !terminated() {
-            if rep.port.has_pending() {
-                libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
-                rep.port.flush();
-                nap(TICK_MS);
-                libc::sigprocmask(libc::SIG_BLOCK, &block, std::ptr::null_mut());
+            rep.port.flush();
+            focus.pump(&mut rep.port, false);
+            let mut pfd = libc::pollfd { fd: focus.fd().unwrap_or(-1), events: libc::POLLIN, revents: 0 };
+            let wait_ms: i64 = if rep.port.has_pending() {
+                TICK_MS as i64
+            } else if focus.connected() {
+                -1
             } else {
-                libc::sigsuspend(&old);
-            }
+                1000
+            };
+            let ts;
+            let tsp = if wait_ms < 0 {
+                std::ptr::null()
+            } else {
+                ts = libc::timespec { tv_sec: (wait_ms / 1000) as _, tv_nsec: ((wait_ms % 1000) * 1_000_000) as _ };
+                &ts as *const libc::timespec
+            };
+            libc::ppoll(&mut pfd, 1, tsp, &old);
         }
         libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
     }

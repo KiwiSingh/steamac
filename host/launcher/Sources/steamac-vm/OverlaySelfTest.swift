@@ -24,7 +24,7 @@ enum OverlaySelfTest {
         let presenter = Presenter(display: display, renderer: renderer)
         display.sink = presenter
         let W = o.displayWidth, H = o.displayHeight
-        let wc = WindowController(title: windowTitleForTest, width: W, height: H, renderer: renderer, inputs: nil, mouseMode: .absolute)
+        let wc = WindowController(title: windowTitleForTest, width: W, height: H, renderer: renderer, inputs: nil, mouseMode: .auto)
         presenter.view = wc.view
         wc.view.metalLayer.framebufferOnly = false
         presenter.onScanoutResize = { w, h in wc.scanoutResized(width: w, height: h) }

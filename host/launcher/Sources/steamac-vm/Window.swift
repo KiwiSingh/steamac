@@ -32,6 +32,11 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var lastAbs: (Int32, Int32) = (-1, -1)
     private var captured = false
     private var relRemainder = (0.0, 0.0)
+    /// Auto mode: where the guest cursor is (guest pixels); nil = unknown, re-anchor first.
+    private var guestCursor: (Int, Int)?
+    private var lastPointerMotion = Date.distantPast
+    /// What the guest says has focus (progress agent `focus …`); Steam until told otherwise.
+    private(set) var guestFocus: GuestFocus = .steam
     private var wheelHiRemainder = (0.0, 0.0)   // (vertical, horizontal) in 1/120 notch units
     private var wheelLoAccum: (Int32, Int32) = (0, 0)
     private var scanoutSize: (Int, Int)
@@ -156,9 +161,9 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func updateTitle() {
         if captured {
-            setStatus("pointer grabbed (Ctrl+Option releases)")
-        } else if inputs != nil && mouseMode == .capture {
-            setStatus("click to grab pointer")
+            setStatus("mouse captured — Ctrl+Option releases")
+        } else if inputs != nil && clickCaptures {
+            setStatus("click to capture the mouse")
         } else {
             setStatus(nil)
         }
@@ -173,6 +178,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay.update(progress.state)
         let previous = progress.onChange
         progress.onChange = { [weak self] s in previous?(s); self?.overlay.update(s) }
+        let previousFocus = progress.onFocus
+        progress.onFocus = { [weak self] f in previousFocus?(f); self?.guestFocusChanged(f) }
         let previousReady = progress.onReady
         progress.onReady = { [weak self] in previousReady?(); self?.overlay.hide() }
         let previousShutdown = progress.onShutdown
@@ -276,6 +283,42 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: pointer
+    //
+    // gamescope (SteamOS gaming mode) ignores absolute pointer motion: wlserver only handles
+    // wlr_pointer `motion` (relative), never `motion_absolute`, so a virtio tablet's ABS_X/ABS_Y
+    // never moves its cursor. It applies relative motion *unaccelerated* (unaccel_dx/dy) and clamps
+    // the cursor to the focused surface. So in `auto` mode the host pointer is mirrored with exact
+    // relative deltas through the virtio mouse, after anchoring the guest cursor at the top-left
+    // corner with one large negative delta whenever its position is unknown (pointer entered the
+    // picture, idle, after a capture). The absolute tablet is used only in `tablet` mode and in KDE
+    // desktop mode (`focus desktop`), where the compositor supports absolute pointers.
+
+    /// Idle time after which the guest cursor may have been moved by the guest (warps, a game's
+    /// smaller surface clamping); the next motion re-anchors.
+    static let reanchorAfterIdle: TimeInterval = 1.5
+
+    private var usesTablet: Bool {
+        mouseMode == .tablet || (mouseMode == .auto && guestFocus == .desktop)
+    }
+
+    /// A click in the picture captures the mouse instead of being forwarded.
+    private var clickCaptures: Bool {
+        switch mouseMode {
+        case .capture: return true
+        case .tablet: return false
+        case .auto: if case .game = guestFocus { return true } else { return false }
+        }
+    }
+
+    func guestFocusChanged(_ f: GuestFocus) {
+        guard f != guestFocus else { return }
+        guestFocus = f
+        log("input: guest focus \(f)")
+        guestCursor = nil
+        // Back in Steam / desktop: give the pointer back (the Steam UI wants a normal cursor).
+        if captured && mouseMode == .auto && !clickCaptures { releasePointer() }
+        updateTitle()
+    }
 
     func grabPointer() {
         guard inputs != nil, !captured else { return }
@@ -284,6 +327,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         relRemainder = (0, 0)
         CGAssociateMouseAndMouseCursorPosition(0)
         NSCursor.hide()
+        log("input: mouse captured")
         updateTitle()
     }
 
@@ -294,6 +338,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         CGAssociateMouseAndMouseCursorPosition(1)
         NSCursor.unhide()
         lastAbs = (-1, -1)
+        guestCursor = nil
+        log("input: mouse released")
         updateTitle()
     }
 
@@ -309,6 +355,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         pressedKeys.removeAll()
         releasePointer()
         releaseButtons()
+        guestCursor = nil
     }
 
     private func button(for e: NSEvent) -> UInt16 {
@@ -328,7 +375,14 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.fitRect.contains(view.convert(e.locationInWindow, from: nil))
     }
 
-    private func moveAbsolute(_ e: NSEvent) {
+    /// Host pointer position in guest pixels (scanout size), clamped to the picture.
+    private func guestPoint(_ e: NSEvent) -> (Int, Int) {
+        let (ux, uy) = view.unitPoint(for: e)
+        let (w, h) = scanoutSize
+        return (min(w - 1, max(0, Int(ux * Double(w)))), min(h - 1, max(0, Int(uy * Double(h)))))
+    }
+
+    private func moveTablet(_ e: NSEvent) {
         guard let inputs else { return }
         let (ux, uy) = view.unitPoint(for: e)
         let x = Int32((ux * Double(InputDevices.absMax)).rounded())
@@ -338,30 +392,55 @@ final class WindowController: NSObject, NSWindowDelegate {
         inputs.tablet.send([(EV.ABS, ABS.X, x), (EV.ABS, ABS.Y, y)])
     }
 
-    private func moveRelative(_ e: NSEvent) {
+    /// Auto mode: steer the guest cursor onto the host pointer with relative motion.
+    private func moveEmulated(_ e: NSEvent) {
         guard let inputs else { return }
-        let fx = Double(e.deltaX) + relRemainder.0
-        let fy = Double(e.deltaY) + relRemainder.1
-        let dx = Int32(fx.rounded(.towardZero)), dy = Int32(fy.rounded(.towardZero))
-        relRemainder = (fx - Double(dx), fy - Double(dy))
+        let target = guestPoint(e)
+        let now = Date()
+        if guestCursor == nil || now.timeIntervalSince(lastPointerMotion) > WindowController.reanchorAfterIdle {
+            let far = -Int32(4 * (scanoutSize.0 + scanoutSize.1))
+            inputs.mouse.send([(EV.REL, REL.X, far), (EV.REL, REL.Y, far)])
+            guestCursor = (0, 0)
+        }
+        lastPointerMotion = now
+        let (cx, cy) = guestCursor!
+        let dx = Int32(target.0 - cx), dy = Int32(target.1 - cy)
+        guard dx != 0 || dy != 0 else { return }
         var ev: [(UInt16, UInt16, Int32)] = []
         if dx != 0 { ev.append((EV.REL, REL.X, dx)) }
         if dy != 0 { ev.append((EV.REL, REL.Y, dy)) }
         inputs.mouse.send(ev)
+        guestCursor = target
+    }
+
+    /// Captured: raw relative motion (host points = guest pixels; no acceleration in gamescope).
+    func moveRelative(dx: Double, dy: Double) {
+        guard let inputs else { return }
+        let fx = dx + relRemainder.0
+        let fy = dy + relRemainder.1
+        let ix = Int32(fx.rounded(.towardZero)), iy = Int32(fy.rounded(.towardZero))
+        relRemainder = (fx - Double(ix), fy - Double(iy))
+        var ev: [(UInt16, UInt16, Int32)] = []
+        if ix != 0 { ev.append((EV.REL, REL.X, ix)) }
+        if iy != 0 { ev.append((EV.REL, REL.Y, iy)) }
+        inputs.mouse.send(ev)
     }
 
     func pointerMoved(_ e: NSEvent) {
-        if captured { moveRelative(e) } else { moveAbsolute(e) }
+        if captured {
+            moveRelative(dx: Double(e.deltaX), dy: Double(e.deltaY))
+        } else if inPicture(e) || NSEvent.pressedMouseButtons != 0 {
+            if usesTablet { moveTablet(e) } else { moveEmulated(e) }
+        } else {
+            guestCursor = nil   // left the picture: re-anchor on the way back in
+        }
     }
 
     func pointerButton(_ e: NSEvent, down: Bool) {
         guard let inputs else { return }
         let b = button(for: e)
         if down { userInput() }
-        // Captured: everything on the relative mouse. Absolute mode: side/extra buttons also go
-        // there, because the tablet only advertises LEFT/RIGHT/MIDDLE (see InputDevices).
-        let viaMouse = captured || !InputDevices.tabletButtons.contains(b)
-        if viaMouse && (captured || !down || inPicture(e)) {
+        if captured {
             if down ? mouseButtons.insert(b).inserted : mouseButtons.remove(b) != nil {
                 inputs.mouse.send([(EV.KEY, b, down ? 1 : 0)])
             }
@@ -369,21 +448,36 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
         if down {
             guard inPicture(e) else { return }
-            if mouseMode == .capture {
-                grabPointer()   // the grabbing click itself is not forwarded
+            if clickCaptures {
+                grabPointer()   // the capturing click itself is not forwarded
                 return
             }
-            moveAbsolute(e)
-            if tabletButtons.insert(b).inserted { inputs.tablet.send([(EV.KEY, b, 1)]) }
-        } else {
-            if tabletButtons.remove(b) != nil { inputs.tablet.send([(EV.KEY, b, 0)]) }
+        }
+        // The tablet only advertises LEFT/RIGHT/MIDDLE (see InputDevices); other buttons and the
+        // auto mode use the relative mouse.
+        if usesTablet && InputDevices.tabletButtons.contains(b) {
+            if down {
+                moveTablet(e)
+                if tabletButtons.insert(b).inserted { inputs.tablet.send([(EV.KEY, b, 1)]) }
+            } else if tabletButtons.remove(b) != nil {
+                inputs.tablet.send([(EV.KEY, b, 0)])
+            }
+            return
+        }
+        if down {
+            if !usesTablet { moveEmulated(e) }
+            if mouseButtons.insert(b).inserted { inputs.mouse.send([(EV.KEY, b, 1)]) }
+        } else if mouseButtons.remove(b) != nil {
+            inputs.mouse.send([(EV.KEY, b, 0)])
         }
     }
 
     func scroll(_ e: NSEvent) {
         guard inputs != nil else { return }
-        if !captured && !inPicture(e) { return }
-        if !captured { moveAbsolute(e) }
+        if !captured {
+            guard inPicture(e) else { return }
+            if usesTablet { moveTablet(e) } else { moveEmulated(e) }
+        }
         // 120 = one wheel notch. Precise (trackpad) deltas are points: ~30 pt per notch.
         let scale = e.hasPreciseScrollingDeltas ? 4.0 : 120.0
         sendWheel(hiResY: Double(e.scrollingDeltaY) * scale, hiResX: -Double(e.scrollingDeltaX) * scale)
@@ -407,7 +501,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if hx != 0 { ev.append((EV.REL, REL.HWHEEL_HI_RES, hx)) }
         if ly != 0 { ev.append((EV.REL, REL.WHEEL, ly)) }
         if lx != 0 { ev.append((EV.REL, REL.HWHEEL, lx)) }
-        (captured ? inputs.mouse : inputs.tablet).send(ev)
+        (!captured && usesTablet ? inputs.tablet : inputs.mouse).send(ev)
     }
 }
 

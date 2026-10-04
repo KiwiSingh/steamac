@@ -12,6 +12,13 @@ struct ProgressState: Equatable {
     var indeterminate = false
 }
 
+/// What has input focus in the guest, as reported by the progress agent.
+enum GuestFocus: Equatable {
+    case steam
+    case game(Int)
+    case desktop
+}
+
 /// Boot / shutdown progress model (local://overlay-contract.md). Fed with hvc0 console lines
 /// (host-side stages, shutdown detection) and with fx.progress lines from the guest agent.
 /// All methods run on the main thread.
@@ -33,6 +40,8 @@ final class BootProgress {
     var onShutdown: ((_ reboot: Bool) -> Void)?
     /// The guest is going to reboot (and the host did not ask for a power-off).
     var onRebootIntent: (() -> Void)?
+    /// Which guest app has focus (`focus steam` / `focus game <appid>` / `focus desktop`).
+    var onFocus: ((GuestFocus) -> Void)?
 
     private var sawConsole = false
     private var okLines = 0
@@ -115,6 +124,14 @@ final class BootProgress {
         case "shutdown":
             guard parts.count >= 2 else { return }
             beginShutdown(reboot: parts[1] == "reboot")
+        case "focus":
+            guard parts.count >= 2 else { return }
+            switch parts[1] {
+            case "steam": onFocus?(.steam)
+            case "desktop": onFocus?(.desktop)
+            case "game": onFocus?(.game(parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0))
+            default: break
+            }
         default:
             break   // forward compatible
         }

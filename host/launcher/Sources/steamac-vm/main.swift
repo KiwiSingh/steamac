@@ -202,6 +202,9 @@ do {
         ResizeSelfTest.start(after: d, window: wc, display: display, progress: progress,
                              base: (options.frameDumpPath as NSString).deletingPathExtension, dump: dumpFrames)
     }
+    if let path = options.controlFifo {
+        DebugControl.start(path: path, window: wc, progress: progress) { dumpFrames(to: $0) }
+    }
     console.start()
     vm.start()
     withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch)) { app.run() }

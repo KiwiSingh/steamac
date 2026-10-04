@@ -23,7 +23,7 @@ enum SelfTest {
             let app = SteamacApplication.shared
             app.setActivationPolicy(.regular)
             let w = WindowController(title: "steamac-vm display self-test", width: o.displayWidth, height: o.displayHeight,
-                                     renderer: renderer, inputs: nil, mouseMode: .absolute)
+                                     renderer: renderer, inputs: nil, mouseMode: .auto)
             presenter.view = w.view
             w.view.metalLayer.framebufferOnly = false   // allow reading back what the window presents
             presenter.onScanoutResize = { [weak w] width, height in w?.scanoutResized(width: width, height: height) }

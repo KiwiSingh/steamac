@@ -6,8 +6,14 @@ struct DiskSpec {
 }
 
 enum MouseMode: String {
-    case absolute   // tablet only; Ctrl+Cmd+G grabs explicitly
-    case capture    // a click in the window grabs the pointer (relative mouse)
+    /// Default. The host pointer drives the guest cursor 1:1 through the relative mouse
+    /// (gamescope ignores absolute pointer motion); while a game is focused in the guest, a click
+    /// captures the pointer (raw relative motion for mouse-look), Ctrl+Option releases.
+    case auto
+    /// Absolute virtio tablet (for compositors that support absolute pointers, e.g. KDE desktop).
+    case tablet
+    /// Always click-to-capture (relative mouse only).
+    case capture
 }
 
 struct Options {
@@ -31,7 +37,8 @@ struct Options {
     var gpuFlags: UInt32? = nil
     var gvproxyPath: String?
     var frameDumpPath = "steamac-frame.png"
-    var mouseMode: MouseMode = .absolute
+    var mouseMode: MouseMode = .auto
+    var controlFifo: String?
     var gamepad = true
     var krunLogLevel: UInt32 = 2
     var selftestDisplay = false
@@ -44,7 +51,7 @@ struct Options {
                       [--cpus N] [--mem MiB] [--display WxH] [--refresh HZ] [--headless]
                       [--log FILE] [--no-net] [--ssh-port PORT] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
-                      [--mouse absolute|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
+                      [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
 
@@ -72,7 +79,9 @@ struct Options {
       --gpu-flags HEX      virglrenderer flags (default VENUS|NO_VIRGL = 0xc0)
       --gvproxy PATH       gvproxy binary (default: <exe dir>/host/bin/gvproxy, Homebrew, PATH)
       --frame-dump PNG     where SIGUSR1 writes the current frame (default ./steamac-frame.png)
-      --mouse MODE         absolute (default) or capture (click grabs the pointer)
+      --mouse MODE         auto (default): pointer follows the host cursor 1:1; while a game has focus
+                           a click captures the mouse (relative, for mouse-look), Ctrl+Option releases.
+                           tablet: absolute virtio tablet (KDE desktop mode). capture: always click-to-capture.
       --no-gamepad         do not create the virtual Xbox 360 pad
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
 
@@ -89,8 +98,12 @@ struct Options {
       --resize-selftest S  S seconds after Steam is ready, resize the window 1600x1000 -> fullscreen ->
                            windowed -> 1280x800, wait for the guest's new scanout each time and dump
                            frames to <--frame-dump>-resize-N-*.png
+      --control-fifo PATH  create a FIFO that accepts scripted window input, one command per line:
+                           move UX UY (0..1 in the picture) | button left|right|middle down|up |
+                           click left|right|middle | wheel NOTCHES | rel DX DY | key KEYCODE |
+                           grab | release | guest LINE (as if sent on fx.progress) | dump PNG
 
-    Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G grab pointer, Ctrl+Option release pointer.
+    Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release.
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
     Console: hvc0 <-> this terminal (raw mode when stdin is a TTY; Ctrl+] twice force-quits).
     """
@@ -153,8 +166,9 @@ struct Options {
             case "--frame-dump": o.frameDumpPath = try value(a)
             case "--mouse":
                 let v = try value(a)
-                guard let m = MouseMode(rawValue: v) else { throw OptionError("--mouse: absolute or capture") }
+                guard let m = MouseMode(rawValue: v) else { throw OptionError("--mouse: auto, tablet or capture") }
                 o.mouseMode = m
+            case "--control-fifo": o.controlFifo = try value(a)
             case "--no-gamepad": o.gamepad = false
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
             case "--perf-stats": break   // read by PerfStats.shared (argv is passed to the VM process)
