@@ -298,7 +298,8 @@ h1 em {
 .rail button.on::after { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 12px var(--accent); }
 
 .scroll-hint {
-  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 6;
+  /* Bottom-right margin, so it never covers the boot progress in the video. */
+  position: absolute; right: clamp(16px, 2.4vw, 36px); bottom: 22px; z-index: 6;
   display: flex; flex-direction: column; align-items: center; gap: 8px; white-space: nowrap;
   font: 600 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: #8193a8;
   padding: 10px 14px; border-radius: 999px; background: rgba(6, 9, 14, .55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
@@ -418,6 +419,7 @@ pre .c { color: #5f7186; }
   .info-lede { font-size: 14.5px; }
   .info ul { display: none; }
   .rail { display: none; }
+  .scroll-hint { right: auto; left: 50%; transform: translateX(-50%); }
   .cards, .get-grid { grid-template-columns: 1fr; }
   .shots { grid-template-columns: 1fr 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
