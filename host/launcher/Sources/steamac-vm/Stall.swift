@@ -81,6 +81,18 @@ final class StallMonitor {
         hide(reason: "stopped")
     }
 
+    /// The VM ran again after a suspend (stopped meanwhile): the guest could neither send GPU
+    /// work nor heartbeats while it was frozen, so idle time and heartbeat age start over.
+    func resumeAfterSuspend() {
+        let now = CACurrentMediaTime()
+        lastActivity = now
+        cpuAtActivity = StallMonitor.cpuSeconds()
+        gateOpenedAt = now
+        if lastAlive > 0 { lastAlive = now }
+        counters = nil
+        start()
+    }
+
     /// Guest heartbeat (`alive <uptime_ms> <loadavg1>`).
     func alive(uptimeMs: Int, load: Double) {
         lastAlive = CACurrentMediaTime()

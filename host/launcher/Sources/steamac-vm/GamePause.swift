@@ -31,6 +31,9 @@ final class GamePause {
     var onChange: ((Bool) -> Void)?
     /// The confirmed frozen game changed (nil = running).
     var onConfirmedChange: ((Int?) -> Void)?
+    /// The whole VM is suspended (SuspendController): nothing to freeze, a frozen game is thawed
+    /// (the request reaches the guest when it runs again).
+    var vmSuspended = false { didSet { if vmSuspended != oldValue { update() } } }
     /// No `game-thawed` this long after `thaw-game` (agent gone): consider the game running.
     static let thawConfirmTimeout: TimeInterval = 2
 
@@ -64,7 +67,7 @@ final class GamePause {
 
     private func update() {
         var want: Int?
-        if enabled, !appActive, case .game(let id) = focus, id > 0 { want = id }
+        if enabled, !appActive, !vmSuspended, case .game(let id) = focus, id > 0 { want = id }
         guard want != frozen else { return }
         if let id = frozen {
             keepalive?.cancel()

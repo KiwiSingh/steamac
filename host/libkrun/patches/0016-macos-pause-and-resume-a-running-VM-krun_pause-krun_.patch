@@ -1,0 +1,728 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Sun, 4 Oct 2026 23:00:00 +0000
+Subject: [PATCH 16/16] macos: pause and resume a running VM (krun_pause,
+ krun_resume)
+
+Add krun_pause(ctx) / krun_resume(ctx) so a host can freeze a VM in memory
+(the steamac launcher's "Suspend") and continue it later in the same process.
+
+Pause: VmPause (one per started context, registered by krun_start_enter
+like krun_display_resize's DisplayControl) sets a flag, kicks every vCPU
+out of hv_vcpu_run with hv_vcpus_exit and waits (at most 1 s) until each
+vCPU thread is parked on a condvar before re-entering the guest, or is
+outside the guest anyway (waiting for CPU_ON, or in a userspace-GIC WFE
+wait). Parked threads use no CPU; guest memory and all device/GPU state
+stay in place. The virtio-snd CoreAudio backend stops its units while
+SndControl::paused is set (and does not start them for a PREPARE/START
+that arrives meanwhile): the render callback stops consuming the ring, the
+guest's hw_ptr stops after at most the host FIFO, and playback carries on
+from the same sample on resume, without underruns.
+
+Resume: the paused interval (from the moment the last vCPU left the guest)
+is added to every vCPU's virtual counter offset (hv_vcpu_set_vtimer_offset,
+applied by each vCPU on its own thread before it enters the guest again),
+so the guest's CNTVCT, CLOCK_MONOTONIC, timers and watchdogs see no gap,
+as with QEMU's default for KVM and HVF on arm64 (kvm-adjvtime). Without it
+(measured, 94 s pause) SteamOS's sched_ext scheduler is killed by its
+watchdog ("scx_lavd disabled (runnable task stall)", with a stack trace).
+CLOCK_REALTIME stays behind by the paused time until the guest's NTP
+client steps it. STEAMAC_PAUSE_CLOCK=running keeps the counter running
+(the guest sees a jump) for comparison.
+
+The WFx trap's timeout now compares CNTV_CVAL with the virtual counter
+(mach_absolute_time() minus the vCPU's offset) instead of the host counter.
+---
+ include/libkrun.h                                  |  34 ++++
+ .../src/virtio/snd/audio_backends/coreaudio.rs     |  30 ++++
+ src/devices/src/virtio/snd/mod.rs                  |  15 ++
+ src/hvf/src/lib.rs                                 |  30 +++-
+ src/libkrun/src/lib.rs                             |  84 ++++++++++
+ src/vmm/src/builder.rs                             |   9 ++
+ src/vmm/src/lib.rs                                 |   2 +
+ src/vmm/src/macos/vstate.rs                        | 177 ++++++++++++++++++++-
+ src/vmm/src/resources.rs                           |   5 +
+ 9 files changed, 381 insertions(+), 5 deletions(-)
+
+diff --git a/include/libkrun.h b/include/libkrun.h
+index e9c9c3a..4306e36 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -900,6 +900,40 @@ int32_t krun_snd_set_volume(uint32_t ctx_id, float gain, bool mute);
+  */
+ int32_t krun_snd_set_buffer_ms(uint32_t ctx_id, uint32_t ms);
+ 
++/**
++ * Pause a running VM (macOS): every vCPU leaves the guest and its thread waits, so the VM
++ * runs no guest code and its vCPUs use no CPU; guest memory and all device and host GPU state
++ * stay as they are (in memory, in this process: nothing is saved). The virtio-snd output and
++ * input stop (no sound, no underruns: the guest streams do not advance). Devices that receive
++ * host data (network, console) keep filling the guest's buffers until they are full.
++ * Returns once no vCPU is in the guest (at most about a second). Pausing a paused VM does
++ * nothing.
++ *
++ * The paused interval is hidden from the guest: krun_resume() adds it to the vCPUs' virtual
++ * counter offset, so the guest's monotonic clock, timers and watchdogs see no gap. Its wall
++ * clock (CLOCK_REALTIME) is behind by the paused time until its NTP client corrects it.
++ *
++ * Arguments:
++ *  "ctx_id" - the configuration context ID of a VM in krun_start_enter().
++ *
++ * Returns:
++ *  Zero on success, or a negative error number:
++ *  -ENODEV  no such running context
++ *  -ENOTSUP not supported on this platform
++ */
++int32_t krun_pause(uint32_t ctx_id);
++
++/**
++ * Resume a VM paused by krun_pause() (from any thread): audio starts again, then the vCPUs
++ * continue where they stopped. Resuming a running VM does nothing.
++ *
++ * Returns:
++ *  Zero on success, or a negative error number:
++ *  -ENODEV  no such running context
++ *  -ENOTSUP not supported on this platform
++ */
++int32_t krun_resume(uint32_t ctx_id);
++
+ /**
+  * Configures a map of rlimits to be set in the guest before starting the isolated binary.
+  *
+diff --git a/src/devices/src/virtio/snd/audio_backends/coreaudio.rs b/src/devices/src/virtio/snd/audio_backends/coreaudio.rs
+index 712f98d..8279afb 100644
+--- a/src/devices/src/virtio/snd/audio_backends/coreaudio.rs
++++ b/src/devices/src/virtio/snd/audio_backends/coreaudio.rs
+@@ -1303,6 +1303,9 @@ struct HostStream {
+     seen_generation: u64,
+     /// Playback: device the unit was created for (None = the default-output unit).
+     output_target: Option<AudioObjectID>,
++    /// The unit is stopped because the VM is paused (SndControl::paused) and starts again on
++    /// resume.
++    suspended: bool,
+     /// STEAMAC_SND_TRACE: callback count at the last heartbeat.
+     traced_callbacks: u64,
+ }
+@@ -1339,6 +1342,7 @@ impl HostStream {
+             control,
+             seen_generation: u64::MAX,
+             output_target: None,
++            suspended: false,
+             traced_callbacks: 0,
+         }
+     }
+@@ -1401,6 +1405,7 @@ impl HostStream {
+     /// Apply changed runtime settings (krun_snd_set_*); with `recheck`, also notice that a
+     /// selected output device appeared or went away.
+     fn apply_control(&mut self, recheck: bool) {
++        self.follow_pause();
+         let generation = self.control.generation();
+         let changed = generation != self.seen_generation;
+         if self.direction != Direction::Output || !(changed || recheck) {
+@@ -1435,6 +1440,25 @@ impl HostStream {
+         }
+     }
+ 
++    /// Stop the unit while the VM is paused and start it again on resume. The render
++    /// callback stops consuming the ring, so the guest's hw_ptr stops (after at most the host
++    /// FIFO) and playback carries on from the same sample without an underrun.
++    fn follow_pause(&mut self) {
++        if self.control.paused() {
++            if self.unit.as_ref().is_some_and(|u| u.started) {
++                self.stop_unit();
++                self.suspended = true;
++                self.trace_state("suspended (VM paused)", None);
++            }
++        } else if self.suspended {
++            self.suspended = false;
++            if let Err(err) = self.start_unit() {
++                log::error!("snd: stream {}: restarting after VM pause: {err}", self.id);
++            }
++            self.trace_state("resumed (VM resumed)", None);
++        }
++    }
++
+     fn refcon(&self) -> *mut c_void {
+         Arc::as_ptr(&self.shared) as *mut c_void
+     }
+@@ -1593,6 +1617,11 @@ impl HostStream {
+ 
+     fn start_unit(&mut self) -> Result<()> {
+         match self.unit.as_mut() {
++            // Started by follow_pause() on resume.
++            Some(unit) if unit.initialized && self.control.paused() => {
++                self.suspended = true;
++                Ok(())
++            }
+             Some(unit) if unit.initialized => unit.start(),
+             _ => Err(Error::UnexpectedAudioBackendError(
+                 "stream not prepared".into(),
+@@ -1601,6 +1630,7 @@ impl HostStream {
+     }
+ 
+     fn stop_unit(&mut self) {
++        self.suspended = false;
+         if let Some(unit) = self.unit.as_mut() {
+             unit.stop();
+         }
+diff --git a/src/devices/src/virtio/snd/mod.rs b/src/devices/src/virtio/snd/mod.rs
+index c52f341..c95b407 100644
+--- a/src/devices/src/virtio/snd/mod.rs
++++ b/src/devices/src/virtio/snd/mod.rs
+@@ -29,6 +29,8 @@ pub struct SndControl {
+     gain: AtomicU32,
+     mute: AtomicBool,
+     buffer_ms: AtomicU32,
++    /// The VM is paused (krun_pause): the backend stops its audio units.
++    paused: AtomicBool,
+     generation: AtomicU64,
+     waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+ }
+@@ -40,6 +42,7 @@ impl Default for SndControl {
+             gain: AtomicU32::new(1.0f32.to_bits()),
+             mute: AtomicBool::new(false),
+             buffer_ms: AtomicU32::new(SndControl::DEFAULT_BUFFER_MS),
++            paused: AtomicBool::new(false),
+             generation: AtomicU64::new(0),
+             waker: Mutex::new(None),
+         }
+@@ -87,6 +90,18 @@ impl SndControl {
+         self.buffer_ms.load(Ordering::Relaxed)
+     }
+ 
++    /// While the VM is paused the backend stops its CoreAudio units: no output (and no
++    /// microphone use), and the guest's streams do not advance, so they carry on without
++    /// underruns on resume.
++    pub fn set_paused(&self, paused: bool) {
++        self.paused.store(paused, Ordering::Relaxed);
++        self.changed();
++    }
++
++    pub fn paused(&self) -> bool {
++        self.paused.load(Ordering::Relaxed)
++    }
++
+     pub fn generation(&self) -> u64 {
+         self.generation.load(Ordering::Acquire)
+     }
+diff --git a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+index cfc5269..b111a89 100644
+--- a/src/hvf/src/lib.rs
++++ b/src/hvf/src/lib.rs
+@@ -123,6 +123,7 @@ pub enum Error {
+     VcpuSetRegister,
+     VcpuSetSystemRegister(u16, u64),
+     VcpuSetVtimerMask,
++    VcpuVtimerOffset,
+     VmCreate,
+ }
+ 
+@@ -159,6 +160,7 @@ impl Display for Error {
+                 "Error setting HVF vCPU system register 0x{reg:#x} to 0x{val:#x}"
+             ),
+             VcpuSetVtimerMask => write!(f, "Error setting HVF vCPU vtimer mask"),
++            VcpuVtimerOffset => write!(f, "Error accessing HVF vCPU vtimer offset"),
+             VmCreate => write!(f, "Error creating HVF VM instance"),
+         }
+     }
+@@ -370,6 +372,8 @@ pub struct HvfVcpu<'a> {
+     pending_mmio_read: Option<MmioRead>,
+     pending_advance_pc: bool,
+     vtimer_masked: bool,
++    /// CNTVOFF_EL2: the guest's virtual counter is mach_absolute_time() minus this.
++    vtimer_offset: u64,
+     nested_enabled: bool,
+ }
+ 
+@@ -409,6 +413,12 @@ impl HvfVcpu<'_> {
+ 
+         let vcpu_exit: &hv_vcpu_exit_t = unsafe { vcpu_exit_ptr.as_mut().unwrap() };
+ 
++        let mut vtimer_offset: u64 = 0;
++        let ret = unsafe { hv_vcpu_get_vtimer_offset(vcpuid, &mut vtimer_offset) };
++        if ret != HV_SUCCESS {
++            return Err(Error::VcpuVtimerOffset);
++        }
++
+         Ok(Self {
+             vcpuid,
+             vcpu_exit,
+@@ -417,10 +427,27 @@ impl HvfVcpu<'_> {
+             pending_mmio_read: None,
+             pending_advance_pc: false,
+             vtimer_masked: false,
++            vtimer_offset,
+             nested_enabled,
+         })
+     }
+ 
++    /// The guest's virtual counter offset (CNTVOFF_EL2) in host counter ticks.
++    pub fn vtimer_offset(&self) -> u64 {
++        self.vtimer_offset
++    }
++
++    /// Set the virtual counter offset (on the vCPU's own thread, outside hv_vcpu_run): the
++    /// guest's virtual counter becomes mach_absolute_time() - `offset`.
++    pub fn set_vtimer_offset(&mut self, offset: u64) -> Result<(), Error> {
++        let ret = unsafe { hv_vcpu_set_vtimer_offset(self.vcpuid, offset) };
++        if ret != HV_SUCCESS {
++            return Err(Error::VcpuVtimerOffset);
++        }
++        self.vtimer_offset = offset;
++        Ok(())
++    }
++
+     pub fn set_initial_state(
+         &self,
+         ipa_size: u32,
+@@ -797,7 +824,8 @@ impl HvfVcpu<'_> {
+ 
+                 // Also CNTV_CVAL & CNTV_CVAL_EL0
+                 let cval = self.read_sys_reg(hv_sys_reg_t_HV_SYS_REG_CNTV_CVAL_EL0)?;
+-                let now = unsafe { mach_absolute_time() };
++                // CNTV_CVAL is in virtual counter ticks.
++                let now = unsafe { mach_absolute_time() }.wrapping_sub(self.vtimer_offset);
+                 if now > cval {
+                     return Ok(VcpuExit::WaitForEventExpired);
+                 }
+diff --git a/src/libkrun/src/lib.rs b/src/libkrun/src/lib.rs
+index 17f1e72..8fb4f51 100644
+--- a/src/libkrun/src/lib.rs
++++ b/src/libkrun/src/lib.rs
+@@ -2157,6 +2157,88 @@ pub extern "C" fn krun_snd_set_buffer_ms(ctx_id: u32, ms: u32) -> i32 {
+     }
+ }
+ 
++/// Pause controls of started VMs (krun_pause / krun_resume).
++#[cfg(target_os = "macos")]
++static VM_PAUSES: Lazy<Mutex<HashMap<u32, std::sync::Arc<vmm::VmPause>>>> =
++    Lazy::new(|| Mutex::new(HashMap::new()));
++
++/// A started context's entry in VM_PAUSES, removed when krun_start_enter returns.
++#[cfg(target_os = "macos")]
++struct VmPauseRegistration(u32);
++
++#[cfg(target_os = "macos")]
++impl VmPauseRegistration {
++    fn new(ctx_id: u32, ctx_cfg: &mut ContextConfig) -> Self {
++        let vcpus = ctx_cfg.vmr.vm_config().vcpu_count.unwrap_or(1) as usize;
++        let pause = std::sync::Arc::new(vmm::VmPause::new(vcpus));
++        VM_PAUSES.lock().unwrap().insert(ctx_id, pause.clone());
++        ctx_cfg.vmr.vm_pause = Some(pause);
++        Self(ctx_id)
++    }
++}
++
++#[cfg(target_os = "macos")]
++impl Drop for VmPauseRegistration {
++    fn drop(&mut self) {
++        VM_PAUSES.lock().unwrap().remove(&self.0);
++    }
++}
++
++/// Pause (`pause`) or resume a started VM and its audio.
++#[cfg(target_os = "macos")]
++fn set_vm_paused(ctx_id: u32, pause: bool) -> i32 {
++    let Some(vm_pause) = VM_PAUSES.lock().unwrap().get(&ctx_id).cloned() else {
++        return -libc::ENODEV;
++    };
++    #[cfg(feature = "snd")]
++    let snd = SND_CONTROLS.lock().unwrap().get(&ctx_id).cloned();
++    if pause {
++        // vCPUs first: the guest queues no audio once it is stopped, and what it queued last
++        // stays in the host ring until the audio units start again.
++        if vm_pause.pause() {
++            #[cfg(feature = "snd")]
++            if let Some(snd) = snd {
++                snd.set_paused(true);
++            }
++            info!("VM paused");
++        }
++    } else if vm_pause.is_paused() {
++        #[cfg(feature = "snd")]
++        if let Some(snd) = snd {
++            snd.set_paused(false);
++        }
++        vm_pause.resume();
++        info!("VM resumed");
++    }
++    KRUN_SUCCESS
++}
++
++#[no_mangle]
++pub extern "C" fn krun_pause(ctx_id: u32) -> i32 {
++    #[cfg(target_os = "macos")]
++    {
++        set_vm_paused(ctx_id, true)
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        let _ = ctx_id;
++        -libc::ENOTSUP
++    }
++}
++
++#[no_mangle]
++pub extern "C" fn krun_resume(ctx_id: u32) -> i32 {
++    #[cfg(target_os = "macos")]
++    {
++        set_vm_paused(ctx_id, false)
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        let _ = ctx_id;
++        -libc::ENOTSUP
++    }
++}
++
+ #[allow(unused_assignments)]
+ #[no_mangle]
+ #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+@@ -3178,6 +3260,8 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
+     let _display_control = DisplayControlRegistration::new(ctx_id, &mut ctx_cfg);
+     #[cfg(feature = "snd")]
+     let _snd_control = SndControlRegistration::new(ctx_id, &mut ctx_cfg);
++    #[cfg(target_os = "macos")]
++    let _vm_pause = VmPauseRegistration::new(ctx_id, &mut ctx_cfg);
+     drop(ctx_map);
+ 
+     if ctx_cfg.vmr.external_kernel.is_none()
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index 2daa5a4..b0eee6e 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -909,6 +909,11 @@ pub fn build_microvm(
+             Arc::new(Mutex::new(gic))
+         };
+ 
++        let vm_pause = vm_resources.vm_pause.clone().unwrap_or_else(|| {
++            Arc::new(crate::VmPause::new(
++                vm_resources.vm_config().vcpu_count.unwrap() as usize,
++            ))
++        });
+         vcpus = create_vcpus_aarch64(
+             &vm,
+             &vcpu_config,
+@@ -917,6 +922,7 @@ pub fn build_microvm(
+             &exit_evt,
+             vcpu_list.clone(),
+             vm_resources.nested_enabled,
++            vm_pause,
+         )
+         .map_err(StartMicrovmError::Internal)?;
+ 
+@@ -1800,6 +1806,7 @@ fn create_vcpus_aarch64(
+ }
+ 
+ #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
++#[allow(clippy::too_many_arguments)]
+ fn create_vcpus_aarch64(
+     _vm: &Vm,
+     vcpu_config: &VcpuConfig,
+@@ -1808,6 +1815,7 @@ fn create_vcpus_aarch64(
+     exit_evt: &EventFd,
+     vcpu_list: Arc<VcpuList>,
+     nested_enabled: bool,
++    vm_pause: Arc<crate::VmPause>,
+ ) -> super::Result<Vec<Vcpu>> {
+     let mut vcpus = Vec::with_capacity(vcpu_config.vcpu_count as usize);
+     let mut boot_senders: HashMap<u64, Sender<u64>> = HashMap::new();
+@@ -1828,6 +1836,7 @@ fn create_vcpus_aarch64(
+             exit_evt.try_clone().map_err(Error::EventFd)?,
+             vcpu_list.clone(),
+             nested_enabled,
++            vm_pause.clone(),
+         )
+         .map_err(Error::Vcpu)?;
+ 
+diff --git a/src/vmm/src/lib.rs b/src/vmm/src/lib.rs
+index 0f0f8c2..87ee074 100644
+--- a/src/vmm/src/lib.rs
++++ b/src/vmm/src/lib.rs
+@@ -35,6 +35,8 @@ pub mod worker;
+ 
+ #[cfg(target_os = "macos")]
+ use macos::vstate;
++#[cfg(target_os = "macos")]
++pub use macos::vstate::VmPause;
+ 
+ use std::fmt::{Display, Formatter};
+ use std::io;
+diff --git a/src/vmm/src/macos/vstate.rs b/src/vmm/src/macos/vstate.rs
+index 893e086..6cd0160 100644
+--- a/src/vmm/src/macos/vstate.rs
++++ b/src/vmm/src/macos/vstate.rs
+@@ -10,9 +10,10 @@ use std::collections::HashMap;
+ use std::fmt::{Display, Formatter};
+ use std::io;
+ use std::result;
+-use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
++use std::sync::{Arc, Condvar, Mutex};
+ use std::thread;
+-use std::time::Duration;
++use std::time::{Duration, Instant};
+ 
+ use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
+ use crate::vmm_config::machine_config::CpuFeaturesTemplate;
+@@ -20,7 +21,7 @@ use crate::vmm_config::machine_config::CpuFeaturesTemplate;
+ use arch::ArchMemoryInfo;
+ use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
+ use devices::legacy::VcpuList;
+-use hvf::{HvfVcpu, HvfVm, VcpuExit, Vcpus};
++use hvf::{vcpu_request_exit, HvfVcpu, HvfVm, VcpuExit, Vcpus};
+ use utils::eventfd::EventFd;
+ use vm_memory::{
+     Address, GuestAddress, GuestMemory, GuestMemoryError, GuestMemoryMmap, GuestMemoryRegion,
+@@ -172,6 +173,161 @@ pub struct VcpuConfig {
+     pub cpu_template: Option<CpuFeaturesTemplate>,
+ }
+ 
++extern "C" {
++    fn mach_absolute_time() -> u64;
++}
++
++/// Pause and resume of a running guest (krun_pause / krun_resume).
++///
++/// Pausing kicks every vCPU out of hv_vcpu_run (hv_vcpus_exit) and parks its thread on a
++/// condvar before it would enter the guest again, so a paused VM runs no guest code and its
++/// vCPU threads use no CPU. The paused interval is hidden from the guest: on resume every
++/// vCPU adds it to its virtual counter offset (CNTVOFF_EL2) before re-entering the guest, so
++/// CLOCK_MONOTONIC, timers and the kernel's watchdogs (soft lockup, RCU stall, workqueue
++/// lockup) see no gap, as with QEMU's default for KVM/HVF on arm64. CLOCK_REALTIME stays
++/// behind by the paused time until the guest's NTP client steps it.
++pub struct VmPause {
++    vcpu_count: usize,
++    /// Fast-path flag read by every vCPU before entering the guest.
++    paused: AtomicBool,
++    /// Bumped by every resume: a vCPU that has not applied the current offset yet does so
++    /// before entering the guest (also vCPUs that were blocked in WFE/boot, not parked).
++    generation: AtomicU64,
++    /// vCPUs outside the guest without being parked: waiting for CPU_ON or in a WFE wait.
++    idle: AtomicUsize,
++    state: Mutex<PauseState>,
++    cond: Condvar,
++    /// HVF ids of the started vCPUs (hv_vcpus_exit targets).
++    vcpus: Mutex<Vec<u64>>,
++    /// STEAMAC_PAUSE_CLOCK=running: let the guest's counter run on while paused (the guest
++    /// sees the paused time as a jump of its monotonic clock), for comparison.
++    hide_paused_time: bool,
++}
++
++#[derive(Default)]
++struct PauseState {
++    paused: bool,
++    parked: usize,
++    /// Host counter when the last vCPU left the guest.
++    since: u64,
++    /// Paused time hidden from the guest so far, in counter ticks.
++    hidden_ticks: u64,
++}
++
++impl VmPause {
++    /// Longest krun_pause waits for the vCPUs to leave the guest.
++    const STOP_TIMEOUT: Duration = Duration::from_secs(1);
++
++    pub fn new(vcpu_count: usize) -> Self {
++        Self {
++            vcpu_count,
++            paused: AtomicBool::new(false),
++            generation: AtomicU64::new(0),
++            idle: AtomicUsize::new(0),
++            state: Mutex::new(PauseState::default()),
++            cond: Condvar::new(),
++            vcpus: Mutex::new(Vec::with_capacity(vcpu_count)),
++            hide_paused_time: std::env::var_os("STEAMAC_PAUSE_CLOCK")
++                .is_none_or(|v| v != "running"),
++        }
++    }
++
++    /// Stop all vCPUs; returns once none is in the guest (or after STOP_TIMEOUT, logged).
++    /// Returns false if the VM was paused already.
++    pub fn pause(&self) -> bool {
++        {
++            let mut st = self.state.lock().unwrap();
++            if st.paused {
++                return false;
++            }
++            st.paused = true;
++            self.paused.store(true, Ordering::SeqCst);
++        }
++        for &id in self.vcpus.lock().unwrap().iter() {
++            // A vCPU that is not in hv_vcpu_run gets a pending exit: one Canceled exit later.
++            let _ = vcpu_request_exit(id);
++        }
++        let deadline = Instant::now() + Self::STOP_TIMEOUT;
++        let mut st = self.state.lock().unwrap();
++        while st.parked + self.idle.load(Ordering::SeqCst) < self.vcpu_count {
++            let now = Instant::now();
++            if now >= deadline {
++                warn!(
++                    "pause: {} of {} vCPUs still running after {:?}",
++                    self.vcpu_count - st.parked - self.idle.load(Ordering::SeqCst),
++                    self.vcpu_count,
++                    Self::STOP_TIMEOUT
++                );
++                break;
++            }
++            // Idle vCPUs do not notify: poll them at a short interval.
++            let wait = (deadline - now).min(Duration::from_millis(5));
++            st = self.cond.wait_timeout(st, wait).unwrap().0;
++        }
++        // SAFETY: plain counter read.
++        st.since = unsafe { mach_absolute_time() };
++        true
++    }
++
++    /// Let the vCPUs run again. Returns false if the VM was not paused.
++    pub fn resume(&self) -> bool {
++        let mut st = self.state.lock().unwrap();
++        if !st.paused {
++            return false;
++        }
++        if self.hide_paused_time {
++            // SAFETY: plain counter read.
++            let now = unsafe { mach_absolute_time() };
++            st.hidden_ticks += now.saturating_sub(st.since);
++            self.generation.fetch_add(1, Ordering::SeqCst);
++        }
++        st.paused = false;
++        self.paused.store(false, Ordering::SeqCst);
++        self.cond.notify_all();
++        true
++    }
++
++    pub fn is_paused(&self) -> bool {
++        self.paused.load(Ordering::SeqCst)
++    }
++
++    fn register(&self, hvf_vcpuid: u64) {
++        self.vcpus.lock().unwrap().push(hvf_vcpuid);
++    }
++
++    fn enter_idle(&self) {
++        self.idle.fetch_add(1, Ordering::SeqCst);
++    }
++
++    fn leave_idle(&self) {
++        self.idle.fetch_sub(1, Ordering::SeqCst);
++    }
++
++    /// Called by a vCPU thread before it enters the guest: parks while paused, then makes
++    /// sure the vCPU's virtual counter offset hides every paused interval so far.
++    fn before_run(&self, hvf_vcpu: &mut HvfVcpu, base_offset: u64, applied_generation: &mut u64) {
++        if self.paused.load(Ordering::SeqCst) {
++            let mut st = self.state.lock().unwrap();
++            if st.paused {
++                st.parked += 1;
++                self.cond.notify_all();
++                while st.paused {
++                    st = self.cond.wait(st).unwrap();
++                }
++                st.parked -= 1;
++            }
++        }
++        let generation = self.generation.load(Ordering::SeqCst);
++        if generation != *applied_generation {
++            let hidden = self.state.lock().unwrap().hidden_ticks;
++            if let Err(e) = hvf_vcpu.set_vtimer_offset(base_offset.wrapping_add(hidden)) {
++                error!("vCPU {}: {e}", hvf_vcpu.id());
++            }
++            *applied_generation = generation;
++        }
++    }
++}
++
+ // Using this for easier explicit type-casting to help IDEs interpret the code.
+ type VcpuCell = Cell<Option<*const Vcpu>>;
+ 
+@@ -201,6 +357,7 @@ pub struct Vcpu {
+ 
+     vcpu_list: Arc<VcpuList>,
+     nested_enabled: bool,
++    pause: Arc<VmPause>,
+ }
+ 
+ impl Vcpu {
+@@ -276,6 +433,7 @@ impl Vcpu {
+         exit_evt: EventFd,
+         vcpu_list: Arc<VcpuList>,
+         nested_enabled: bool,
++        pause: Arc<VmPause>,
+     ) -> Result<Self> {
+         let (event_sender, event_receiver) = unbounded();
+         let (response_sender, response_receiver) = unbounded();
+@@ -296,6 +454,7 @@ impl Vcpu {
+             response_sender,
+             vcpu_list,
+             nested_enabled,
++            pause,
+         })
+     }
+ 
+@@ -450,9 +609,13 @@ impl Vcpu {
+ 
+         let (wfe_sender, wfe_receiver) = unbounded();
+         self.vcpu_list.register(hvf_vcpuid, wfe_sender);
++        self.pause.register(hvf_vcpuid);
+ 
+         let entry_addr = if let Some(boot_receiver) = &self.boot_receiver {
+-            boot_receiver.recv().unwrap()
++            self.pause.enter_idle();
++            let entry = boot_receiver.recv().unwrap();
++            self.pause.leave_idle();
++            entry
+         } else {
+             self.boot_entry_addr
+         };
+@@ -461,7 +624,11 @@ impl Vcpu {
+             .set_initial_state(self.ipa_size, entry_addr, self.fdt_addr)
+             .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
+ 
++        let base_offset = hvf_vcpu.vtimer_offset();
++        let mut applied_generation = 0;
+         loop {
++            self.pause
++                .before_run(&mut hvf_vcpu, base_offset, &mut applied_generation);
+             match self.run_emulation(&mut hvf_vcpu) {
+                 // Emulation ran successfully, continue.
+                 Ok(VcpuEmulation::Handled) => (),
+@@ -496,6 +663,7 @@ impl Vcpu {
+         timeout: Option<Duration>,
+     ) {
+         if self.vcpu_list.should_wait(hvf_vcpuid) {
++            self.pause.enter_idle();
+             if let Some(timeout) = timeout {
+                 match receiver.recv_timeout(timeout) {
+                     Ok(_) => {}
+@@ -507,6 +675,7 @@ impl Vcpu {
+             } else {
+                 receiver.recv().unwrap();
+             }
++            self.pause.leave_idle();
+         }
+     }
+ 
+diff --git a/src/vmm/src/resources.rs b/src/vmm/src/resources.rs
+index 1719a80..548f4dd 100644
+--- a/src/vmm/src/resources.rs
++++ b/src/vmm/src/resources.rs
+@@ -182,6 +182,9 @@ pub struct VmResources {
+     /// Runtime audio settings (krun_snd_set_*), shared with the virtio-snd backend.
+     #[cfg(feature = "snd")]
+     pub snd_control: Option<Arc<devices::virtio::SndControl>>,
++    /// Pause/resume of the running guest (krun_pause / krun_resume), shared with the vCPUs.
++    #[cfg(target_os = "macos")]
++    pub vm_pause: Option<Arc<crate::VmPause>>,
+     /// File to send console output.
+     pub console_output: Option<PathBuf>,
+     /// SMBIOS OEM Strings
+@@ -447,6 +450,8 @@ mod tests {
+             snd_device: false,
+             #[cfg(feature = "snd")]
+             snd_control: None,
++            #[cfg(target_os = "macos")]
++            vm_pause: None,
+             console_output: None,
+             smbios_oem_strings: None,
+             nested_enabled: false,

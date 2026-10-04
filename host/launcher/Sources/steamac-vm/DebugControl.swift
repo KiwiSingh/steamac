@@ -23,6 +23,13 @@ import Foundation
 ///   activate              bring the app to the front (tests of the background mute / pause)
 ///   keepalive off|on      stop / resume the paused game's keepalives (guest auto-thaw test)
 ///   set KEY VALUE         change a setting as the Settings window would (LauncherSettings.Key names)
+///   close                 the window's close button (Settings > General "When closing the window")
+///   suspend | resume      menu Suspend / Resume
+///   reopen                Dock icon click / opening the app again
+///   quit                  Quit (Cmd+Q); while suspended this opens the confirmation alert, whose
+///                         modal loop blocks further control commands until it is answered by hand
+///   status open|close|dump PATH   open / close the menu-bar item's menu while suspended; log its
+///                         items and write a PNG of its button
 ///   report …              Report a Problem sheet (ReportControl: open, fill, include, preview, send,
 ///                         retry, close, dsn, dump)
 enum DebugControl {
@@ -140,6 +147,17 @@ enum DebugControl {
             do { try png.write(to: URL(fileURLWithPath: out)); log("control: settings window dumped to \(out)") }
             catch { log("control: settings dump failed: \(error)") }
         case "restart": lifecycle.requestRestart()
+        case "close": wc.window.performClose(nil)
+        case "suspend", "resume":
+            if (p[0] == "suspend") != (lifecycle.suspender?.suspended ?? false) { lifecycle.menuSuspend() }
+        case "reopen": _ = lifecycle.applicationShouldHandleReopen(NSApp, hasVisibleWindows: wc.window.isVisible)
+        case "quit":
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        case "status":
+            if args.first == "close" { lifecycle.suspender?.statusMenu?.cancelTracking() }
+            else if args.first == "dump" { lifecycle.suspender?.dumpStatusItem(to: args.dropFirst().first ?? "status-item.png") }
+            // Async: the menu tracks in a modal loop.
+            else { DispatchQueue.main.async { lifecycle.suspender?.statusButton?.performClick(nil) } }
         case "activate": NSApp.activate(ignoringOtherApps: true)
         case "keepalive": GamePause.keepaliveSuppressed = args.first == "off"
         case "set":

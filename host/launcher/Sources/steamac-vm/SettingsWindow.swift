@@ -62,7 +62,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         /// Fixed content height per tab (grouped forms scroll beyond it).
         var height: CGFloat {
             switch self {
-            case .general: return 680
+            case .general: return 760
             case .display: return 600
             case .mouse: return 470
             case .controller: return 620
@@ -268,6 +268,19 @@ private struct GeneralTab: View {
                 }
                 Toggle(isOn: $settings.openFullscreen) {
                     Label2(title: "Open in full screen", now: false, key: .openFullscreen)
+                }
+            }
+            Section {
+                Picker(selection: $settings.closeAction) {
+                    Text("Shut down SteamOS").tag(LauncherSettings.CloseAction.shutDown)
+                    Text("Suspend (keep running in the background)").tag(LauncherSettings.CloseAction.suspend)
+                } label: {
+                    Label2(title: "When closing the window",
+                           detail: "Suspend freezes SteamOS and the running game at once and keeps them in memory; "
+                               + "click the Dock icon or Resume in the menu bar to continue where you left off. "
+                               + "Suspended state is kept while FX Steam Launcher is running: quitting the app "
+                               + "or restarting the Mac shuts SteamOS down.",
+                           now: true)
                 }
             }
             Section {

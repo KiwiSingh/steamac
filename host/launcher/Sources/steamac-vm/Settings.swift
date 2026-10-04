@@ -20,7 +20,8 @@ final class LauncherSettings: ObservableObject {
     /// Preference keys. `nextStart` keys are read once per boot (see Options.applySettings).
     enum Key: String, CaseIterable {
         // General
-        case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground
+        case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground,
+             closeAction
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
              windowSizePreset, metalHUD
@@ -62,6 +63,15 @@ final class LauncherSettings: ObservableObject {
             case .safe: return 60
             }
         }
+    }
+
+    /// What closing the VM window does (Settings > General).
+    enum CloseAction: String, CaseIterable, Identifiable {
+        /// Shut SteamOS down (guest power key).
+        case shutDown = "shutdown"
+        /// Suspend the VM in memory (SuspendController); the app keeps running.
+        case suspend
+        var id: String { rawValue }
     }
 
     /// Default window size choices (window points = guest pixels).
@@ -121,6 +131,7 @@ final class LauncherSettings: ObservableObject {
     /// While the app is not active: mute the guest's sound / freeze the focused game.
     @Published var muteInBackground = true { didSet { save(.muteInBackground, muteInBackground) } }
     @Published var pauseInBackground = false { didSet { save(.pauseInBackground, pauseInBackground) } }
+    @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }
     @Published var fixedDPI = 110 { didSet { save(.fixedDPI, fixedDPI) } }
@@ -194,6 +205,7 @@ final class LauncherSettings: ObservableObject {
         bool(.sendCrashReports, &sendCrashReports)
         bool(.muteInBackground, &muteInBackground)
         bool(.pauseInBackground, &pauseInBackground)
+        if let s = d.string(forKey: Key.closeAction.rawValue).flatMap(CloseAction.init(rawValue:)) { closeAction = s }
         if let s = d.string(forKey: Key.dpiSource.rawValue).flatMap(DPISource.init(rawValue:)) { dpiSource = s }
         int(.fixedDPI, &fixedDPI)
         int(.fixedWidthMM, &fixedWidthMM)
@@ -251,6 +263,7 @@ final class LauncherSettings: ObservableObject {
         case .sendCrashReports: guard let b else { return false }; sendCrashReports = b
         case .muteInBackground: guard let b else { return false }; muteInBackground = b
         case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
+        case .closeAction: guard let v = CloseAction(rawValue: text) else { return false }; closeAction = v
         case .dpiSource: guard let v = DPISource(rawValue: text) else { return false }; dpiSource = v
         case .fixedDPI: guard let i else { return false }; fixedDPI = i
         case .fixedWidthMM: guard let i else { return false }; fixedWidthMM = i
@@ -297,6 +310,7 @@ final class LauncherSettings: ObservableObject {
         showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         muteInBackground = fresh.muteInBackground; pauseInBackground = fresh.pauseInBackground
+        closeAction = fresh.closeAction
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset

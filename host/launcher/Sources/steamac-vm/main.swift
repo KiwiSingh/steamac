@@ -71,7 +71,8 @@ if let f = Supervisor.windowFrame, !f.isEmpty, !options.headless {
 
 let windowTitle = "FX Steam Launcher"
 
-/// Graceful shutdown policy shared by window close, menu, signals and the console escape.
+/// Graceful shutdown policy shared by window close, menu, signals and the console escape; window
+/// close / menu Suspend / Dock click / Quit while suspended (SuspendController).
 final class Lifecycle: NSObject, NSApplicationDelegate {
     /// Restored on our own exit() paths (libkrun's _exit skips atexit; the supervisor restores then).
     nonisolated(unsafe) static var console: Console?
@@ -80,6 +81,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     weak var window: WindowController?
     var settingsWindow: SettingsWindowController?
     var settingsContext: SettingsContext?
+    var suspender: SuspendController?
     /// Opens Report a Problem over the VM window.
     var report: (() -> Void)?
     private var requestedAt: Date?
@@ -102,6 +104,8 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         }
         if force { forceQuit() }
         requestedAt = Date()
+        // A suspended guest cannot see the power key: let it run (window back, shutdown overlay).
+        suspender?.resume(origin: "shutdown")
         guard let vm, vm.requestShutdown() else {
             log("no guest power key available; exiting")
             exit(0)
@@ -118,6 +122,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         CrashReporting.noteUserExit()
         guard requestedAt == nil, let vm, let progress else { return }
         requestedAt = Date()
+        suspender?.resume(origin: "restart")
         progress.hostRequestedRestart()   // onRebootIntent writes the supervisor's reboot marker
         guard vm.requestShutdown() else {
             log("no guest power key available; restarting the VM process")
@@ -136,12 +141,61 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Dock "Quit" / logout: shut the guest down instead of killing it.
+    /// Window close button / Cmd+W: Settings > General "When closing the window". Closing again
+    /// while SteamOS shuts down force-quits (requestShutdown).
+    func windowCloseRequested() {
+        if requestedAt == nil, LauncherSettings.shared.closeAction == .suspend, suspend(origin: "window close") { return }
+        requestShutdown()
+    }
+
+    /// Not while SteamOS shuts down or restarts (it must run to finish).
+    @discardableResult
+    func suspend(origin: String) -> Bool {
+        guard requestedAt == nil, progress.map({ if case .shutdown = $0.state.phase { return false } else { return true } }) ?? true,
+              let suspender else { return false }
+        return suspender.suspend(origin: origin)
+    }
+
+    /// Dock icon click / opening the app again: resume a suspended VM.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard let suspender, suspender.suspended else { return true }
+        suspender.resume(origin: "dock")
+        return false
+    }
+
+    /// Dock "Quit" / Cmd+Q / logout: shut the guest down instead of killing it. While suspended
+    /// a user's Quit asks first (the suspended state is lost); logout / restart / shutdown of the
+    /// Mac does not.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if requestedAt == nil, let suspender, suspender.suspended, !Lifecycle.quitBySystem {
+            let alert = NSAlert()
+            alert.messageText = "SteamOS is suspended"
+            alert.informativeText = "Quitting FX Steam Launcher shuts SteamOS down: it resumes and shuts down cleanly. "
+                + "The suspended state (and a running game's unsaved progress) is not kept."
+            alert.addButton(withTitle: "Shut Down SteamOS")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate()
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                log("quit while suspended: cancelled")
+                return .terminateCancel
+            }
+            log("quit while suspended: shutting SteamOS down")
+        }
         requestShutdown()
         return .terminateCancel
     }
 
+    /// The quit Apple event comes from a logout, restart or shutdown of the Mac.
+    private static var quitBySystem: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              let reason = event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue else { return false }
+        return [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog, kAERestart, kAEShutDown]
+            .map { OSType($0) }.contains(reason)
+    }
+
+    @objc func menuSuspend() {
+        if let suspender, suspender.suspended { suspender.resume(origin: "menu") } else { suspend(origin: "menu") }
+    }
     @objc func menuShutdown() { requestShutdown() }
     @objc func menuRestart() { requestRestart() }
     @objc func menuForceQuit() { requestShutdown(force: true) }
@@ -156,6 +210,11 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
 extension Lifecycle: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(menuMetalHUD) { item.state = LauncherSettings.shared.metalHUD ? .on : .off }
+        if item.action == #selector(menuSuspend) {
+            let suspended = suspender?.suspended ?? false
+            item.title = suspended ? "Resume" : "Suspend"
+            return suspender != nil && requestedAt == nil
+        }
         return true
     }
 }
@@ -279,8 +338,12 @@ do {
 
     let app = SteamacApplication.shared as! SteamacApplication
     app.setActivationPolicy(.regular)
-    let activity = ProcessInfo.processInfo.beginActivity(
-        options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled], reason: "virtual machine running")
+    // Keeps the Mac awake while the VM runs (not while it is suspended: SuspendController).
+    func beginVMActivity() -> NSObjectProtocol {
+        ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled], reason: "virtual machine running")
+    }
+    var activity: NSObjectProtocol? = beginVMActivity()
     app.delegate = lifecycle
     let renderer = Renderer()
     let presenter = Presenter(display: display, renderer: renderer)
@@ -295,7 +358,8 @@ do {
     display.sink = presenter
     app.router = wc
     lifecycle.window = wc
-    wc.onCloseRequest = { lifecycle.requestShutdown() }
+    wc.onCloseRequest = { lifecycle.windowCloseRequested() }
+    wc.onSuspendRequest = { lifecycle.menuSuspend() }
     wc.attach(progress: progress)
     let ctxId = vm.ctx
     let stall = StallMonitor(view: wc.stallView) {
@@ -309,6 +373,17 @@ do {
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
     gamePause.onConfirmedChange = { [weak wc] in wc?.gamePaused($0) }
+    let suspender = SuspendController(ctx: vm.ctx, window: wc, presenter: presenter, stall: stall, gamePause: gamePause)
+    suspender.onShutdown = { lifecycle.requestShutdown() }
+    suspender.onSuspendedChange = { suspended in
+        if suspended {
+            activity.map(ProcessInfo.processInfo.endActivity)
+            activity = nil
+        } else if activity == nil {
+            activity = beginVMActivity()
+        }
+    }
+    lifecycle.suspender = suspender
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
                                           vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
@@ -328,10 +403,10 @@ do {
     wc.stallView.onReport = { openReport("stall", on: wc.window) }
     MainActor.assumeIsolated { ReportControl.open = { openReport("control", on: wc.window) } }
     MainMenu.install(target: lifecycle, settings: #selector(Lifecycle.menuSettings), report: #selector(Lifecycle.menuReport),
-                     restart: #selector(Lifecycle.menuRestart), shutdown: #selector(Lifecycle.menuShutdown),
-                     forceQuit: #selector(Lifecycle.menuForceQuit), fullscreen: #selector(Lifecycle.menuFullscreen),
-                     grab: #selector(Lifecycle.menuGrab), overlay: #selector(Lifecycle.menuOverlay),
-                     metalHUD: #selector(Lifecycle.menuMetalHUD))
+                     restart: #selector(Lifecycle.menuRestart), suspend: #selector(Lifecycle.menuSuspend),
+                     shutdown: #selector(Lifecycle.menuShutdown), forceQuit: #selector(Lifecycle.menuForceQuit),
+                     fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
+                     overlay: #selector(Lifecycle.menuOverlay), metalHUD: #selector(Lifecycle.menuMetalHUD))
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
     let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings) }
@@ -355,7 +430,7 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch, perfSubscription, gamePause)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, progressPort, supervisorWatch, perfSubscription, gamePause, suspender)) { app.run() }
 } catch {
     fatal("\(error)")
 }

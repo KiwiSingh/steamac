@@ -154,6 +154,8 @@ int main(void)
     uint64_t ctrl_cmds = 1, ring_cmds = 1;
     check("krun_gpu_get_activity(not started) [no running context]",
           krun_gpu_get_activity(ctx, &ctrl_cmds, &ring_cmds), -ENODEV);
+    check("krun_pause(not started) [no running context]", krun_pause(ctx), -ENODEV);
+    check("krun_resume(not started) [no running context]", krun_resume(ctx), -ENODEV);
 
     struct krun_display_backend display = {
         .features = KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER,

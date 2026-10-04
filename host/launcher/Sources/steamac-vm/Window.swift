@@ -22,6 +22,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     private let mouseMode: MouseMode
     private let baseTitle: String
     var onCloseRequest: (() -> Void)?
+    /// Ctrl+Cmd+S while the VM window has the keyboard (the menu's Suspend).
+    var onSuspendRequest: (() -> Void)?
     /// Cmd+, while the VM window has the keyboard (keys otherwise all go to the guest).
     var onOpenSettings: (() -> Void)?
     /// Launcher settings (live values: overlay, follow window size, mouse auto-capture).
@@ -36,6 +38,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     let pauseView: PauseOverlayView
     /// App id shown as paused (nil = not paused).
     private(set) var pausedGame: Int?
+    /// "Resuming…" chip after a suspend, until the guest's next frame.
+    let resumeChip: ResumeChipView
     /// Buttons whose press was swallowed (it resumed a paused game): their release is too.
     private var swallowedButtons = Set<UInt16>()
     private var progress: BootProgress?
@@ -78,6 +82,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay = OverlayView(frame: rect)
         stallView = StallIndicatorView(frame: rect)
         pauseView = PauseOverlayView(frame: rect)
+        resumeChip = ResumeChipView(frame: rect)
         settings = LauncherSettings.shared
         super.init()
         window.title = title
@@ -97,6 +102,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.addSubview(stallView)
         pauseView.frame = view.bounds
         view.addSubview(pauseView)
+        resumeChip.frame = view.bounds
+        view.addSubview(resumeChip)
         updateTitle()
         // @Published fires before the change: evaluate on the next main-queue turn.
         subscriptions.append(settings.$followWindowSize.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
@@ -169,13 +176,19 @@ final class WindowController: NSObject, NSWindowDelegate {
         return (w, h)
     }
 
+    /// Set while the VM is suspended: window size changes (leaving full screen before the window
+    /// hides) do not resize the guest.
+    var holdGuestSize = false
+    /// One-shot: the window has left full screen.
+    var onDidExitFullScreen: (() -> Void)?
+
     /// Debounced: never during a live drag or a fullscreen transition (the last frame is scaled
     /// meanwhile); fires once the size has been stable for `guestResizeDebounce`.
     private func scheduleGuestResize() {
         guestResizeWork?.cancel()
         guard settings.followWindowSize else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.window.inLiveResize, !self.inFullScreenTransition else { return }
+            guard let self, !self.window.inLiveResize, !self.inFullScreenTransition, !self.holdGuestSize else { return }
             let size = self.guestSizeForWindow()
             guard size != self.requestedGuestSize else { return }
             self.requestedGuestSize = size
@@ -195,7 +208,14 @@ final class WindowController: NSObject, NSWindowDelegate {
     func windowWillEnterFullScreen(_ notification: Notification) { inFullScreenTransition = true }
     func windowWillExitFullScreen(_ notification: Notification) { inFullScreenTransition = true }
     func windowDidEnterFullScreen(_ notification: Notification) { inFullScreenTransition = false; scheduleGuestResize() }
-    func windowDidExitFullScreen(_ notification: Notification) { inFullScreenTransition = false; scheduleGuestResize() }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        inFullScreenTransition = false
+        scheduleGuestResize()
+        if let done = onDidExitFullScreen {
+            onDidExitFullScreen = nil
+            done()
+        }
+    }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
     func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
 
@@ -358,6 +378,10 @@ final class WindowController: NSObject, NSWindowDelegate {
                 case kVK_ANSI_F: toggleFullScreen(); return true
                 case kVK_ANSI_G: captured ? releasePointer() : grabPointer(); return true
                 case kVK_ANSI_P: toggleMetalHUD(); return true
+                case kVK_ANSI_S:
+                    guard let onSuspendRequest else { break }
+                    onSuspendRequest()
+                    return true
                 default: break
                 }
             }
@@ -521,6 +545,9 @@ extension WindowController: NSMenuItemValidation {
 }
 
 extension WindowController {
+
+    /// The mouse is captured (relative mode, cursor hidden).
+    var pointerCaptured: Bool { captured }
 
     func grabPointer() {
         guard inputs != nil, !captured else { return }
@@ -718,8 +745,9 @@ extension WindowController {
 }
 
 enum MainMenu {
-    static func install(target: AnyObject, settings: Selector, report: Selector, restart: Selector, shutdown: Selector,
-                        forceQuit: Selector, fullscreen: Selector, grab: Selector, overlay: Selector, metalHUD: Selector) {
+    static func install(target: AnyObject, settings: Selector, report: Selector, restart: Selector, suspend: Selector,
+                        shutdown: Selector, forceQuit: Selector, fullscreen: Selector, grab: Selector, overlay: Selector,
+                        metalHUD: Selector) {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
@@ -728,9 +756,17 @@ enum MainMenu {
         appMenu.addItem(item("Settings…", settings, target, key: ","))
         appMenu.addItem(item("Report a Problem…", report, target))
         appMenu.addItem(.separator())
+        // Ctrl+Cmd+S also works while the VM window has the keyboard (WindowController.processKey).
+        let suspendItem = item("Suspend", suspend, target, key: "s")
+        suspendItem.keyEquivalentModifierMask = [.command, .control]
+        appMenu.addItem(suspendItem)
         appMenu.addItem(item("Restart VM", restart, target))
-        appMenu.addItem(item("Shut Down Guest", shutdown, target))
+        appMenu.addItem(item("Shut Down SteamOS", shutdown, target))
         appMenu.addItem(item("Force Quit", forceQuit, target))
+        appMenu.addItem(.separator())
+        // Lifecycle.applicationShouldTerminate decides (shut down; asks first while suspended).
+        // While the VM window has the keyboard, Cmd+Q goes to the guest like every key.
+        appMenu.addItem(NSMenuItem(title: "Quit FX Steam Launcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         addEditAndWindowMenus(main)
         let viewItem = NSMenuItem()
         main.insertItem(viewItem, at: 2)

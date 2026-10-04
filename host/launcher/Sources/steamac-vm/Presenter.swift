@@ -14,6 +14,8 @@ final class Presenter: DisplaySink {
     private var lock = os_unfair_lock()
     private var pending = false
     private(set) var framesShown: UInt64 = 0
+    /// Main thread, one-shot: runs after the next guest frame is on screen.
+    var onNextFrame: (() -> Void)?
 
     init(display: DisplayBackend, renderer: Renderer) {
         self.display = display
@@ -64,6 +66,10 @@ final class Presenter: DisplaySink {
         scanout.release(f)
         framesShown &+= 1
         view?.redraw(flushedAt: flushedAt)
+        if let next = onNextFrame {
+            onNextFrame = nil
+            next()
+        }
     }
 }
 
