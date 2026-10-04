@@ -32,6 +32,7 @@ struct Options {
     var headless = false
     var logFile: String?
     var network = true
+    var sound = true
     var sshPort = 2222
     var shmMiB = 8192
     var gpuFlags: UInt32? = nil
@@ -39,6 +40,7 @@ struct Options {
     var frameDumpPath = "steamac-frame.png"
     var mouseMode: MouseMode = .auto
     var controlFifo: String?
+    var autoCapture: Bool?
     var gamepad = true
     var krunLogLevel: UInt32 = 2
     var selftestDisplay = false
@@ -49,7 +51,7 @@ struct Options {
     static let usage = """
     usage: steamac-vm --kernel PATH [--initrd PATH] [--cmdline STR] --disk PATH[:ro] ...
                       [--cpus N] [--mem MiB] [--display WxH] [--refresh HZ] [--headless]
-                      [--log FILE] [--no-net] [--ssh-port PORT] [--shm-mib MiB]
+                      [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
                       [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
@@ -74,6 +76,9 @@ struct Options {
       --headless           no window and no input devices; SIGUSR1 dumps the latest frame
       --log FILE           also append the hvc0 console to FILE
       --no-net             no virtio-net / gvproxy
+      --no-sound           no virtio-snd (default: guest audio plays on the Mac's default output
+                           device and follows it when it changes; guest recording uses the default
+                           input device, asking for microphone permission the first time)
       --ssh-port PORT      host 127.0.0.1:PORT -> guest 192.168.127.2:22 (0 disables; default 2222)
       --shm-mib MiB        virtio-gpu host-visible shared memory window (default 8192)
       --gpu-flags HEX      virglrenderer flags (default VENUS|NO_VIRGL = 0xc0)
@@ -82,6 +87,8 @@ struct Options {
       --mouse MODE         auto (default): pointer follows the host cursor 1:1; while a game has focus
                            a click captures the mouse (relative, for mouse-look), Ctrl+Option releases.
                            tablet: absolute virtio tablet (KDE desktop mode). capture: always click-to-capture.
+      --auto-capture on|off  auto mode: capture on click in games, for this run (default: the saved
+                           setting, menu Mouse > Auto-Capture Mouse in Games; per-game overrides apply)
       --no-gamepad         do not create the virtual Xbox 360 pad
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
 
@@ -101,7 +108,8 @@ struct Options {
       --control-fifo PATH  create a FIFO that accepts scripted window input, one command per line:
                            move UX UY (0..1 in the picture) | button left|right|middle down|up |
                            click left|right|middle | wheel NOTCHES | rel DX DY | key KEYCODE |
-                           grab | release | guest LINE (as if sent on fx.progress) | dump PNG
+                           grab | release | menu game|global (toggle the Mouse menu checkboxes) |
+                           guest LINE (as if sent on fx.progress) | dump PNG
 
     Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release.
     Closing the window (or SIGINT/SIGTERM) presses the guest power key; a second request force-quits.
@@ -155,6 +163,7 @@ struct Options {
             case "--headless": o.headless = true
             case "--log": o.logFile = try value(a)
             case "--no-net": o.network = false
+            case "--no-sound": o.sound = false
             case "--ssh-port": o.sshPort = try int(a)
             case "--shm-mib": o.shmMiB = try int(a)
             case "--gpu-flags":
@@ -169,6 +178,10 @@ struct Options {
                 guard let m = MouseMode(rawValue: v) else { throw OptionError("--mouse: auto, tablet or capture") }
                 o.mouseMode = m
             case "--control-fifo": o.controlFifo = try value(a)
+            case "--auto-capture":
+                let v = try value(a)
+                guard v == "on" || v == "off" else { throw OptionError("--auto-capture: on or off") }
+                o.autoCapture = v == "on"
             case "--no-gamepad": o.gamepad = false
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
             case "--perf-stats": break   // read by PerfStats.shared (argv is passed to the VM process)

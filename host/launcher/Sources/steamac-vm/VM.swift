@@ -60,6 +60,15 @@ final class VM {
             log("disk \(id): \(d.path)\(d.readOnly ? " (ro)" : "")")
         }
 
+        // virtio-snd → CoreAudio default output (and default input while the guest records).
+        if o.sound {
+            if krun_has_feature(UInt64(KRUN_FEATURE_SND)) == 1 {
+                try krun("krun_set_snd_device", krun_set_snd_device(ctx, true))
+            } else {
+                log("warning: this libkrun was built without SND=1; no guest audio")
+            }
+        }
+
         // GPU: Venus only (no virgl GL), host-visible shm window for blobs.
         let flags = o.gpuFlags ?? (STEAMAC_VIRGL_VENUS | STEAMAC_VIRGL_NO_VIRGL)
         try krun("krun_set_gpu_options2", krun_set_gpu_options2(ctx, flags, UInt64(o.shmMiB) << 20))

@@ -193,6 +193,9 @@ do {
                      forceQuit: #selector(Lifecycle.menuForceQuit),
                      fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
                      overlay: #selector(Lifecycle.menuOverlay))
+    wc.mouseSettings = MouseSettings(runOverride: options.autoCapture)
+    wc.installMouseMenu()
+    log("input: mouse \(options.mouseMode.rawValue), \(wc.mouseSettings.summary)")
     let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0) }
     wc.show()
     wc.overlay.show()

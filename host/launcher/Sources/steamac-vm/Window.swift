@@ -301,12 +301,19 @@ final class WindowController: NSObject, NSWindowDelegate {
         mouseMode == .tablet || (mouseMode == .auto && guestFocus == .desktop)
     }
 
+    /// Persisted auto-capture preferences (set by main before the window is shown).
+    var mouseSettings = MouseSettings(runOverride: nil)
+
+    private var focusedGame: Int? {
+        if case .game(let id) = guestFocus { return id } else { return nil }
+    }
+
     /// A click in the picture captures the mouse instead of being forwarded.
     private var clickCaptures: Bool {
         switch mouseMode {
         case .capture: return true
         case .tablet: return false
-        case .auto: if case .game = guestFocus { return true } else { return false }
+        case .auto: return focusedGame.map { mouseSettings.autoCapture(for: $0) } ?? false
         }
     }
 
@@ -315,10 +322,84 @@ final class WindowController: NSObject, NSWindowDelegate {
         guestFocus = f
         log("input: guest focus \(f)")
         guestCursor = nil
-        // Back in Steam / desktop: give the pointer back (the Steam UI wants a normal cursor).
+        // Back in Steam / desktop (or a game without auto-capture): give the pointer back.
         if captured && mouseMode == .auto && !clickCaptures { releasePointer() }
         updateTitle()
+        if let id = focusedGame, mouseMode == .auto {
+            flashStatus(mouseSettings.autoCapture(for: id) ? "click to capture the mouse (Ctrl+Option releases)"
+                                                           : "auto-capture off for game \(id) (Ctrl+Cmd+G captures)")
+        }
     }
+
+    /// Window-title hint for a few seconds, then back to the regular status.
+    private var statusFlashWork: DispatchWorkItem?
+    private func flashStatus(_ text: String) {
+        statusFlashWork?.cancel()
+        setStatus(text)
+        let work = DispatchWorkItem { [weak self] in self?.updateTitle() }
+        statusFlashWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+    }
+
+    // Mouse menu actions.
+    @objc func toggleGameAutoCapture(_ sender: Any?) {
+        guard let id = focusedGame else { return }
+        let on = !mouseSettings.autoCapture(for: id)
+        mouseSettings.setAutoCapture(on, for: id)
+        if !on && captured { releasePointer() }
+        updateTitle()
+        flashStatus(on ? "auto-capture on for game \(id)" : "auto-capture off for game \(id)")
+    }
+
+    @objc func toggleGlobalAutoCapture(_ sender: Any?) {
+        mouseSettings.globalAutoCapture.toggle()
+        if captured && !clickCaptures { releasePointer() }
+        updateTitle()
+        flashStatus("auto-capture in games \(mouseSettings.globalAutoCapture ? "on" : "off")")
+    }
+
+    @objc func toggleCaptureNow(_ sender: Any?) { captured ? releasePointer() : grabPointer() }
+
+    /// Adds the "Mouse" menu (validated against the current focus each time it opens).
+    func installMouseMenu() {
+        guard let main = NSApp.mainMenu else { return }
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Mouse")
+        menu.autoenablesItems = true
+        for (title, action) in [("Capture Mouse in This Game", #selector(toggleGameAutoCapture(_:))),
+                                ("Auto-Capture Mouse in Games", #selector(toggleGlobalAutoCapture(_:))),
+                                ("Capture / Release Mouse Now (Ctrl+Cmd+G)", #selector(toggleCaptureNow(_:)))] {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            i.target = self
+            menu.addItem(i)
+        }
+        item.submenu = menu
+        main.addItem(item)
+    }
+}
+
+extension WindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(toggleGameAutoCapture(_:)):
+            if let id = focusedGame {
+                item.title = "Capture Mouse in This Game (\(id))"
+                item.state = mouseSettings.autoCapture(for: id) ? .on : .off
+                return mouseMode == .auto
+            }
+            item.title = "Capture Mouse in This Game"
+            item.state = .off
+            return false
+        case #selector(toggleGlobalAutoCapture(_:)):
+            item.state = mouseSettings.globalAutoCapture ? .on : .off
+            return mouseMode == .auto
+        default:
+            return inputs != nil
+        }
+    }
+}
+
+extension WindowController {
 
     func grabPointer() {
         guard inputs != nil, !captured else { return }

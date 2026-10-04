@@ -10,8 +10,11 @@
 //!   log <text>                    detail line ("583 / 662 MB · 12.4 MB/s")
 //!   ready                         Steam UI is on screen
 //!   shutdown <poweroff|reboot>    session torn down by a system shutdown
-//!   focus steam | focus game <appid>   gamescope's focused app (GAMESCOPE_FOCUSED_APP;
-//!                                 0 and 769 = Steam UI), for the launcher's pointer grab
+//!   game <appid> <name>           display name from the appmanifest, once per app id and
+//!                                 boot, right after its first `focus game <appid>`
+//!   focus steam | focus game <appid> | focus desktop   gamescope's focused app (GAMESCOPE_FOCUSED_APP;
+//!                                 0 and 769 = Steam UI; desktop = session ended without a
+//!                                 system shutdown), for the launcher's pointer handling
 //!
 //! Lifecycle
 //!   1. port missing (older launcher) -> exit 0 quietly.
@@ -24,7 +27,7 @@
 //!      focus changes (focus.rs; also once at start, after `ready` and after
 //!      every X reconnect) and wait for the shutdown:
 //!      SIGTERM -> classify (shutdown.rs, bounded ~1.5 s) -> `shutdown <kind>`
-//!      or nothing if only the session ends -> close port, exit 0.
+//!      or `focus desktop` if only the session ends -> close port, exit 0.
 //!
 //! Never blocks the session: the port is non-blocking, all work is a 200 ms
 //! tick of a few cheap reads.
@@ -34,7 +37,9 @@
 //!                             (a regular file, FIFO or another char device)
 //!   FX_PROGRESS_STEAM_LOG=<path>  bootstrapper log to follow
 //!   FX_PROGRESS_FORCE=1       ignore the once-per-boot `ready` marker
+//!   FX_PROGRESS_STEAM_ROOT=<dir>  Steam root for appmanifest lookup (default ~/.local/share/Steam)
 
+mod appname;
 mod focus;
 mod port;
 mod shutdown;
@@ -374,16 +379,21 @@ fn main() {
     }
     let sig = SIGNAL.load(Ordering::SeqCst);
     match shutdown::detect() {
-        Some(kind) => {
-            rep.port.send(&format!("shutdown {}", kind.word()));
-            // Short bounded retry if the host is momentarily not reading.
-            let deadline = Instant::now() + Duration::from_millis(300);
-            while rep.port.has_pending() && Instant::now() < deadline {
-                nap(20);
-                rep.port.flush();
-            }
+        Some(kind) => rep.port.send(&format!("shutdown {}", kind.word())),
+        None => {
+            // Only the gamescope session ends (Switch to Desktop, relogin):
+            // whatever comes next is not gamescope, so the launcher should use
+            // its absolute pointer (KWin handles it exactly). The next
+            // gamescope session's agent sends `focus steam` again.
+            eprintln!("fx-progress: signal {sig}, session ends without system shutdown");
+            rep.port.send("focus desktop");
         }
-        None => eprintln!("fx-progress: signal {sig}, session ends without system shutdown"),
+    }
+    // Short bounded retry if the host is momentarily not reading.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while rep.port.has_pending() && Instant::now() < deadline {
+        nap(20);
+        rep.port.flush();
     }
     // Port is closed on drop.
 }

@@ -2,8 +2,10 @@ import AppKit
 import Carbon.HIToolbox
 import Foundation
 
-/// `--control-fifo PATH`: scripted window input for automated tests. Commands are turned into
-/// the same NSEvents (or controller calls) real input produces, on the main thread:
+/// `--control-fifo PATH`: scripted window input for automated tests, on the main thread. Pointer
+/// moves and buttons are synthesized NSEvents dispatched through NSApplication.sendEvent (the
+/// same AppKit routing real mouse events take: window → first responder / hit-tested VMView);
+/// wheel, `rel` and keys call the controller directly:
 ///   move UX UY            pointer to (UX, UY) in 0..1 picture coordinates (top-left origin)
 ///   button B down|up      B = left | right | middle (at the last `move` position)
 ///   click B               button down + up
@@ -11,6 +13,7 @@ import Foundation
 ///   rel DX DY             relative motion in points (as when the mouse is captured)
 ///   key KEYCODE           macOS virtual key code, press + release
 ///   grab | release        capture / release the mouse
+///   menu game|global      toggle Mouse > Capture Mouse in This Game / Auto-Capture Mouse in Games
 ///   guest LINE            handle LINE as if the guest had sent it on fx.progress
 ///   dump PATH             frame + window dump (as SIGUSR1, to PATH)
 enum DebugControl {
@@ -63,7 +66,7 @@ enum DebugControl {
         case "middle": type = down ? .otherMouseDown : .otherMouseUp
         default: type = down ? .leftMouseDown : .leftMouseUp
         }
-        if let e = mouseEvent(type, wc) { wc.pointerButton(e, down: down) }
+        if let e = mouseEvent(type, wc) { NSApp.sendEvent(e) }
     }
 
     private static func handle(_ cmd: String, _ wc: WindowController, _ progress: BootProgress, _ dump: (String) -> Void) {
@@ -74,7 +77,7 @@ enum DebugControl {
         case "move":
             guard args.count == 2, let ux = Double(args[0]), let uy = Double(args[1]) else { break }
             lastPoint = windowPoint(ux, uy, wc)
-            if let e = mouseEvent(.mouseMoved, wc) { wc.pointerMoved(e) }
+            if let e = mouseEvent(.mouseMoved, wc) { NSApp.sendEvent(e) }
         case "button":
             guard args.count == 2 else { break }
             buttonEvent(args[0], down: args[1] == "down", wc)
@@ -83,7 +86,7 @@ enum DebugControl {
             buttonEvent(args.first ?? "left", down: false, wc)
         case "wheel":
             guard let n = Double(args.first ?? "") else { break }
-            if let e = mouseEvent(.mouseMoved, wc) { wc.pointerMoved(e) }
+            if let e = mouseEvent(.mouseMoved, wc) { NSApp.sendEvent(e) }
             wc.sendWheel(hiResY: n * 120, hiResX: 0)
         case "rel":
             guard args.count == 2, let dx = Double(args[0]), let dy = Double(args[1]) else { break }
@@ -98,6 +101,8 @@ enum DebugControl {
                 }
             }
         case "grab": wc.grabPointer()
+        case "menu":   // menu game | menu global: toggle like the Mouse menu items
+            if args.first == "game" { wc.toggleGameAutoCapture(nil) } else { wc.toggleGlobalAutoCapture(nil) }
         case "release": wc.releasePointer()
         case "guest": progress.guestLine(p.count > 1 ? p[1] : "")
         case "dump": dump(args.first ?? "control-dump.png")
