@@ -1,0 +1,2825 @@
+From: steamac <steamac@localhost>
+Subject: [PATCH] virtio-snd: macOS CoreAudio backend and runtime audio controls
+
+Make SND=1 build on macOS (PipeWire becomes a Linux-only dependency) with a
+CoreAudio backend (audio_backends/coreaudio.rs, written for steamac):
+
+- playback: default-output AudioUnit (follows the system default device) or a HAL
+  unit bound to a selected device; the guest format (U8/S16/S32/FLOAT, 8-48 kHz,
+  1-2 ch) goes to the unit, which converts. Guest data is copied into a lock-free
+  SPSC ring by a pump thread; the real-time render callback only copies out of it.
+- pacing: playback messages complete along the device clock (the last callback's
+  chunk is interpolated, completions run a configurable host buffer ahead of the
+  device, default 40 ms), so the guest never runs faster than real time and its
+  hw_ptr moves smoothly. latency_bytes reports the host buffer plus CoreAudio's
+  downstream latency (device + stream latency, safety offset, IO buffer, unit).
+- STOP plays out what the guest already saw completed and holds the rest (pause);
+  RELEASE waits for that, then completes everything pending.
+- underruns (a gap followed by more data) are counted and logged once a second.
+- capture: HAL input unit on the default input device, started only between
+  START and STOP (microphone permission is asked then), AudioConverter to the
+  guest format/rate, follows default-input changes while recording.
+- STEAMAC_SND_DUMP=/path.wav records the playback stream as handed to CoreAudio.
+
+Runtime controls (include/libkrun.h): krun_snd_set_output_device,
+krun_snd_set_volume, krun_snd_set_buffer_ms, usable before or after
+krun_start_enter (registry like krun_display_resize).
+
+Device hardening: unknown control codes, invalid/mismatched stream ids in I/O
+requests and failed PREPARE/START/STOP no longer panic the worker; event-queue
+buffers are no longer logged as errors.
+---
+diff --git a/include/libkrun.h b/include/libkrun.h
+index 2271e40..0369d6b 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -831,6 +831,52 @@ int krun_add_input_device_fd(uint32_t ctx_id, int input_fd);
+  */
+ int32_t krun_set_snd_device(uint32_t ctx_id, bool enable);
+ 
++/*
++ * Runtime audio controls of the virtio-snd device (macOS CoreAudio backend). Callable from any
++ * thread, before krun_start_enter (applied when the device starts) or while the VM runs.
++ * They return:
++ *   0         on success;
++ *   -ENODEV   no such context, the context has no virtio-snd device (krun_set_snd_device), or
++ *             (krun_snd_set_output_device) no CoreAudio output device with that UID;
++ *   -EINVAL   an argument is out of range;
++ *   -ENOTSUP  libkrun was built without SND=1, or the backend has no such control (Linux).
++ */
++
++/**
++ * Selects the host output device of the guest's playback stream.
++ *
++ * Arguments:
++ *  "ctx_id"               - the configuration context ID.
++ *  "coreaudio_device_uid" - the device's kAudioDevicePropertyDeviceUID (UTF-8), or NULL for the
++ *                           system default output device, which is followed when the user changes
++ *                           it (the default). A running guest stream keeps running: the output
++ *                           unit is restarted on the new device (a short gap, no guest xrun).
++ *                           If a selected device goes away, playback falls back to the system
++ *                           default until it returns.
++ */
++int32_t krun_snd_set_output_device(uint32_t ctx_id, const char *coreaudio_device_uid);
++
++/**
++ * Sets the host-side playback gain, applied on top of the guest's own volume.
++ *
++ * Arguments:
++ *  "ctx_id" - the configuration context ID.
++ *  "gain"   - linear gain 0.0 .. 1.0 (default 1.0).
++ *  "mute"   - true silences playback (the guest stream keeps running).
++ */
++int32_t krun_snd_set_volume(uint32_t ctx_id, float gain, bool mute);
++
++/**
++ * Sets the playback buffer the host keeps on top of what the guest queues (default 40 ms).
++ * Smaller = lower latency but crackles if the guest is starved of CPU; larger = more robust.
++ * The guest is told the total delay (latency_bytes), so A/V sync stays correct either way.
++ *
++ * Arguments:
++ *  "ctx_id" - the configuration context ID.
++ *  "ms"     - 0 .. 200.
++ */
++int32_t krun_snd_set_buffer_ms(uint32_t ctx_id, uint32_t ms);
++
+ /**
+  * Configures a map of rlimits to be set in the guest before starting the isolated binary.
+  *
+diff --git a/src/devices/Cargo.toml b/src/devices/Cargo.toml
+index 243d6cc..4f1c806 100644
+--- a/src/devices/Cargo.toml
++++ b/src/devices/Cargo.toml
+@@ -29,7 +29,6 @@ libc = ">=0.2.39"
+ libloading = "0.8"
+ log = "0.4.0"
+ nix = { version = "0.30.1", features = ["ioctl", "net", "poll", "socket", "fs"] }
+-pw = { package = "pipewire", version = "0.9.2", optional = true }
+ rand = "0.9.2"
+ thiserror = { version = "2.0", optional = true }
+ virtio-bindings = "0.2.0"
+@@ -53,6 +52,8 @@ rutabaga_gfx = { package = "krun-rutabaga-gfx", version = "=0.1.0-1.19.6", path
+ caps = "0.5.5"
+ kvm-bindings = { version = "0.12", features = ["fam-wrappers"] }
+ kvm-ioctls = "0.22"
++# virtio-snd host backend: PipeWire on Linux, CoreAudio (system frameworks) on macOS.
++pw = { package = "pipewire", version = "0.9.2", optional = true }
+ 
+ [target.'cfg(any(target_arch = "aarch64", target_arch = "riscv64"))'.dependencies]
+ vm-fdt = ">= 0.2.0"
+diff --git a/src/devices/src/virtio/mod.rs b/src/devices/src/virtio/mod.rs
+index 384aef5..7345d16 100644
+--- a/src/devices/src/virtio/mod.rs
++++ b/src/devices/src/virtio/mod.rs
+@@ -55,7 +55,7 @@ pub use self::queue::{Descriptor, DescriptorChain, Queue};
+ #[cfg(not(feature = "tee"))]
+ pub use self::rng::*;
+ #[cfg(feature = "snd")]
+-pub use self::snd::Snd;
++pub use self::snd::{Snd, SndControl};
+ pub use self::vsock::*;
+ 
+ /// When the driver initializes the device, it lets the device know about the
+diff --git a/src/devices/src/virtio/snd/audio_backends.rs b/src/devices/src/virtio/snd/audio_backends.rs
+index f35cbd7..65aa761 100644
+--- a/src/devices/src/virtio/snd/audio_backends.rs
++++ b/src/devices/src/virtio/snd/audio_backends.rs
+@@ -1,12 +1,20 @@
+ // Manos Pitsidianakis <manos.pitsidianakis@linaro.org>
+ // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
+ 
++#[cfg(target_os = "macos")]
++mod coreaudio;
++#[cfg(target_os = "linux")]
+ mod pipewire;
+ 
+ use std::sync::{Arc, RwLock};
+ 
++#[cfg(target_os = "macos")]
++pub use self::coreaudio::output_device_exists;
++#[cfg(target_os = "macos")]
++use self::coreaudio::CoreAudioBackend;
++#[cfg(target_os = "linux")]
+ use self::pipewire::PwBackend;
+-use super::{stream::Stream, BackendType, Result, VirtioSndPcmSetParams};
++use super::{stream::Stream, BackendType, Result, SndControl, VirtioSndPcmSetParams};
+ 
+ pub trait AudioBackend {
+     fn write(&self, stream_id: u32) -> Result<()>;
+@@ -41,10 +49,14 @@ pub trait AudioBackend {
+ pub fn alloc_audio_backend(
+     backend: BackendType,
+     streams: Arc<RwLock<Vec<Stream>>>,
++    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] control: Arc<SndControl>,
+ ) -> Result<Box<dyn AudioBackend + Send + Sync>> {
+     log::trace!("allocating audio backend {backend:?}");
+     match backend {
++        #[cfg(target_os = "linux")]
+         BackendType::Pipewire => Ok(Box::new(PwBackend::new(streams))),
++        #[cfg(target_os = "macos")]
++        BackendType::CoreAudio => Ok(Box::new(CoreAudioBackend::new(streams, control)?)),
+     }
+ }
+ 
+diff --git a/src/devices/src/virtio/snd/audio_backends/coreaudio.rs b/src/devices/src/virtio/snd/audio_backends/coreaudio.rs
+new file mode 100644
+index 0000000..a243cb8
+--- /dev/null
++++ b/src/devices/src/virtio/snd/audio_backends/coreaudio.rs
+@@ -0,0 +1,2036 @@
++// SPDX-License-Identifier: Apache-2.0
++//
++// CoreAudio backend for virtio-snd (macOS).
++//
++// Playback: a default-output AudioUnit (kAudioUnitSubType_DefaultOutput, which follows the
++// system default output device, e.g. when AirPods connect) is fed the guest's PCM in the
++// guest's own format; the unit converts format and rate to the device. Guest data is copied
++// into a lock-free SPSC byte ring by a pump thread as soon as the guest queues it (since Linux
++// 6.7 the driver only queues what the application has written), and the real-time render
++// callback only copies out of the ring. A playback message is completed only once the render
++// callback has consumed its last byte, so the guest's hw_ptr advances at the device clock and
++// the guest cannot run ahead of real time. latency_bytes reports the CoreAudio path after the
++// callback (device + stream latency, safety offset, IO buffer, unit latency), which the guest
++// driver feeds into runtime->delay. Frames in the ring are not counted: they belong to
++// messages the guest still sees as pending.
++//
++// Capture: a HAL output unit with input enabled on the default input device (re-selected when
++// the default changes) renders Float32 at the device rate into a second ring; the pump thread
++// converts it (AudioConverter: rate and format) into the guest's buffers and completes each
++// one when it is full. The input unit runs only between START and STOP, so the microphone (and
++// its permission prompt) is only touched while a guest application records.
++//
++// Underruns: when the ring runs dry while a stream is running the callback plays silence; a
++// gap followed by more data counts as one underrun and is logged by the pump thread.
++//
++// STEAMAC_SND_DUMP=/path.wav writes every byte handed to CoreAudio for the playback stream
++// while it runs (underrun silence included) to a WAV file (a new file per format change).
++
++use std::cell::UnsafeCell;
++use std::collections::VecDeque;
++use std::ffi::{c_char, c_void};
++use std::fs::File;
++use std::os::unix::fs::FileExt;
++use std::path::{Path, PathBuf};
++use std::ptr;
++use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
++use std::sync::{Arc, LazyLock, Mutex, RwLock};
++use std::thread::JoinHandle;
++use std::time::{Duration, Instant};
++
++use super::super::{
++    stream::{Buffer, Error as StreamError, PCMState, PcmParams},
++    virtio_sound::*,
++    Direction, Error, Result, SndControl, Stream,
++};
++use super::AudioBackend;
++
++#[allow(non_upper_case_globals, non_snake_case, clippy::upper_case_acronyms)]
++mod ffi {
++    use std::ffi::{c_char, c_void};
++
++    pub type OSStatus = i32;
++    pub type AudioUnit = *mut c_void;
++    pub type AudioComponent = *mut c_void;
++    pub type AudioConverterRef = *mut c_void;
++    pub type AudioObjectID = u32;
++
++    #[repr(C)]
++    pub struct AudioComponentDescription {
++        pub componentType: u32,
++        pub componentSubType: u32,
++        pub componentManufacturer: u32,
++        pub componentFlags: u32,
++        pub componentFlagsMask: u32,
++    }
++
++    #[repr(C)]
++    #[derive(Clone, Copy, Debug, Default, PartialEq)]
++    pub struct AudioStreamBasicDescription {
++        pub mSampleRate: f64,
++        pub mFormatID: u32,
++        pub mFormatFlags: u32,
++        pub mBytesPerPacket: u32,
++        pub mFramesPerPacket: u32,
++        pub mBytesPerFrame: u32,
++        pub mChannelsPerFrame: u32,
++        pub mBitsPerChannel: u32,
++        pub mReserved: u32,
++    }
++
++    #[repr(C)]
++    pub struct AudioBuffer {
++        pub mNumberChannels: u32,
++        pub mDataByteSize: u32,
++        pub mData: *mut c_void,
++    }
++
++    /// AudioBufferList with room for the single interleaved buffer used everywhere here.
++    #[repr(C)]
++    pub struct AudioBufferList {
++        pub mNumberBuffers: u32,
++        pub mBuffers: [AudioBuffer; 1],
++    }
++
++    /// (refcon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, ioData)
++    pub type AURenderCallback = extern "C" fn(
++        *mut c_void,
++        *mut u32,
++        *const c_void,
++        u32,
++        u32,
++        *mut AudioBufferList,
++    ) -> OSStatus;
++
++    #[repr(C)]
++    pub struct AURenderCallbackStruct {
++        pub inputProc: AURenderCallback,
++        pub inputProcRefCon: *mut c_void,
++    }
++
++    /// (converter, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData)
++    pub type AudioConverterComplexInputDataProc = extern "C" fn(
++        AudioConverterRef,
++        *mut u32,
++        *mut AudioBufferList,
++        *mut *mut c_void,
++        *mut c_void,
++    ) -> OSStatus;
++
++    #[repr(C)]
++    pub struct AudioObjectPropertyAddress {
++        pub mSelector: u32,
++        pub mScope: u32,
++        pub mElement: u32,
++    }
++
++    #[repr(C)]
++    pub struct MachTimespec {
++        pub tv_sec: u32,
++        pub tv_nsec: i32,
++    }
++
++    #[repr(C)]
++    pub struct MachTimebaseInfo {
++        pub numer: u32,
++        pub denom: u32,
++    }
++
++    const fn fourcc(s: &[u8; 4]) -> u32 {
++        ((s[0] as u32) << 24) | ((s[1] as u32) << 16) | ((s[2] as u32) << 8) | s[3] as u32
++    }
++
++    pub const kAudioUnitType_Output: u32 = fourcc(b"auou");
++    pub const kAudioUnitSubType_DefaultOutput: u32 = fourcc(b"def ");
++    pub const kAudioUnitSubType_HALOutput: u32 = fourcc(b"ahal");
++    pub const kAudioUnitManufacturer_Apple: u32 = fourcc(b"appl");
++
++    pub const kAudioUnitProperty_StreamFormat: u32 = 8;
++    pub const kAudioUnitProperty_Latency: u32 = 12;
++    pub const kAudioUnitProperty_SetRenderCallback: u32 = 23;
++    pub const kAudioOutputUnitProperty_CurrentDevice: u32 = 2000;
++    pub const kAudioOutputUnitProperty_EnableIO: u32 = 2003;
++    pub const kAudioOutputUnitProperty_SetInputCallback: u32 = 2005;
++
++    pub const kAudioUnitScope_Global: u32 = 0;
++    pub const kAudioUnitScope_Input: u32 = 1;
++    pub const kAudioUnitScope_Output: u32 = 2;
++
++    pub const kAudioFormatLinearPCM: u32 = fourcc(b"lpcm");
++    pub const kAudioFormatFlagIsFloat: u32 = 1 << 0;
++    pub const kAudioFormatFlagIsSignedInteger: u32 = 1 << 2;
++    pub const kAudioFormatFlagIsPacked: u32 = 1 << 3;
++    pub const kAudioUnitRenderAction_OutputIsSilence: u32 = 1 << 4;
++
++    pub const kAudioObjectSystemObject: AudioObjectID = 1;
++    pub const kAudioHardwarePropertyDefaultInputDevice: u32 = fourcc(b"dIn ");
++    pub const kAudioHardwarePropertyTranslateUIDToDevice: u32 = fourcc(b"uidd");
++    pub const kHALOutputParam_Volume: u32 = 14;
++    pub const kAudioObjectPropertyScopeGlobal: u32 = fourcc(b"glob");
++    pub const kAudioObjectPropertyScopeInput: u32 = fourcc(b"inpt");
++    pub const kAudioObjectPropertyScopeOutput: u32 = fourcc(b"outp");
++    pub const kAudioObjectPropertyElementMain: u32 = 0;
++    pub const kAudioObjectPropertyName: u32 = fourcc(b"lnam");
++    pub const kAudioDevicePropertyLatency: u32 = fourcc(b"ltnc");
++    pub const kAudioDevicePropertySafetyOffset: u32 = fourcc(b"saft");
++    pub const kAudioDevicePropertyBufferFrameSize: u32 = fourcc(b"fsiz");
++    pub const kAudioDevicePropertyNominalSampleRate: u32 = fourcc(b"nsrt");
++    pub const kAudioDevicePropertyStreams: u32 = fourcc(b"stm#");
++    pub const kAudioStreamPropertyLatency: u32 = fourcc(b"ltnc");
++
++    pub const kCFStringEncodingUTF8: u32 = 0x0800_0100;
++    pub const SYNC_POLICY_FIFO: i32 = 0;
++    pub const KERN_SUCCESS: i32 = 0;
++
++    #[link(name = "AudioToolbox", kind = "framework")]
++    extern "C" {
++        pub fn AudioComponentFindNext(
++            inComponent: AudioComponent,
++            inDesc: *const AudioComponentDescription,
++        ) -> AudioComponent;
++        pub fn AudioComponentInstanceNew(c: AudioComponent, out: *mut AudioUnit) -> OSStatus;
++        pub fn AudioComponentInstanceDispose(unit: AudioUnit) -> OSStatus;
++        pub fn AudioUnitInitialize(unit: AudioUnit) -> OSStatus;
++        pub fn AudioUnitUninitialize(unit: AudioUnit) -> OSStatus;
++        pub fn AudioUnitSetProperty(
++            unit: AudioUnit,
++            id: u32,
++            scope: u32,
++            element: u32,
++            data: *const c_void,
++            size: u32,
++        ) -> OSStatus;
++        pub fn AudioUnitGetProperty(
++            unit: AudioUnit,
++            id: u32,
++            scope: u32,
++            element: u32,
++            data: *mut c_void,
++            size: *mut u32,
++        ) -> OSStatus;
++        pub fn AudioUnitRender(
++            unit: AudioUnit,
++            ioActionFlags: *mut u32,
++            inTimeStamp: *const c_void,
++            inOutputBusNumber: u32,
++            inNumberFrames: u32,
++            ioData: *mut AudioBufferList,
++        ) -> OSStatus;
++        pub fn AudioOutputUnitStart(unit: AudioUnit) -> OSStatus;
++        pub fn AudioOutputUnitStop(unit: AudioUnit) -> OSStatus;
++        pub fn AudioUnitSetParameter(
++            unit: AudioUnit,
++            id: u32,
++            scope: u32,
++            element: u32,
++            value: f32,
++            offset_frames: u32,
++        ) -> OSStatus;
++
++        pub fn AudioConverterNew(
++            inSourceFormat: *const AudioStreamBasicDescription,
++            inDestinationFormat: *const AudioStreamBasicDescription,
++            outAudioConverter: *mut AudioConverterRef,
++        ) -> OSStatus;
++        pub fn AudioConverterDispose(conv: AudioConverterRef) -> OSStatus;
++        pub fn AudioConverterFillComplexBuffer(
++            conv: AudioConverterRef,
++            inInputDataProc: AudioConverterComplexInputDataProc,
++            inInputDataProcUserData: *mut c_void,
++            ioOutputDataPacketSize: *mut u32,
++            outOutputData: *mut AudioBufferList,
++            outPacketDescription: *mut c_void,
++        ) -> OSStatus;
++    }
++
++    #[link(name = "CoreAudio", kind = "framework")]
++    extern "C" {
++        pub fn AudioObjectGetPropertyData(
++            id: AudioObjectID,
++            address: *const AudioObjectPropertyAddress,
++            qualifierSize: u32,
++            qualifier: *const c_void,
++            ioDataSize: *mut u32,
++            outData: *mut c_void,
++        ) -> OSStatus;
++        pub fn AudioObjectGetPropertyDataSize(
++            id: AudioObjectID,
++            address: *const AudioObjectPropertyAddress,
++            qualifierSize: u32,
++            qualifier: *const c_void,
++            outDataSize: *mut u32,
++        ) -> OSStatus;
++    }
++
++    #[link(name = "CoreFoundation", kind = "framework")]
++    extern "C" {
++        pub fn CFStringGetCString(s: *const c_void, buf: *mut c_char, size: isize, enc: u32) -> u8;
++        pub fn CFRelease(cf: *const c_void);
++        pub fn CFStringCreateWithCString(
++            alloc: *const c_void,
++            s: *const c_char,
++            enc: u32,
++        ) -> *const c_void;
++    }
++
++    extern "C" {
++        pub static mach_task_self_: u32;
++        pub fn semaphore_create(task: u32, sem: *mut u32, policy: i32, value: i32) -> i32;
++        pub fn semaphore_destroy(task: u32, sem: u32) -> i32;
++        pub fn semaphore_signal(sem: u32) -> i32;
++        pub fn semaphore_timedwait(sem: u32, wait_time: MachTimespec) -> i32;
++        pub fn mach_absolute_time() -> u64;
++        pub fn mach_timebase_info(info: *mut MachTimebaseInfo) -> i32;
++    }
++}
++
++use ffi::*;
++
++/// Ring capacity per stream: ~2.7 s of the largest format (48 kHz FLOAT stereo), far above
++/// what the guest driver ever queues (its whole buffer).
++const RING_BYTES: usize = 1 << 20;
++/// Capture: largest IO slice the input callback accepts (frames).
++const CAPTURE_MAX_FRAMES: usize = 16384;
++const HOUSEKEEPING: Duration = Duration::from_secs(1);
++/// Non-zero status the converter input proc returns when the ring has no more frames now.
++const NO_MORE_INPUT: OSStatus = 0x6e6f6d6f; // 'nomo'
++
++fn check(status: OSStatus, what: &str) -> Result<()> {
++    if status == 0 {
++        Ok(())
++    } else {
++        Err(Error::UnexpectedAudioBackendError(format!(
++            "{what} failed: OSStatus {status}"
++        )))
++    }
++}
++
++/// Mach semaphore: the one wake primitive that is safe to signal from a CoreAudio IO thread.
++struct Semaphore(u32);
++
++impl Semaphore {
++    fn new() -> Result<Self> {
++        let mut sem = 0;
++        // SAFETY: plain mach call with a valid out pointer.
++        let kr = unsafe { semaphore_create(mach_task_self_, &mut sem, SYNC_POLICY_FIFO, 0) };
++        if kr != KERN_SUCCESS {
++            return Err(Error::UnexpectedAudioBackendError(format!(
++                "semaphore_create failed: {kr}"
++            )));
++        }
++        Ok(Self(sem))
++    }
++
++    fn signal(&self) {
++        // SAFETY: the semaphore lives as long as self.
++        unsafe { semaphore_signal(self.0) };
++    }
++
++    fn wait(&self, timeout: Duration) {
++        let ts = MachTimespec {
++            tv_sec: timeout.as_secs() as u32,
++            tv_nsec: timeout.subsec_nanos() as i32,
++        };
++        // SAFETY: the semaphore lives as long as self.
++        unsafe { semaphore_timedwait(self.0, ts) };
++    }
++}
++
++impl Drop for Semaphore {
++    fn drop(&mut self) {
++        // SAFETY: created by semaphore_create on this task.
++        unsafe { semaphore_destroy(mach_task_self_, self.0) };
++    }
++}
++
++/// Lock-free single-producer single-consumer byte ring. `head`/`tail` count bytes ever
++/// written/read, so positions double as stream offsets.
++struct Ring {
++    buf: Box<[UnsafeCell<u8>]>,
++    head: AtomicU64,
++    tail: AtomicU64,
++}
++
++impl Ring {
++    fn new(capacity: usize) -> Self {
++        assert!(capacity.is_power_of_two());
++        Self {
++            buf: (0..capacity).map(|_| UnsafeCell::new(0)).collect(),
++            head: AtomicU64::new(0),
++            tail: AtomicU64::new(0),
++        }
++    }
++
++    fn len(&self) -> usize {
++        let tail = self.tail.load(Ordering::Acquire);
++        (self.head.load(Ordering::Acquire) - tail) as usize
++    }
++
++    fn written(&self) -> u64 {
++        self.head.load(Ordering::Acquire)
++    }
++
++    fn consumed(&self) -> u64 {
++        self.tail.load(Ordering::Acquire)
++    }
++
++    /// Drop everything buffered. Only while neither side is running.
++    fn clear(&self) {
++        self.tail
++            .store(self.head.load(Ordering::Acquire), Ordering::Release);
++    }
++
++    fn data(&self) -> *mut u8 {
++        UnsafeCell::raw_get(self.buf.as_ptr())
++    }
++
++    /// Producer side: offers up to `max` free bytes to `fill` in at most two contiguous
++    /// pieces; `fill` returns how much it wrote (stopping early ends the call). Returns the
++    /// total published.
++    ///
++    /// # Safety
++    /// Only one thread may produce at a time.
++    unsafe fn produce(&self, max: usize, mut fill: impl FnMut(&mut [u8]) -> usize) -> usize {
++        let cap = self.buf.len();
++        let head = self.head.load(Ordering::Relaxed);
++        let free = cap - (head - self.tail.load(Ordering::Acquire)) as usize;
++        let mut todo = max.min(free);
++        let mut done = 0;
++        while todo > 0 {
++            let off = (head as usize + done) & (cap - 1);
++            let n = todo.min(cap - off);
++            let w = fill(std::slice::from_raw_parts_mut(self.data().add(off), n)).min(n);
++            done += w;
++            todo -= w;
++            if w < n {
++                break;
++            }
++        }
++        self.head.store(head + done as u64, Ordering::Release);
++        done
++    }
++
++    /// Consumer side, mirror of `produce`.
++    ///
++    /// # Safety
++    /// Only one thread may consume at a time.
++    unsafe fn consume(&self, max: usize, mut drain: impl FnMut(&[u8]) -> usize) -> usize {
++        let cap = self.buf.len();
++        let tail = self.tail.load(Ordering::Relaxed);
++        let avail = (self.head.load(Ordering::Acquire) - tail) as usize;
++        let mut todo = max.min(avail);
++        let mut done = 0;
++        while todo > 0 {
++            let off = (tail as usize + done) & (cap - 1);
++            let n = todo.min(cap - off);
++            let r = drain(std::slice::from_raw_parts(self.data().add(off), n)).min(n);
++            done += r;
++            todo -= r;
++            if r < n {
++                break;
++            }
++        }
++        self.tail.store(tail + done as u64, Ordering::Release);
++        done
++    }
++}
++
++/// Where the render callback last left the playback ring (seqlock; the IO thread is the only
++/// writer). Lets the pump complete playback messages at the pace the device plays them instead
++/// of in IO-buffer-sized bursts: a guest scheduling its writes by timer (PipeWire) then sees a
++/// steadily moving hw_ptr.
++#[derive(Default)]
++struct PlayClock {
++    seq: AtomicU64,
++    /// mach_absolute_time() of the callback.
++    time: AtomicU64,
++    /// Ring read position after the callback.
++    consumed: AtomicU64,
++    /// Bytes the callback took from the ring.
++    chunk: AtomicU64,
++}
++
++impl PlayClock {
++    fn publish(&self, time: u64, consumed: u64, chunk: u64) {
++        let seq = self.seq.load(Ordering::Relaxed);
++        self.seq.store(seq + 1, Ordering::Relaxed);
++        std::sync::atomic::fence(Ordering::Release);
++        self.time.store(time, Ordering::Relaxed);
++        self.consumed.store(consumed, Ordering::Relaxed);
++        self.chunk.store(chunk, Ordering::Relaxed);
++        self.seq.store(seq + 2, Ordering::Release);
++    }
++
++    /// (time, consumed, chunk)
++    fn read(&self) -> (u64, u64, u64) {
++        loop {
++            let seq = self.seq.load(Ordering::Acquire);
++            let v = (
++                self.time.load(Ordering::Relaxed),
++                self.consumed.load(Ordering::Relaxed),
++                self.chunk.load(Ordering::Relaxed),
++            );
++            std::sync::atomic::fence(Ordering::Acquire);
++            if seq & 1 == 0 && self.seq.load(Ordering::Relaxed) == seq {
++                return v;
++            }
++            std::hint::spin_loop();
++        }
++    }
++}
++
++fn ticks_to_nanos(ticks: u64) -> u64 {
++    static TIMEBASE: LazyLock<(u128, u128)> = LazyLock::new(|| {
++        let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
++        // SAFETY: valid out pointer.
++        unsafe { mach_timebase_info(&mut tb) };
++        (tb.numer.max(1) as u128, tb.denom.max(1) as u128)
++    });
++    let (numer, denom) = *TIMEBASE;
++    (ticks as u128 * numer / denom) as u64
++}
++
++/// State shared with a CoreAudio IO thread. Everything the callbacks touch is lock-free.
++struct Shared {
++    ring: Ring,
++    /// Playback only: copy of what the render callback hands to CoreAudio.
++    dump: Option<Ring>,
++    /// Between START and STOP.
++    running: AtomicBool,
++    /// Playback: ring position the callback may play up to (everything while running; up to
++    /// what the guest has seen completed once it stops, so the host FIFO still plays out).
++    limit: AtomicU64,
++    /// Data has been played since START (an empty ring before that is not an underrun).
++    primed: AtomicBool,
++    /// The ring ran dry while running.
++    starved: AtomicBool,
++    /// Underruns (playback) or overruns (capture).
++    xruns: AtomicU64,
++    /// Bytes per frame of the format the ring carries.
++    frame_bytes: AtomicU32,
++    channels: AtomicU32,
++    silence: AtomicU8,
++    /// Playback: position of the last render callback.
++    clock: PlayClock,
++    /// Capture: the unit to pull the input from.
++    unit: AtomicPtr<c_void>,
++    /// Capture: AudioUnitRender target, touched only by the IO thread.
++    scratch: UnsafeCell<Box<[u8]>>,
++    wake: Arc<Semaphore>,
++}
++
++// SAFETY: `scratch` is only accessed from the IO thread of the single unit using this
++// `Shared`; the rings are SPSC with one producer and one consumer thread each; everything
++// else is atomic.
++unsafe impl Sync for Shared {}
++unsafe impl Send for Shared {}
++
++impl Shared {
++    fn new(direction: Direction, dump: bool, wake: Arc<Semaphore>) -> Self {
++        let scratch = match direction {
++            Direction::Input => vec![0u8; CAPTURE_MAX_FRAMES * 2 * 4].into_boxed_slice(),
++            Direction::Output => Box::default(),
++        };
++        Self {
++            ring: Ring::new(RING_BYTES),
++            dump: dump.then(|| Ring::new(RING_BYTES)),
++            running: AtomicBool::new(false),
++            limit: AtomicU64::new(0),
++            primed: AtomicBool::new(false),
++            starved: AtomicBool::new(false),
++            xruns: AtomicU64::new(0),
++            frame_bytes: AtomicU32::new(4),
++            channels: AtomicU32::new(2),
++            silence: AtomicU8::new(0),
++            clock: PlayClock::default(),
++            unit: AtomicPtr::new(ptr::null_mut()),
++            scratch: UnsafeCell::new(scratch),
++            wake,
++        }
++    }
++}
++
++/// Playback render callback (CoreAudio IO thread): ring → device, silence when empty.
++extern "C" fn render_output(
++    refcon: *mut c_void,
++    flags: *mut u32,
++    _ts: *const c_void,
++    _bus: u32,
++    _frames: u32,
++    io: *mut AudioBufferList,
++) -> OSStatus {
++    // SAFETY: refcon is the Arc<Shared> kept alive by the HostStream owning the unit, and the
++    // unit is stopped and disposed before that Arc is released. `io` holds one interleaved
++    // buffer of `mDataByteSize` bytes (the format set on the unit's input scope).
++    let (sh, out) = unsafe {
++        let buf = &mut (*io).mBuffers[0];
++        if buf.mData.is_null() {
++            return 0;
++        }
++        (
++            &*(refcon as *const Shared),
++            std::slice::from_raw_parts_mut(buf.mData as *mut u8, buf.mDataByteSize as usize),
++        )
++    };
++    let fb = sh.frame_bytes.load(Ordering::Relaxed) as usize;
++    let want = out.len();
++    let running = sh.running.load(Ordering::Acquire);
++    let playable = sh
++        .limit
++        .load(Ordering::Acquire)
++        .saturating_sub(sh.ring.consumed()) as usize;
++    let n = sh.ring.len().min(playable).min(want) / fb * fb;
++    if n == 0 && !running {
++        out.fill(sh.silence.load(Ordering::Relaxed));
++        // SAFETY: flags points to the caller's action flags.
++        unsafe { *flags |= kAudioUnitRenderAction_OutputIsSilence };
++        return 0;
++    }
++    let mut off = 0;
++    // SAFETY: the render callback is the ring's only consumer.
++    unsafe {
++        sh.ring.consume(n, |src| {
++            out[off..off + src.len()].copy_from_slice(src);
++            off += src.len();
++            src.len()
++        })
++    };
++    if off < want {
++        out[off..].fill(sh.silence.load(Ordering::Relaxed));
++    }
++    if running {
++        if off > 0 {
++            sh.primed.store(true, Ordering::Relaxed);
++            if sh.starved.swap(false, Ordering::Relaxed) {
++                sh.xruns.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++        if off < want && sh.primed.load(Ordering::Relaxed) {
++            sh.starved.store(true, Ordering::Relaxed);
++        }
++    }
++    if let Some(dump) = &sh.dump {
++        let mut doff = 0;
++        // SAFETY: the render callback is the dump ring's only producer.
++        unsafe {
++            dump.produce(want, |dst| {
++                dst.copy_from_slice(&out[doff..doff + dst.len()]);
++                doff += dst.len();
++                dst.len()
++            })
++        };
++    }
++    if off > 0 {
++        // SAFETY: plain clock read.
++        let now = unsafe { mach_absolute_time() };
++        sh.clock.publish(now, sh.ring.consumed(), off as u64);
++        sh.wake.signal();
++    }
++    0
++}
++
++/// Capture input callback (CoreAudio IO thread): device → ring (Float32, device rate).
++extern "C" fn render_input(
++    refcon: *mut c_void,
++    flags: *mut u32,
++    ts: *const c_void,
++    bus: u32,
++    frames: u32,
++    _io: *mut AudioBufferList,
++) -> OSStatus {
++    // SAFETY: as in render_output; scratch is only used by this IO thread.
++    let sh = unsafe { &*(refcon as *const Shared) };
++    let scratch = unsafe { &mut *sh.scratch.get() };
++    let fb = sh.frame_bytes.load(Ordering::Relaxed) as usize;
++    let frames = (frames as usize).min(scratch.len() / fb);
++    let mut abl = AudioBufferList {
++        mNumberBuffers: 1,
++        mBuffers: [AudioBuffer {
++            mNumberChannels: sh.channels.load(Ordering::Relaxed),
++            mDataByteSize: (frames * fb) as u32,
++            mData: scratch.as_mut_ptr() as *mut c_void,
++        }],
++    };
++    // SAFETY: the unit is alive while its callbacks run; abl describes scratch.
++    let status = unsafe {
++        AudioUnitRender(
++            sh.unit.load(Ordering::Acquire),
++            flags,
++            ts,
++            bus,
++            frames as u32,
++            &mut abl,
++        )
++    };
++    if status != 0 || !sh.running.load(Ordering::Acquire) {
++        return status;
++    }
++    let got = (abl.mBuffers[0].mDataByteSize as usize).min(scratch.len());
++    let mut off = 0;
++    // SAFETY: the input callback is the ring's only producer.
++    let n = unsafe {
++        sh.ring.produce(got, |dst| {
++            dst.copy_from_slice(&scratch[off..off + dst.len()]);
++            off += dst.len();
++            dst.len()
++        })
++    };
++    if n < got {
++        sh.xruns.fetch_add(1, Ordering::Relaxed);
++    }
++    sh.wake.signal();
++    0
++}
++
++/// Guest stream format.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct Format {
++    format: u8,
++    rate: u32,
++    channels: u32,
++}
++
++impl Format {
++    fn from_params(p: &PcmParams) -> Option<Self> {
++        let rate = match p.rate {
++            VIRTIO_SND_PCM_RATE_5512 => 5512,
++            VIRTIO_SND_PCM_RATE_8000 => 8000,
++            VIRTIO_SND_PCM_RATE_11025 => 11025,
++            VIRTIO_SND_PCM_RATE_16000 => 16000,
++            VIRTIO_SND_PCM_RATE_22050 => 22050,
++            VIRTIO_SND_PCM_RATE_32000 => 32000,
++            VIRTIO_SND_PCM_RATE_44100 => 44100,
++            VIRTIO_SND_PCM_RATE_48000 => 48000,
++            VIRTIO_SND_PCM_RATE_64000 => 64000,
++            VIRTIO_SND_PCM_RATE_88200 => 88200,
++            VIRTIO_SND_PCM_RATE_96000 => 96000,
++            VIRTIO_SND_PCM_RATE_176400 => 176400,
++            VIRTIO_SND_PCM_RATE_192000 => 192000,
++            _ => return None,
++        };
++        match p.format {
++            VIRTIO_SND_PCM_FMT_U8
++            | VIRTIO_SND_PCM_FMT_S16
++            | VIRTIO_SND_PCM_FMT_S32
++            | VIRTIO_SND_PCM_FMT_FLOAT => {}
++            _ => return None,
++        }
++        (1..=2).contains(&p.channels).then_some(Self {
++            format: p.format,
++            rate,
++            channels: p.channels as u32,
++        })
++    }
++
++    fn sample_bytes(&self) -> u32 {
++        match self.format {
++            VIRTIO_SND_PCM_FMT_U8 => 1,
++            VIRTIO_SND_PCM_FMT_S16 => 2,
++            _ => 4,
++        }
++    }
++
++    fn frame_bytes(&self) -> u32 {
++        self.sample_bytes() * self.channels
++    }
++
++    fn silence(&self) -> u8 {
++        if self.format == VIRTIO_SND_PCM_FMT_U8 {
++            0x80
++        } else {
++            0
++        }
++    }
++
++    fn asbd(&self) -> AudioStreamBasicDescription {
++        let flags = match self.format {
++            VIRTIO_SND_PCM_FMT_FLOAT => kAudioFormatFlagIsFloat,
++            VIRTIO_SND_PCM_FMT_U8 => 0,
++            _ => kAudioFormatFlagIsSignedInteger,
++        } | kAudioFormatFlagIsPacked;
++        AudioStreamBasicDescription {
++            mSampleRate: self.rate as f64,
++            mFormatID: kAudioFormatLinearPCM,
++            mFormatFlags: flags,
++            mBytesPerPacket: self.frame_bytes(),
++            mFramesPerPacket: 1,
++            mBytesPerFrame: self.frame_bytes(),
++            mChannelsPerFrame: self.channels,
++            mBitsPerChannel: self.sample_bytes() * 8,
++            mReserved: 0,
++        }
++    }
++}
++
++/// Float32 interleaved at `rate`: what the capture unit delivers.
++fn float_asbd(rate: f64, channels: u32) -> AudioStreamBasicDescription {
++    AudioStreamBasicDescription {
++        mSampleRate: rate,
++        mFormatID: kAudioFormatLinearPCM,
++        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
++        mBytesPerPacket: 4 * channels,
++        mFramesPerPacket: 1,
++        mBytesPerFrame: 4 * channels,
++        mChannelsPerFrame: channels,
++        mBitsPerChannel: 32,
++        mReserved: 0,
++    }
++}
++
++fn property_address(selector: u32, scope: u32) -> AudioObjectPropertyAddress {
++    AudioObjectPropertyAddress {
++        mSelector: selector,
++        mScope: scope,
++        mElement: kAudioObjectPropertyElementMain,
++    }
++}
++
++fn object_property<T: Copy + Default>(
++    object: AudioObjectID,
++    selector: u32,
++    scope: u32,
++) -> Option<T> {
++    let addr = property_address(selector, scope);
++    let mut value = T::default();
++    let mut size = std::mem::size_of::<T>() as u32;
++    // SAFETY: value is a T-sized buffer and size says so.
++    let status = unsafe {
++        AudioObjectGetPropertyData(
++            object,
++            &addr,
++            0,
++            ptr::null(),
++            &mut size,
++            &mut value as *mut T as *mut c_void,
++        )
++    };
++    (status == 0).then_some(value)
++}
++
++fn device_name(device: AudioObjectID) -> String {
++    let addr = property_address(kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal);
++    let mut cfstr: *const c_void = ptr::null();
++    let mut size = std::mem::size_of::<*const c_void>() as u32;
++    // SAFETY: the property is a CFStringRef we own (released below).
++    let status = unsafe {
++        AudioObjectGetPropertyData(
++            device,
++            &addr,
++            0,
++            ptr::null(),
++            &mut size,
++            &mut cfstr as *mut _ as *mut c_void,
++        )
++    };
++    if status != 0 || cfstr.is_null() {
++        return format!("device {device}");
++    }
++    let mut buf = [0 as c_char; 256];
++    // SAFETY: buf is 256 bytes; cfstr is a valid CFString released exactly once.
++    let ok = unsafe {
++        let ok = CFStringGetCString(
++            cfstr,
++            buf.as_mut_ptr(),
++            buf.len() as isize,
++            kCFStringEncodingUTF8,
++        );
++        CFRelease(cfstr);
++        ok
++    };
++    if ok == 0 {
++        return format!("device {device}");
++    }
++    // SAFETY: CFStringGetCString NUL-terminated buf.
++    unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
++        .to_string_lossy()
++        .into_owned()
++}
++
++/// The output device with this CoreAudio UID, if it is present and has output streams.
++fn resolve_output_device(uid: &str) -> Option<AudioObjectID> {
++    let uid = std::ffi::CString::new(uid).ok()?;
++    // SAFETY: CFString created from a NUL-terminated UTF-8 string, released below; the
++    // property takes a CFStringRef qualifier and returns an AudioObjectID.
++    let device = unsafe {
++        let cfuid = CFStringCreateWithCString(ptr::null(), uid.as_ptr(), kCFStringEncodingUTF8);
++        if cfuid.is_null() {
++            return None;
++        }
++        let addr = property_address(
++            kAudioHardwarePropertyTranslateUIDToDevice,
++            kAudioObjectPropertyScopeGlobal,
++        );
++        let mut device: AudioObjectID = 0;
++        let mut size = std::mem::size_of::<AudioObjectID>() as u32;
++        let status = AudioObjectGetPropertyData(
++            kAudioObjectSystemObject,
++            &addr,
++            std::mem::size_of::<*const c_void>() as u32,
++            &cfuid as *const _ as *const c_void,
++            &mut size,
++            &mut device as *mut _ as *mut c_void,
++        );
++        CFRelease(cfuid);
++        if status != 0 {
++            return None;
++        }
++        device
++    };
++    if device == 0 {
++        return None;
++    }
++    let addr = property_address(kAudioDevicePropertyStreams, kAudioObjectPropertyScopeOutput);
++    let mut size = 0u32;
++    // SAFETY: size query of a valid property address.
++    let status =
++        unsafe { AudioObjectGetPropertyDataSize(device, &addr, 0, ptr::null(), &mut size) };
++    (status == 0 && size > 0).then_some(device)
++}
++
++/// Whether a CoreAudio output device with this UID is present (krun_snd_set_output_device).
++pub fn output_device_exists(uid: &str) -> bool {
++    resolve_output_device(uid).is_some()
++}
++
++/// Latency of `device` in `scope` after the IO buffer, in device frames, and its rate.
++fn device_latency(device: AudioObjectID, scope: u32) -> (u32, f64) {
++    let lat: u32 = object_property(device, kAudioDevicePropertyLatency, scope).unwrap_or(0);
++    let safety: u32 = object_property(device, kAudioDevicePropertySafetyOffset, scope).unwrap_or(0);
++    let io: u32 = object_property(device, kAudioDevicePropertyBufferFrameSize, scope).unwrap_or(0);
++    let rate: f64 = object_property(
++        device,
++        kAudioDevicePropertyNominalSampleRate,
++        kAudioObjectPropertyScopeGlobal,
++    )
++    .unwrap_or(48000.0);
++
++    // The stream term is separate from the device term and usually the larger one.
++    let mut stream_lat = 0;
++    let addr = property_address(kAudioDevicePropertyStreams, scope);
++    let mut size = 0u32;
++    // SAFETY: size query, then a read into a buffer of that size.
++    unsafe {
++        if AudioObjectGetPropertyDataSize(device, &addr, 0, ptr::null(), &mut size) == 0
++            && size >= 4
++        {
++            let mut ids = vec![0u32; size as usize / 4];
++            if AudioObjectGetPropertyData(
++                device,
++                &addr,
++                0,
++                ptr::null(),
++                &mut size,
++                ids.as_mut_ptr() as *mut c_void,
++            ) == 0
++            {
++                stream_lat = object_property(
++                    ids[0],
++                    kAudioStreamPropertyLatency,
++                    kAudioObjectPropertyScopeGlobal,
++                )
++                .unwrap_or(0);
++            }
++        }
++    }
++    (lat + safety + io + stream_lat, rate)
++}
++
++/// An AudioUnit instance; stopped, uninitialized and disposed on drop.
++struct Unit {
++    au: AudioUnit,
++    initialized: bool,
++    started: bool,
++}
++
++// SAFETY: AudioUnit API calls are thread-safe for the property/start/stop calls made here; the
++// unit is only driven from behind the backend's mutex.
++unsafe impl Send for Unit {}
++
++impl Unit {
++    fn new(subtype: u32) -> Result<Self> {
++        let desc = AudioComponentDescription {
++            componentType: kAudioUnitType_Output,
++            componentSubType: subtype,
++            componentManufacturer: kAudioUnitManufacturer_Apple,
++            componentFlags: 0,
++            componentFlagsMask: 0,
++        };
++        // SAFETY: plain component lookup/instantiation with valid pointers.
++        unsafe {
++            let comp = AudioComponentFindNext(ptr::null_mut(), &desc);
++            if comp.is_null() {
++                return Err(Error::UnexpectedAudioBackendError(
++                    "no output audio component".into(),
++                ));
++            }
++            let mut au = ptr::null_mut();
++            check(
++                AudioComponentInstanceNew(comp, &mut au),
++                "AudioComponentInstanceNew",
++            )?;
++            Ok(Self {
++                au,
++                initialized: false,
++                started: false,
++            })
++        }
++    }
++
++    fn set<T>(&self, id: u32, scope: u32, element: u32, value: &T, what: &str) -> Result<()> {
++        // SAFETY: value is a valid T for the duration of the call.
++        check(
++            unsafe {
++                AudioUnitSetProperty(
++                    self.au,
++                    id,
++                    scope,
++                    element,
++                    value as *const T as *const c_void,
++                    std::mem::size_of::<T>() as u32,
++                )
++            },
++            what,
++        )
++    }
++
++    fn get<T: Copy + Default>(&self, id: u32, scope: u32, element: u32) -> Option<T> {
++        let mut value = T::default();
++        let mut size = std::mem::size_of::<T>() as u32;
++        // SAFETY: value is a T-sized buffer.
++        let status = unsafe {
++            AudioUnitGetProperty(
++                self.au,
++                id,
++                scope,
++                element,
++                &mut value as *mut T as *mut c_void,
++                &mut size,
++            )
++        };
++        (status == 0).then_some(value)
++    }
++
++    /// Output gain of a HAL output unit (also the default-output unit).
++    fn set_volume(&self, gain: f32) {
++        // SAFETY: valid unit; a plain parameter set.
++        let status = unsafe {
++            AudioUnitSetParameter(
++                self.au,
++                kHALOutputParam_Volume,
++                kAudioUnitScope_Global,
++                0,
++                gain,
++                0,
++            )
++        };
++        if status != 0 {
++            log::warn!("snd: setting the output volume failed: OSStatus {status}");
++        }
++    }
++
++    fn current_device(&self) -> AudioObjectID {
++        self.get(
++            kAudioOutputUnitProperty_CurrentDevice,
++            kAudioUnitScope_Global,
++            0,
++        )
++        .unwrap_or(0)
++    }
++
++    fn initialize(&mut self) -> Result<()> {
++        if !self.initialized {
++            // SAFETY: valid unit.
++            check(
++                unsafe { AudioUnitInitialize(self.au) },
++                "AudioUnitInitialize",
++            )?;
++            self.initialized = true;
++        }
++        Ok(())
++    }
++
++    fn uninitialize(&mut self) {
++        self.stop();
++        if self.initialized {
++            // SAFETY: valid unit.
++            unsafe { AudioUnitUninitialize(self.au) };
++            self.initialized = false;
++        }
++    }
++
++    fn start(&mut self) -> Result<()> {
++        if !self.started {
++            // SAFETY: valid, initialized unit.
++            check(
++                unsafe { AudioOutputUnitStart(self.au) },
++                "AudioOutputUnitStart",
++            )?;
++            self.started = true;
++        }
++        Ok(())
++    }
++
++    /// Returns once the IO thread no longer runs the unit's callbacks.
++    fn stop(&mut self) {
++        if self.started {
++            // SAFETY: valid unit.
++            unsafe { AudioOutputUnitStop(self.au) };
++            self.started = false;
++        }
++    }
++}
++
++impl Drop for Unit {
++    fn drop(&mut self) {
++        self.uninitialize();
++        // SAFETY: valid unit, disposed once.
++        unsafe { AudioComponentInstanceDispose(self.au) };
++    }
++}
++
++/// Capture rate/format converter (device Float32 → guest format and rate).
++struct Converter {
++    conv: AudioConverterRef,
++    in_frame_bytes: usize,
++    /// Frames handed to the converter by the last input proc call; must stay valid until the
++    /// next call.
++    staging: Vec<u8>,
++}
++
++// SAFETY: only used from behind the backend's mutex.
++unsafe impl Send for Converter {}
++
++impl Drop for Converter {
++    fn drop(&mut self) {
++        // SAFETY: created by AudioConverterNew, disposed once.
++        unsafe { AudioConverterDispose(self.conv) };
++    }
++}
++
++struct ConverterInput<'a> {
++    ring: &'a Ring,
++    staging: &'a mut Vec<u8>,
++    frame_bytes: usize,
++    channels: u32,
++}
++
++extern "C" fn converter_input(
++    _conv: AudioConverterRef,
++    packets: *mut u32,
++    data: *mut AudioBufferList,
++    _desc: *mut *mut c_void,
++    user: *mut c_void,
++) -> OSStatus {
++    // SAFETY: user is the ConverterInput passed to AudioConverterFillComplexBuffer, alive for
++    // the duration of that call; packets/data are the converter's out parameters.
++    let (input, packets, data) = unsafe {
++        (
++            &mut *(user as *mut ConverterInput),
++            &mut *packets,
++            &mut *data,
++        )
++    };
++    let fb = input.frame_bytes;
++    let want = (*packets as usize) * fb;
++    let n = input.ring.len().min(want) / fb * fb;
++    input.staging.clear();
++    // SAFETY: the pump thread is the capture ring's only consumer.
++    unsafe {
++        input.ring.consume(n, |src| {
++            input.staging.extend_from_slice(src);
++            src.len()
++        })
++    };
++    *packets = (n / fb) as u32;
++    data.mNumberBuffers = 1;
++    data.mBuffers[0] = AudioBuffer {
++        mNumberChannels: input.channels,
++        mDataByteSize: n as u32,
++        mData: input.staging.as_mut_ptr() as *mut c_void,
++    };
++    if n == 0 {
++        NO_MORE_INPUT
++    } else {
++        0
++    }
++}
++
++/// WAV file receiving the playback dump.
++struct Dump {
++    file: File,
++    data_len: u32,
++}
++
++impl Dump {
++    fn create(path: &Path, fmt: &Format) -> std::io::Result<Self> {
++        let file = File::create(path)?;
++        let tag: u16 = if fmt.format == VIRTIO_SND_PCM_FMT_FLOAT {
++            3
++        } else {
++            1
++        };
++        let mut h = Vec::with_capacity(44);
++        h.extend_from_slice(b"RIFF");
++        h.extend_from_slice(&36u32.to_le_bytes());
++        h.extend_from_slice(b"WAVEfmt ");
++        h.extend_from_slice(&16u32.to_le_bytes());
++        h.extend_from_slice(&tag.to_le_bytes());
++        h.extend_from_slice(&(fmt.channels as u16).to_le_bytes());
++        h.extend_from_slice(&fmt.rate.to_le_bytes());
++        h.extend_from_slice(&(fmt.rate * fmt.frame_bytes()).to_le_bytes());
++        h.extend_from_slice(&(fmt.frame_bytes() as u16).to_le_bytes());
++        h.extend_from_slice(&(fmt.sample_bytes() as u16 * 8).to_le_bytes());
++        h.extend_from_slice(b"data");
++        h.extend_from_slice(&0u32.to_le_bytes());
++        file.write_all_at(&h, 0)?;
++        Ok(Self { file, data_len: 0 })
++    }
++
++    fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
++        self.file.write_all_at(data, 44 + self.data_len as u64)?;
++        self.data_len = self.data_len.saturating_add(data.len() as u32);
++        self.file
++            .write_all_at(&(36 + self.data_len).to_le_bytes(), 4)?;
++        self.file.write_all_at(&self.data_len.to_le_bytes(), 40)
++    }
++}
++
++/// Host side of one virtio-snd PCM stream.
++struct HostStream {
++    id: usize,
++    direction: Direction,
++    shared: Arc<Shared>,
++    unit: Option<Unit>,
++    /// Guest format of the last PREPARE.
++    guest_format: Option<Format>,
++    /// Guest format the unit is configured for.
++    format: Option<Format>,
++    /// Device the unit was last seen on.
++    device: AudioObjectID,
++    converter: Option<Converter>,
++    /// Playback messages fully copied into the ring, completed once the device has played up
++    /// to `fifo_bytes` before the stream offset they end at.
++    inflight: VecDeque<(u64, Buffer)>,
++    /// Playback: ring position up to which messages have been completed (the guest's hw_ptr).
++    completed: u64,
++    /// Playback: host FIFO the guest's hw_ptr runs ahead of the device by (SndControl buffer).
++    fifo_bytes: u64,
++    latency_bytes: u32,
++    reported_xruns: u64,
++    dump_path: Option<PathBuf>,
++    dump: Option<(Format, Dump)>,
++    dump_files: u32,
++    control: Arc<SndControl>,
++    /// Control generation last applied.
++    seen_generation: u64,
++    /// Playback: device the unit was created for (None = the default-output unit).
++    output_target: Option<AudioObjectID>,
++}
++
++impl HostStream {
++    fn new(
++        id: usize,
++        direction: Direction,
++        wake: Arc<Semaphore>,
++        control: Arc<SndControl>,
++    ) -> Self {
++        let dump_path = (direction == Direction::Output)
++            .then(|| std::env::var_os("STEAMAC_SND_DUMP").map(PathBuf::from))
++            .flatten();
++        Self {
++            id,
++            direction,
++            shared: Arc::new(Shared::new(direction, dump_path.is_some(), wake)),
++            unit: None,
++            guest_format: None,
++            format: None,
++            device: 0,
++            converter: None,
++            inflight: VecDeque::new(),
++            completed: 0,
++            fifo_bytes: 0,
++            latency_bytes: 0,
++            reported_xruns: 0,
++            dump_path,
++            dump: None,
++            dump_files: 0,
++            control,
++            seen_generation: u64::MAX,
++            output_target: None,
++        }
++    }
++
++    /// Apply changed runtime settings (krun_snd_set_*); with `recheck`, also notice that a
++    /// selected output device appeared or went away.
++    fn apply_control(&mut self, recheck: bool) {
++        let generation = self.control.generation();
++        if self.direction != Direction::Output || (generation == self.seen_generation && !recheck) {
++            return;
++        }
++        self.seen_generation = generation;
++        let Some(fmt) = self.format else {
++            return; // applied by configure()
++        };
++        let target = self
++            .control
++            .output_device()
++            .as_deref()
++            .and_then(resolve_output_device);
++        if target != self.output_target && self.unit.is_some() {
++            // Restart the output on the new device; the ring and the guest stream carry on.
++            let started = self.unit.as_ref().is_some_and(|u| u.started);
++            self.unit = None;
++            let result =
++                self.configure(fmt)
++                    .and_then(|()| if started { self.start_unit() } else { Ok(()) });
++            if let Err(err) = result {
++                log::error!("snd: stream {}: switching output device: {err}", self.id);
++            }
++        }
++        if let Some(unit) = self.unit.as_ref() {
++            unit.set_volume(self.control.volume());
++        }
++        let fifo_frames = self.control.buffer_ms() as u64 * fmt.rate as u64 / 1000;
++        if fifo_frames * fmt.frame_bytes() as u64 != self.fifo_bytes {
++            self.fifo_bytes = fifo_frames * fmt.frame_bytes() as u64;
++            self.update_latency();
++        }
++    }
++
++    fn refcon(&self) -> *mut c_void {
++        Arc::as_ptr(&self.shared) as *mut c_void
++    }
++
++    fn create_unit(&mut self) -> Result<()> {
++        if self.unit.is_some() {
++            return Ok(());
++        }
++        let unit = match self.direction {
++            Direction::Output => {
++                // A selected device gets a HAL unit bound to it; otherwise the default-output
++                // unit, which follows the system default device by itself.
++                self.output_target = self
++                    .control
++                    .output_device()
++                    .as_deref()
++                    .and_then(resolve_output_device);
++                let unit = match self.output_target {
++                    Some(device) => {
++                        let unit = Unit::new(kAudioUnitSubType_HALOutput)?;
++                        unit.set(
++                            kAudioOutputUnitProperty_CurrentDevice,
++                            kAudioUnitScope_Global,
++                            0,
++                            &device,
++                            "CurrentDevice(output)",
++                        )?;
++                        unit
++                    }
++                    None => Unit::new(kAudioUnitSubType_DefaultOutput)?,
++                };
++                let cb = AURenderCallbackStruct {
++                    inputProc: render_output,
++                    inputProcRefCon: self.refcon(),
++                };
++                unit.set(
++                    kAudioUnitProperty_SetRenderCallback,
++                    kAudioUnitScope_Input,
++                    0,
++                    &cb,
++                    "SetRenderCallback",
++                )?;
++                unit
++            }
++            Direction::Input => {
++                let unit = Unit::new(kAudioUnitSubType_HALOutput)?;
++                unit.set(
++                    kAudioOutputUnitProperty_EnableIO,
++                    kAudioUnitScope_Input,
++                    1,
++                    &1u32,
++                    "EnableIO(input)",
++                )?;
++                unit.set(
++                    kAudioOutputUnitProperty_EnableIO,
++                    kAudioUnitScope_Output,
++                    0,
++                    &0u32,
++                    "EnableIO(output)",
++                )?;
++                let cb = AURenderCallbackStruct {
++                    inputProc: render_input,
++                    inputProcRefCon: self.refcon(),
++                };
++                unit.set(
++                    kAudioOutputUnitProperty_SetInputCallback,
++                    kAudioUnitScope_Global,
++                    0,
++                    &cb,
++                    "SetInputCallback",
++                )?;
++                self.shared.unit.store(unit.au, Ordering::Release);
++                unit
++            }
++        };
++        self.unit = Some(unit);
++        Ok(())
++    }
++
++    /// (Re)configure the unit for `fmt`. The unit is left initialized and stopped.
++    fn configure(&mut self, fmt: Format) -> Result<()> {
++        self.create_unit()?;
++        let unit = self.unit.as_mut().unwrap();
++        unit.uninitialize();
++        match self.direction {
++            Direction::Output => {
++                unit.set(
++                    kAudioUnitProperty_StreamFormat,
++                    kAudioUnitScope_Input,
++                    0,
++                    &fmt.asbd(),
++                    "StreamFormat(output)",
++                )?;
++                self.shared
++                    .frame_bytes
++                    .store(fmt.frame_bytes(), Ordering::Relaxed);
++                let fifo_frames = self.control.buffer_ms() as u64 * fmt.rate as u64 / 1000;
++                self.fifo_bytes = fifo_frames * fmt.frame_bytes() as u64;
++            }
++            Direction::Input => {
++                let device: AudioObjectID = object_property(
++                    kAudioObjectSystemObject,
++                    kAudioHardwarePropertyDefaultInputDevice,
++                    kAudioObjectPropertyScopeGlobal,
++                )
++                .filter(|d| *d != 0)
++                .ok_or_else(|| Error::UnexpectedAudioBackendError("no input device".into()))?;
++                unit.set(
++                    kAudioOutputUnitProperty_CurrentDevice,
++                    kAudioUnitScope_Global,
++                    0,
++                    &device,
++                    "CurrentDevice(input)",
++                )?;
++                // The HAL unit does not resample input: take Float32 at the device rate and
++                // convert in the pump thread.
++                let rate: f64 = object_property(
++                    device,
++                    kAudioDevicePropertyNominalSampleRate,
++                    kAudioObjectPropertyScopeGlobal,
++                )
++                .unwrap_or(48000.0);
++                let dev_fmt = float_asbd(rate, fmt.channels);
++                unit.set(
++                    kAudioUnitProperty_StreamFormat,
++                    kAudioUnitScope_Output,
++                    1,
++                    &dev_fmt,
++                    "StreamFormat(input)",
++                )?;
++                let mut conv = ptr::null_mut();
++                // SAFETY: valid formats and out pointer.
++                check(
++                    unsafe { AudioConverterNew(&dev_fmt, &fmt.asbd(), &mut conv) },
++                    "AudioConverterNew",
++                )?;
++                self.converter = Some(Converter {
++                    conv,
++                    in_frame_bytes: dev_fmt.mBytesPerFrame as usize,
++                    staging: Vec::new(),
++                });
++                self.shared
++                    .frame_bytes
++                    .store(dev_fmt.mBytesPerFrame, Ordering::Relaxed);
++            }
++        }
++        self.shared.channels.store(fmt.channels, Ordering::Relaxed);
++        self.shared.silence.store(fmt.silence(), Ordering::Relaxed);
++        unit.initialize()?;
++        if self.direction == Direction::Output {
++            unit.set_volume(self.control.volume());
++        }
++        self.format = Some(fmt);
++        self.update_latency();
++        Ok(())
++    }
++
++    fn start_unit(&mut self) -> Result<()> {
++        match self.unit.as_mut() {
++            Some(unit) if unit.initialized => unit.start(),
++            _ => Err(Error::UnexpectedAudioBackendError(
++                "stream not prepared".into(),
++            )),
++        }
++    }
++
++    fn stop_unit(&mut self) {
++        if let Some(unit) = self.unit.as_mut() {
++            unit.stop();
++        }
++    }
++
++    /// Recompute latency_bytes from the current device; logs device switches.
++    fn update_latency(&mut self) {
++        let (Some(unit), Some(fmt)) = (self.unit.as_ref(), self.format) else {
++            return;
++        };
++        let device = unit.current_device();
++        if device == 0 {
++            return;
++        }
++        let scope = match self.direction {
++            Direction::Output => kAudioObjectPropertyScopeOutput,
++            Direction::Input => kAudioObjectPropertyScopeInput,
++        };
++        let (frames, rate) = device_latency(device, scope);
++        let unit_secs: f64 = unit
++            .get(kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0)
++            .unwrap_or(0.0);
++        let fifo_secs = self.fifo_bytes as f64 / (fmt.rate * fmt.frame_bytes()) as f64;
++        let secs = frames as f64 / rate + unit_secs + fifo_secs;
++        let guest_frames = (secs * fmt.rate as f64).round() as u32;
++        let latency_bytes = guest_frames * fmt.frame_bytes();
++        if device != self.device || latency_bytes != self.latency_bytes {
++            log::info!(
++                "snd: stream {} {} '{}' at {} Hz, host latency {} frames ({:.1} ms{})",
++                self.id,
++                match self.direction {
++                    Direction::Output => "playing on",
++                    Direction::Input => "recording from",
++                },
++                device_name(device),
++                rate,
++                guest_frames,
++                secs * 1000.0,
++                if fifo_secs > 0.0 {
++                    format!(", {:.1} ms of it in the host FIFO", fifo_secs * 1000.0)
++                } else {
++                    String::new()
++                }
++            );
++        }
++        self.device = device;
++        self.latency_bytes = latency_bytes;
++    }
++
++    /// Capture: follow the default input device while recording (the HAL unit does not do it
++    /// by itself; START always picks the current default).
++    fn follow_input_device(&mut self) {
++        let (Some(unit), Some(fmt)) = (self.unit.as_ref(), self.format) else {
++            return;
++        };
++        let default: AudioObjectID = object_property(
++            kAudioObjectSystemObject,
++            kAudioHardwarePropertyDefaultInputDevice,
++            kAudioObjectPropertyScopeGlobal,
++        )
++        .unwrap_or(0);
++        if !unit.started || default == 0 || default == unit.current_device() {
++            return;
++        }
++        self.stop_unit();
++        self.shared.ring.clear();
++        if let Err(err) = self.configure(fmt).and_then(|()| self.start_unit()) {
++            log::error!("snd: stream {}: switching input device: {err}", self.id);
++        }
++    }
++
++    /// Playback: let the device play what the guest already saw completed (the host FIFO)
++    /// before the unit stops, so a drained stream keeps its tail.
++    fn play_out(&self) {
++        if self.unit.as_ref().is_none_or(|u| !u.started) {
++            return;
++        }
++        let ring = &self.shared.ring;
++        let end = self
++            .shared
++            .limit
++            .load(Ordering::Acquire)
++            .min(ring.written());
++        let deadline =
++            Instant::now() + Duration::from_millis(SndControl::MAX_BUFFER_MS as u64 + 100);
++        while ring.consumed() < end && Instant::now() < deadline {
++            std::thread::sleep(Duration::from_millis(2));
++        }
++    }
++
++    /// Complete everything the guest has queued on this stream and drop buffered audio.
++    /// The unit must be stopped.
++    fn flush(&mut self, guest: &mut Stream) {
++        self.shared.running.store(false, Ordering::Release);
++        self.shared.ring.clear();
++        self.completed = self.shared.ring.written();
++        self.shared.limit.store(self.completed, Ordering::Release);
++        for (_, buf) in self.inflight.drain(..) {
++            buf.message.latency_bytes.store(0, Ordering::Relaxed);
++        }
++        for buf in guest.buffers.drain(..) {
++            buf.message.latency_bytes.store(0, Ordering::Relaxed);
++        }
++        self.drain_dump();
++    }
++
++    /// Move data between the guest's queued buffers and the ring; complete what is done.
++    fn pump(&mut self, streams: &RwLock<Vec<Stream>>) {
++        match self.direction {
++            Direction::Output => self.pump_output(streams),
++            Direction::Input => self.pump_input(streams),
++        }
++        self.drain_dump();
++    }
++
++    /// Ring position the device has played up to now: the last callback's chunk is spread over
++    /// the time it takes to play, so completions follow the device clock instead of arriving in
++    /// bursts. Never beyond what the callback has consumed.
++    fn play_position(&self) -> u64 {
++        let (time, consumed, chunk) = self.shared.clock.read();
++        let Some(fmt) = self.format else {
++            return consumed;
++        };
++        // SAFETY: plain clock read.
++        let now = unsafe { mach_absolute_time() };
++        let elapsed = ticks_to_nanos(now.saturating_sub(time)) as u128;
++        let played = elapsed * fmt.rate as u128 * fmt.frame_bytes() as u128 / 1_000_000_000;
++        consumed - chunk + (played as u64).min(chunk)
++    }
++
++    /// Time until the oldest in-flight playback message is due, if the device has taken it.
++    fn next_completion(&self) -> Option<Duration> {
++        let (end, _) = self.inflight.front()?;
++        let fmt = self.format?;
++        let due_at = end.saturating_sub(self.fifo_bytes);
++        if due_at > self.shared.clock.read().1 {
++            return None; // the render callback signals when it takes more
++        }
++        let bytes = due_at.saturating_sub(self.play_position()) as u128;
++        let nanos = bytes * 1_000_000_000 / (fmt.rate as u128 * fmt.frame_bytes() as u128);
++        Some(Duration::from_nanos(nanos as u64).max(Duration::from_micros(500)))
++    }
++
++    fn pump_output(&mut self, streams: &RwLock<Vec<Stream>>) {
++        // The guest's hw_ptr only moves between START and STOP.
++        let hw_ptr = if self.shared.running.load(Ordering::Acquire) {
++            self.play_position() + self.fifo_bytes
++        } else {
++            0
++        };
++        while self.inflight.front().is_some_and(|(end, _)| *end <= hw_ptr) {
++            let (end, buf) = self.inflight.pop_front().unwrap();
++            self.completed = end;
++            buf.message
++                .latency_bytes
++                .store(self.latency_bytes, Ordering::Relaxed);
++        }
++
++        if self.unit.as_ref().is_none_or(|u| !u.started) {
++            return;
++        }
++        let mut streams = streams.write().unwrap();
++        let guest = &mut streams[self.id];
++        if !matches!(
++            guest.state,
++            PCMState::Prepare | PCMState::Start | PCMState::Stop
++        ) {
++            return;
++        }
++        let ring = &self.shared.ring;
++        while let Some(buf) = guest.buffers.front_mut() {
++            let remaining = (buf.desc_len() as usize).saturating_sub(buf.pos);
++            let mut failed = false;
++            // SAFETY: the pump (under the backend mutex) is the playback ring's only producer.
++            let n = unsafe {
++                ring.produce(remaining, |dst| match buf.read_output(dst) {
++                    Ok(len) => {
++                        buf.pos += len as usize;
++                        len as usize
++                    }
++                    Err(_) => {
++                        failed = true;
++                        0
++                    }
++                })
++            };
++            if failed {
++                log::error!("snd: stream {}: unreadable playback buffer", self.id);
++                buf.message
++                    .status
++                    .store(VIRTIO_SND_S_IO_ERR, Ordering::SeqCst);
++            } else if n < remaining {
++                break; // ring full
++            }
++            let buf = guest.buffers.pop_front().unwrap();
++            self.inflight.push_back((ring.written(), buf));
++        }
++    }
++
++    fn pump_input(&mut self, streams: &RwLock<Vec<Stream>>) {
++        let (Some(fmt), Some(conv)) = (self.format, self.converter.as_mut()) else {
++            return;
++        };
++        if !self.shared.running.load(Ordering::Acquire) {
++            return;
++        }
++        let mut streams = streams.write().unwrap();
++        let guest = &mut streams[self.id];
++        let fb = fmt.frame_bytes() as usize;
++        let mut out = Vec::new();
++        while let Some(buf) = guest.buffers.front_mut() {
++            let space = (buf.desc_len() as usize).saturating_sub(buf.pos) / fb * fb;
++            if space > 0 {
++                out.resize(space, 0);
++                let mut packets = (space / fb) as u32;
++                let mut abl = AudioBufferList {
++                    mNumberBuffers: 1,
++                    mBuffers: [AudioBuffer {
++                        mNumberChannels: fmt.channels,
++                        mDataByteSize: space as u32,
++                        mData: out.as_mut_ptr() as *mut c_void,
++                    }],
++                };
++                let mut input = ConverterInput {
++                    ring: &self.shared.ring,
++                    staging: &mut conv.staging,
++                    frame_bytes: conv.in_frame_bytes,
++                    channels: fmt.channels,
++                };
++                // SAFETY: abl describes `out`; `input` outlives the call.
++                let status = unsafe {
++                    AudioConverterFillComplexBuffer(
++                        conv.conv,
++                        converter_input,
++                        &mut input as *mut ConverterInput as *mut c_void,
++                        &mut packets,
++                        &mut abl,
++                        ptr::null_mut(),
++                    )
++                };
++                if status != 0 && status != NO_MORE_INPUT {
++                    log::error!("snd: stream {}: AudioConverter: {status}", self.id);
++                }
++                let produced = packets as usize * fb;
++                if produced == 0 {
++                    break;
++                }
++                if buf.write_input(&out[..produced]).is_err() {
++                    log::error!("snd: stream {}: unwritable capture buffer", self.id);
++                    buf.message
++                        .status
++                        .store(VIRTIO_SND_S_IO_ERR, Ordering::SeqCst);
++                    buf.pos = buf.desc_len() as usize;
++                }
++                if buf.pos + fb <= buf.desc_len() as usize {
++                    continue;
++                }
++            }
++            let buf = guest.buffers.pop_front().unwrap();
++            buf.message
++                .latency_bytes
++                .store(self.latency_bytes, Ordering::Relaxed);
++        }
++    }
++
++    fn drain_dump(&mut self) {
++        let Some(ring) = &self.shared.dump else {
++            return;
++        };
++        let mut failed = false;
++        let mut dump = self.dump.as_mut().map(|(_, d)| d);
++        // SAFETY: the pump (under the backend mutex) is the dump ring's only consumer.
++        unsafe {
++            ring.consume(usize::MAX, |src| {
++                if let Some(d) = dump.as_deref_mut() {
++                    failed |= d.append(src).is_err();
++                }
++                src.len()
++            })
++        };
++        if failed {
++            log::error!("snd: writing the playback dump failed, stopping it");
++            self.dump = None;
++            self.dump_path = None;
++        }
++    }
++
++    /// Start a new dump file when the format changes (the first keeps the given name).
++    fn open_dump(&mut self, fmt: Format) {
++        let Some(path) = &self.dump_path else {
++            return;
++        };
++        if self.dump.as_ref().is_some_and(|(f, _)| *f == fmt) {
++            return;
++        }
++        let path = if self.dump_files == 0 {
++            path.clone()
++        } else {
++            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
++            path.with_file_name(format!("{stem}-{}.wav", self.dump_files))
++        };
++        match Dump::create(&path, &fmt) {
++            Ok(d) => {
++                log::info!("snd: dumping playback ({fmt:?}) to {}", path.display());
++                self.dump_files += 1;
++                self.dump = Some((fmt, d));
++            }
++            Err(err) => log::error!("snd: cannot create {}: {err}", path.display()),
++        }
++    }
++
++    fn housekeeping(&mut self) {
++        if self.direction == Direction::Input {
++            self.follow_input_device();
++        }
++        if self.unit.as_ref().is_some_and(|u| u.started) {
++            self.update_latency();
++        }
++        let xruns = self.shared.xruns.load(Ordering::Relaxed);
++        if xruns != self.reported_xruns {
++            log::warn!(
++                "snd: stream {}: {} {} (total {xruns})",
++                self.id,
++                xruns - self.reported_xruns,
++                match self.direction {
++                    Direction::Output => "underruns",
++                    Direction::Input => "overruns",
++                },
++            );
++            self.reported_xruns = xruns;
++        }
++    }
++}
++
++impl Drop for HostStream {
++    fn drop(&mut self) {
++        // The unit references `shared`: stop and dispose it first.
++        self.unit = None;
++    }
++}
++
++struct Inner {
++    streams: Arc<RwLock<Vec<Stream>>>,
++    hosts: Mutex<Vec<HostStream>>,
++    wake: Arc<Semaphore>,
++    quit: AtomicBool,
++}
++
++fn pump_thread(inner: Arc<Inner>) {
++    utils::macos::set_thread_qos_user_interactive();
++    let mut last = Instant::now();
++    let mut timeout = HOUSEKEEPING;
++    while !inner.quit.load(Ordering::Acquire) {
++        inner.wake.wait(timeout);
++        timeout = HOUSEKEEPING;
++        let mut hosts = inner.hosts.lock().unwrap();
++        for host in hosts.iter_mut() {
++            host.apply_control(last.elapsed() >= HOUSEKEEPING);
++            host.pump(&inner.streams);
++            if let Some(due) = host.next_completion() {
++                timeout = timeout.min(due);
++            }
++        }
++        if last.elapsed() >= HOUSEKEEPING {
++            last = Instant::now();
++            for host in hosts.iter_mut() {
++                host.housekeeping();
++            }
++        }
++    }
++}
++
++pub struct CoreAudioBackend {
++    inner: Arc<Inner>,
++    pump: Option<JoinHandle<()>>,
++}
++
++impl CoreAudioBackend {
++    pub fn new(streams: Arc<RwLock<Vec<Stream>>>, control: Arc<SndControl>) -> Result<Self> {
++        let wake = Arc::new(Semaphore::new()?);
++        let waker = wake.clone();
++        control.set_waker(Box::new(move || waker.signal()));
++        let hosts = streams
++            .read()
++            .unwrap()
++            .iter()
++            .enumerate()
++            .map(|(id, s)| HostStream::new(id, s.direction, wake.clone(), control.clone()))
++            .collect();
++        let inner = Arc::new(Inner {
++            streams,
++            hosts: Mutex::new(hosts),
++            wake,
++            quit: AtomicBool::new(false),
++        });
++        let pump_inner = inner.clone();
++        let pump = std::thread::Builder::new()
++            .name("virtio-snd coreaudio".into())
++            .spawn(move || pump_thread(pump_inner))
++            .map_err(|e| Error::UnexpectedAudioBackendError(e.to_string()))?;
++        Ok(Self {
++            inner,
++            pump: Some(pump),
++        })
++    }
++
++    /// Move the stream to the state of a PCM command. The Linux driver sends START/STOP
++    /// without looking at the reply (they come from atomic context), and after an xrun its
++    /// recovery can skip RELEASE: rejecting a "wrong" transition would leave the device
++    /// stopped while the guest runs (and waits forever for completions). So the device always
++    /// follows the guest and only logs the unexpected order.
++    fn transition(
++        &self,
++        stream_id: u32,
++        what: &str,
++        target: PCMState,
++        f: impl FnOnce(&mut PCMState) -> std::result::Result<(), StreamError>,
++    ) -> Result<()> {
++        let mut streams = self.inner.streams.write().unwrap();
++        let stream = streams
++            .get_mut(stream_id as usize)
++            .ok_or(Error::StreamWithIdNotFound(stream_id))?;
++        if let Err(err) = f(&mut stream.state) {
++            log::debug!("snd: stream {stream_id} {what}: {err}");
++            stream.state = target;
++        }
++        Ok(())
++    }
++}
++
++impl Drop for CoreAudioBackend {
++    fn drop(&mut self) {
++        self.inner.quit.store(true, Ordering::Release);
++        self.inner.wake.signal();
++        if let Some(pump) = self.pump.take() {
++            let _ = pump.join();
++        }
++    }
++}
++
++impl AudioBackend for CoreAudioBackend {
++    fn write(&self, _stream_id: u32) -> Result<()> {
++        self.inner.wake.signal();
++        Ok(())
++    }
++
++    fn read(&self, _stream_id: u32) -> Result<()> {
++        self.inner.wake.signal();
++        Ok(())
++    }
++
++    fn set_parameters(&self, stream_id: u32, request: VirtioSndPcmSetParams) -> Result<()> {
++        let mut streams = self.inner.streams.write().unwrap();
++        let st = streams
++            .get_mut(stream_id as usize)
++            .ok_or(Error::StreamWithIdNotFound(stream_id))?;
++        if !st.supports_format(request.format)
++            || !st.supports_rate(request.rate)
++            || !(st.channels_min..=st.channels_max).contains(&request.channels)
++        {
++            return Err(Error::UnexpectedAudioBackendConfiguration);
++        }
++        st.state.set_parameters().map_err(|err| {
++            log::error!("snd: stream {stream_id} set_parameters: {err}");
++            Error::Stream(err)
++        })?;
++        st.params.features = request.features;
++        st.params.buffer_bytes = request.buffer_bytes;
++        st.params.period_bytes = request.period_bytes;
++        st.params.channels = request.channels;
++        st.params.format = request.format;
++        st.params.rate = request.rate;
++        Ok(())
++    }
++
++    fn prepare(&self, stream_id: u32) -> Result<()> {
++        self.transition(stream_id, "prepare", PCMState::Prepare, PCMState::prepare)?;
++        let fmt =
++            Format::from_params(&self.inner.streams.read().unwrap()[stream_id as usize].params)
++                .ok_or(Error::UnexpectedAudioBackendConfiguration)?;
++        let mut hosts = self.inner.hosts.lock().unwrap();
++        let host = &mut hosts[stream_id as usize];
++        host.stop_unit();
++        host.flush(&mut self.inner.streams.write().unwrap()[stream_id as usize]);
++        host.guest_format = Some(fmt);
++        if host.direction == Direction::Output {
++            if host.format != Some(fmt) || host.unit.is_none() {
++                host.configure(fmt)?;
++            }
++            host.open_dump(fmt);
++            // Run from PREPARE so START does not wait for the device; the callback plays
++            // silence until then.
++            host.start_unit()?;
++        }
++        Ok(())
++    }
++
++    fn release(&self, stream_id: u32) -> Result<()> {
++        self.transition(stream_id, "release", PCMState::Release, PCMState::release)?;
++        let mut hosts = self.inner.hosts.lock().unwrap();
++        let host = &mut hosts[stream_id as usize];
++        if host.direction == Direction::Output {
++            host.play_out();
++        }
++        host.stop_unit();
++        host.flush(&mut self.inner.streams.write().unwrap()[stream_id as usize]);
++        Ok(())
++    }
++
++    fn start(&self, stream_id: u32) -> Result<()> {
++        self.transition(stream_id, "start", PCMState::Start, PCMState::start)?;
++        let mut hosts = self.inner.hosts.lock().unwrap();
++        let host = &mut hosts[stream_id as usize];
++        host.shared.primed.store(false, Ordering::Relaxed);
++        host.shared.starved.store(false, Ordering::Relaxed);
++        if host.direction == Direction::Input {
++            // The microphone (and its permission prompt) is only touched while the guest
++            // records: set the unit up for the current default input device now.
++            let fmt = host
++                .guest_format
++                .ok_or(Error::UnexpectedAudioBackendConfiguration)?;
++            host.stop_unit();
++            host.shared.ring.clear();
++            host.configure(fmt)?;
++            host.shared.running.store(true, Ordering::Release);
++            if let Err(err) = host.start_unit() {
++                host.shared.running.store(false, Ordering::Release);
++                return Err(err);
++            }
++        } else {
++            // After an xrun the guest may START again without a PREPARE following its
++            // RELEASE (which stopped the unit): make sure the device is playing.
++            if host.unit.as_ref().is_none_or(|u| !u.started) {
++                let fmt = match host.guest_format {
++                    Some(fmt) => fmt,
++                    None => Format::from_params(
++                        &self.inner.streams.read().unwrap()[stream_id as usize].params,
++                    )
++                    .ok_or(Error::UnexpectedAudioBackendConfiguration)?,
++                };
++                if host.format != Some(fmt) || host.unit.is_none() {
++                    host.configure(fmt)?;
++                }
++                host.start_unit()?;
++            }
++            host.shared.limit.store(u64::MAX, Ordering::Release);
++            host.shared.running.store(true, Ordering::Release);
++        }
++        self.inner.wake.signal();
++        Ok(())
++    }
++
++    fn stop(&self, stream_id: u32) -> Result<()> {
++        self.transition(stream_id, "stop", PCMState::Stop, PCMState::stop)?;
++        let mut hosts = self.inner.hosts.lock().unwrap();
++        let host = &mut hosts[stream_id as usize];
++        host.shared.running.store(false, Ordering::Release);
++        match host.direction {
++            // Play out what the guest already saw completed (drain), keep the rest (pause).
++            Direction::Output => host.shared.limit.store(host.completed, Ordering::Release),
++            Direction::Input => host.stop_unit(),
++        }
++        Ok(())
++    }
++
++    #[cfg(test)]
++    fn as_any(&self) -> &dyn std::any::Any {
++        self
++    }
++}
+diff --git a/src/devices/src/virtio/snd/device.rs b/src/devices/src/virtio/snd/device.rs
+index 4607790..8dc1036 100644
+--- a/src/devices/src/virtio/snd/device.rs
++++ b/src/devices/src/virtio/snd/device.rs
+@@ -1,4 +1,5 @@
+ use std::io::Write;
++use std::sync::Arc;
+ use std::thread::JoinHandle;
+ 
+ use utils::eventfd::EventFd;
+@@ -7,7 +8,7 @@ use vm_memory::{ByteValued, GuestMemoryMmap};
+ use super::super::{ActivateError, ActivateResult, DeviceQueue, QueueConfig, VirtioDevice};
+ use super::virtio_sound::VirtioSoundConfig;
+ use super::worker::SndWorker;
+-use super::{defs, defs::uapi, Error};
++use super::{defs, defs::uapi, Error, SndControl};
+ 
+ use crate::virtio::{DeviceState, InterruptTransport};
+ 
+@@ -21,10 +22,11 @@ pub struct Snd {
+     pub(crate) device_state: DeviceState,
+     worker_thread: Option<JoinHandle<()>>,
+     worker_stopfd: EventFd,
++    control: Arc<SndControl>,
+ }
+ 
+ impl Snd {
+-    pub fn new() -> super::Result<Snd> {
++    pub fn new(control: Arc<SndControl>) -> super::Result<Snd> {
+         Ok(Snd {
+             avail_features: AVAIL_FEATURES,
+             acked_features: 0,
+@@ -34,6 +36,7 @@ impl Snd {
+             worker_thread: None,
+             worker_stopfd: EventFd::new(utils::eventfd::EFD_NONBLOCK)
+                 .map_err(Error::EventFdCreate)?,
++            control,
+         })
+     }
+ 
+@@ -119,6 +122,7 @@ impl VirtioDevice for Snd {
+             interrupt.clone(),
+             mem.clone(),
+             self.worker_stopfd.try_clone().unwrap(),
++            self.control.clone(),
+         );
+         self.worker_thread = Some(worker.run());
+ 
+diff --git a/src/devices/src/virtio/snd/mod.rs b/src/devices/src/virtio/snd/mod.rs
+index ea2f31f..c52f341 100644
+--- a/src/devices/src/virtio/snd/mod.rs
++++ b/src/devices/src/virtio/snd/mod.rs
+@@ -1,5 +1,6 @@
+ use std::{
+     io::Error as IoError,
++    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+     sync::{Arc, Mutex},
+ };
+ 
+@@ -16,6 +17,93 @@ use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
+ pub use self::defs::uapi::VIRTIO_ID_SND as TYPE_SND;
+ pub use self::device::Snd;
+ pub use stream::Stream;
++
++#[cfg(target_os = "macos")]
++pub use self::audio_backends::output_device_exists;
++
++/// Host-side audio settings changed at runtime (krun_snd_set_*), shared between the embedder
++/// and the audio backend. Every change bumps `generation` and wakes the backend.
++pub struct SndControl {
++    /// CoreAudio device UID of the output, None = the system default (followed).
++    output_device: Mutex<Option<String>>,
++    gain: AtomicU32,
++    mute: AtomicBool,
++    buffer_ms: AtomicU32,
++    generation: AtomicU64,
++    waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
++}
++
++impl Default for SndControl {
++    fn default() -> Self {
++        Self {
++            output_device: Mutex::new(None),
++            gain: AtomicU32::new(1.0f32.to_bits()),
++            mute: AtomicBool::new(false),
++            buffer_ms: AtomicU32::new(SndControl::DEFAULT_BUFFER_MS),
++            generation: AtomicU64::new(0),
++            waker: Mutex::new(None),
++        }
++    }
++}
++
++impl SndControl {
++    /// Measured in a SteamOS guest: PipeWire stalls of 25-40 ms under load (Steam startup)
++    /// starve a smaller host buffer.
++    pub const DEFAULT_BUFFER_MS: u32 = 40;
++    pub const MAX_BUFFER_MS: u32 = 200;
++
++    pub fn set_output_device(&self, uid: Option<String>) {
++        *self.output_device.lock().unwrap() = uid;
++        self.changed();
++    }
++
++    pub fn output_device(&self) -> Option<String> {
++        self.output_device.lock().unwrap().clone()
++    }
++
++    /// `gain` must be within 0..=1.
++    pub fn set_volume(&self, gain: f32, mute: bool) {
++        self.gain.store(gain.to_bits(), Ordering::Relaxed);
++        self.mute.store(mute, Ordering::Relaxed);
++        self.changed();
++    }
++
++    /// Effective linear gain (0 when muted).
++    pub fn volume(&self) -> f32 {
++        if self.mute.load(Ordering::Relaxed) {
++            0.0
++        } else {
++            f32::from_bits(self.gain.load(Ordering::Relaxed))
++        }
++    }
++
++    /// `ms` must be at most MAX_BUFFER_MS.
++    pub fn set_buffer_ms(&self, ms: u32) {
++        self.buffer_ms.store(ms, Ordering::Relaxed);
++        self.changed();
++    }
++
++    pub fn buffer_ms(&self) -> u32 {
++        self.buffer_ms.load(Ordering::Relaxed)
++    }
++
++    pub fn generation(&self) -> u64 {
++        self.generation.load(Ordering::Acquire)
++    }
++
++    /// Called by the backend: run `waker` after every change.
++    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
++    fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
++        *self.waker.lock().unwrap() = Some(waker);
++    }
++
++    fn changed(&self) {
++        self.generation.fetch_add(1, Ordering::AcqRel);
++        if let Some(wake) = self.waker.lock().unwrap().as_ref() {
++            wake();
++        }
++    }
++}
+ use virtio_sound::*;
+ 
+ use super::{Descriptor, InterruptTransport, Queue};
+@@ -36,6 +124,15 @@ mod defs {
+     const QUEUE_SIZE: u16 = 256;
+     pub static QUEUE_CONFIG: [QueueConfig; NUM_QUEUES] = [QueueConfig::new(QUEUE_SIZE); NUM_QUEUES];
+ 
++    // The CoreAudio backend hands the guest's own format to the output unit, which converts
++    // to the device: advertise the formats PipeWire picks (FLOAT/S32 first, S16 for plain ALSA
++    // clients) at the usual rates, stereo or mono.
++    #[cfg(target_os = "macos")]
++    pub const SUPPORTED_FORMATS: u64 = (1 << VIRTIO_SND_PCM_FMT_U8)
++        | (1 << VIRTIO_SND_PCM_FMT_S16)
++        | (1 << VIRTIO_SND_PCM_FMT_S32)
++        | (1 << VIRTIO_SND_PCM_FMT_FLOAT);
++    #[cfg(not(target_os = "macos"))]
+     pub const SUPPORTED_FORMATS: u64 = (1 << VIRTIO_SND_PCM_FMT_U8)
+         | (1 << VIRTIO_SND_PCM_FMT_S16)
+         | (1 << VIRTIO_SND_PCM_FMT_S24)
+@@ -49,6 +146,12 @@ mod defs {
+         | (1 << VIRTIO_SND_PCM_RATE_44100)
+         | (1 << VIRTIO_SND_PCM_RATE_48000);
+ 
++    pub const CHANNELS_MIN: u8 = 1;
++    #[cfg(target_os = "macos")]
++    pub const CHANNELS_MAX: u8 = 2;
++    #[cfg(not(target_os = "macos"))]
++    pub const CHANNELS_MAX: u8 = 6;
++
+     pub mod uapi {
+         pub const VIRTIO_F_VERSION_1: u32 = 32;
+         pub const VIRTIO_ID_SND: u32 = 25;
+@@ -149,10 +252,21 @@ impl From<stream::Error> for Error {
+     }
+ }
+ 
+-#[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum BackendType {
+-    #[default]
++    #[cfg(target_os = "linux")]
+     Pipewire,
++    #[cfg(target_os = "macos")]
++    CoreAudio,
++}
++
++impl Default for BackendType {
++    fn default() -> Self {
++        #[cfg(target_os = "linux")]
++        return Self::Pipewire;
++        #[cfg(target_os = "macos")]
++        return Self::CoreAudio;
++    }
+ }
+ 
+ #[derive(Debug, PartialEq, Eq)]
+diff --git a/src/devices/src/virtio/snd/stream.rs b/src/devices/src/virtio/snd/stream.rs
+index f32d80d..99a74f0 100644
+--- a/src/devices/src/virtio/snd/stream.rs
++++ b/src/devices/src/virtio/snd/stream.rs
+@@ -7,7 +7,7 @@ use thiserror::Error as ThisError;
+ use vm_memory::{Address, Bytes, GuestAddress, Le32, Le64};
+ 
+ use super::super::Descriptor;
+-use super::defs::{SUPPORTED_FORMATS, SUPPORTED_RATES};
++use super::defs::{CHANNELS_MAX, CHANNELS_MIN, SUPPORTED_FORMATS, SUPPORTED_RATES};
+ use super::{virtio_sound::*, Direction, IOMessage};
+ 
+ /// Stream errors.
+@@ -195,8 +195,8 @@ impl Default for Stream {
+             formats: SUPPORTED_FORMATS.into(),
+             rates: SUPPORTED_RATES.into(),
+             params: PcmParams::default(),
+-            channels_min: 1,
+-            channels_max: 6,
++            channels_min: CHANNELS_MIN,
++            channels_max: CHANNELS_MAX,
+             state: Default::default(),
+             buffers: VecDeque::new(),
+         }
+@@ -319,23 +319,15 @@ impl Buffer {
+     }
+ }
+ 
++// latency_bytes of a message is the device-side delay the guest adds to its own pointer
++// arithmetic (runtime->delay): the backend stores it in the message before completing it.
+ impl Drop for Buffer {
+     fn drop(&mut self) {
+-        match self.direction {
+-            Direction::Input => {
+-                let used_len = std::cmp::min(self.pos as u32, self.desc_len());
+-                self.message
+-                    .used_len
+-                    .fetch_add(used_len, std::sync::atomic::Ordering::SeqCst);
+-                self.message
+-                    .latency_bytes
+-                    .fetch_add(used_len, std::sync::atomic::Ordering::SeqCst);
+-            }
+-            Direction::Output => {
+-                self.message
+-                    .latency_bytes
+-                    .fetch_add(self.desc_len(), std::sync::atomic::Ordering::SeqCst);
+-            }
++        if self.direction == Direction::Input {
++            let used_len = std::cmp::min(self.pos as u32, self.desc_len());
++            self.message
++                .used_len
++                .fetch_add(used_len, std::sync::atomic::Ordering::SeqCst);
+         }
+         log::trace!("dropping {:?} buffer {:?}", self.direction, self);
+     }
+diff --git a/src/devices/src/virtio/snd/worker.rs b/src/devices/src/virtio/snd/worker.rs
+index e7950d5..4ff20f9 100644
+--- a/src/devices/src/virtio/snd/worker.rs
++++ b/src/devices/src/virtio/snd/worker.rs
+@@ -19,7 +19,7 @@ use super::virtio_sound::{
+     VIRTIO_SND_S_OK,
+ };
+ use super::{
+-    BackendType, Direction, Error, VirtioSoundChmapInfo, VirtioSoundJackInfo, Vring,
++    BackendType, Direction, Error, SndControl, VirtioSoundChmapInfo, VirtioSoundJackInfo, Vring,
+     VIRTIO_SND_CHMAP_FL, VIRTIO_SND_CHMAP_FR, VIRTIO_SND_CHMAP_MAX_SIZE, VIRTIO_SND_CHMAP_NONE,
+ };
+ use crate::virtio::snd::stream::Buffer;
+@@ -45,6 +45,7 @@ impl SndWorker {
+         interrupt: InterruptTransport,
+         mem: GuestMemoryMmap,
+         stop_fd: EventFd,
++        control: Arc<SndControl>,
+     ) -> Self {
+         let streams = vec![
+             Stream {
+@@ -80,8 +81,9 @@ impl SndWorker {
+         ];
+         let chmaps: Arc<RwLock<Vec<VirtioSoundChmapInfo>>> = Arc::new(RwLock::new(chmaps_info));
+ 
+-        let audio_backend =
+-            RwLock::new(alloc_audio_backend(BackendType::Pipewire, streams.clone()).unwrap());
++        let audio_backend = RwLock::new(
++            alloc_audio_backend(BackendType::default(), streams.clone(), control).unwrap(),
++        );
+ 
+         let mut vrings: Vec<Arc<Mutex<Vring>>> = Vec::new();
+         let mut queue_events: Vec<Arc<EventFd>> = Vec::new();
+@@ -270,7 +272,24 @@ impl SndWorker {
+             code: VIRTIO_SND_S_OK.into(),
+         };
+ 
+-        let code = ControlMessageKind::try_from(request.code.to_native()).unwrap();
++        let code = match ControlMessageKind::try_from(request.code.to_native()) {
++            Ok(code) => code,
++            Err(err) => {
++                log::warn!("snd: {err}");
++                resp.code = VIRTIO_SND_S_NOT_SUPP.into();
++                self.mem
++                    .write_obj(resp, desc_hdr.addr)
++                    .map_err(|_| Error::DescriptorWriteFailed)?;
++                if let Err(err) = vring_lock.lock().unwrap().queue.add_used(
++                    &self.mem,
++                    head.index,
++                    resp.as_slice().len() as u32,
++                ) {
++                    error!("Error adding used descriptors to the queue: {err}");
++                }
++                return Ok(());
++            }
++        };
+         match code {
+             ControlMessageKind::ChmapInfo => {
+                 if descriptors.len() != 3 {
+@@ -434,12 +453,8 @@ impl SndWorker {
+                 if stream_id as usize >= self.streams_no {
+                     log::error!("{}", Error::from(StreamError::InvalidStreamId(stream_id)));
+                     resp.code = VIRTIO_SND_S_BAD_MSG.into();
+-                } else {
+-                    self.audio_backend
+-                        .write()
+-                        .unwrap()
+-                        .prepare(stream_id)
+-                        .unwrap();
++                } else if let Err(err) = self.audio_backend.write().unwrap().prepare(stream_id) {
++                    resp.code = backend_error_code(err);
+                 }
+             }
+             ControlMessageKind::PcmRelease => {
+@@ -474,12 +489,8 @@ impl SndWorker {
+                 if stream_id as usize >= self.streams_no {
+                     log::error!("{}", Error::from(StreamError::InvalidStreamId(stream_id)));
+                     resp.code = VIRTIO_SND_S_BAD_MSG.into();
+-                } else {
+-                    self.audio_backend
+-                        .write()
+-                        .unwrap()
+-                        .start(stream_id)
+-                        .unwrap();
++                } else if let Err(err) = self.audio_backend.write().unwrap().start(stream_id) {
++                    resp.code = backend_error_code(err);
+                 }
+             }
+             ControlMessageKind::PcmStop => {
+@@ -492,8 +503,8 @@ impl SndWorker {
+                 if stream_id as usize >= self.streams_no {
+                     log::error!("{}", Error::from(StreamError::InvalidStreamId(stream_id)));
+                     resp.code = VIRTIO_SND_S_BAD_MSG.into();
+-                } else {
+-                    self.audio_backend.write().unwrap().stop(stream_id).unwrap();
++                } else if let Err(err) = self.audio_backend.write().unwrap().stop(stream_id) {
++                    resp.code = backend_error_code(err);
+                 }
+             }
+         }
+@@ -527,7 +538,9 @@ impl SndWorker {
+         _vring_lock: &Arc<Mutex<Vring>>,
+         _head: DescriptorChain,
+     ) -> result::Result<(), Error> {
+-        error!("virtio_snd: unimplemented process_evt");
++        // The driver pre-posts event buffers. No jack or control ever raises an event, so they
++        // are consumed and never returned.
++        debug!("virtio_snd: event buffer posted");
+         Ok(())
+     }
+ 
+@@ -601,6 +614,18 @@ impl SndWorker {
+                         .read_obj::<VirtioSoundPcmXfer>(descriptor.addr)
+                         .map_err(|_| Error::DescriptorReadFailed)?;
+                     let stream_id: u32 = xfer.stream_id.into();
++                    let valid = self
++                        .streams
++                        .read()
++                        .unwrap()
++                        .get(stream_id as usize)
++                        .is_some_and(|s| s.direction == direction);
++                    if !valid {
++                        message
++                            .status
++                            .store(VIRTIO_SND_S_BAD_MSG, std::sync::atomic::Ordering::SeqCst);
++                        return Err(Error::from(StreamError::InvalidStreamId(stream_id)));
++                    }
+                     stream_ids.insert(stream_id);
+ 
+                     state = IoState::WaitingBufferForStreamId(stream_id);
+@@ -639,10 +664,24 @@ impl SndWorker {
+         if !stream_ids.is_empty() {
+             let b = self.audio_backend.read().unwrap();
+             for id in stream_ids {
+-                b.write(id).unwrap();
++                if let Err(err) = b.write(id) {
++                    log::warn!("snd: stream {id}: {err}");
++                }
+             }
+         }
+ 
+         Ok(())
+     }
+ }
++
++/// Status code for a failed PCM control request.
++fn backend_error_code(err: Error) -> vm_memory::Le32 {
++    match err {
++        Error::Stream(_) | Error::StreamWithIdNotFound(_) => VIRTIO_SND_S_BAD_MSG.into(),
++        Error::UnexpectedAudioBackendConfiguration => VIRTIO_SND_S_NOT_SUPP.into(),
++        err => {
++            log::error!("snd: {err}");
++            VIRTIO_SND_S_IO_ERR.into()
++        }
++    }
++}
+diff --git a/src/libkrun/src/lib.rs b/src/libkrun/src/lib.rs
+index 1a485b4..2e44976 100644
+--- a/src/libkrun/src/lib.rs
++++ b/src/libkrun/src/lib.rs
+@@ -192,6 +192,8 @@ struct ContextConfig {
+     gpu_shm_size: Option<usize>,
+     render_server_fd: Option<RawFd>,
+     enable_snd: bool,
++    #[cfg(feature = "snd")]
++    snd_control: std::sync::Arc<devices::virtio::SndControl>,
+     console_output: Option<PathBuf>,
+     vmm_uid: Option<libc::uid_t>,
+     vmm_gid: Option<libc::gid_t>,
+@@ -1973,6 +1975,126 @@ pub unsafe extern "C" fn krun_set_snd_device(ctx_id: u32, enable: bool) -> i32 {
+     KRUN_SUCCESS
+ }
+ 
++/// Audio controls of started VMs with a virtio-snd device (krun_snd_set_*).
++#[cfg(feature = "snd")]
++static SND_CONTROLS: Lazy<Mutex<HashMap<u32, std::sync::Arc<devices::virtio::SndControl>>>> =
++    Lazy::new(|| Mutex::new(HashMap::new()));
++
++/// A started context's entry in SND_CONTROLS, removed when krun_start_enter returns.
++#[cfg(feature = "snd")]
++struct SndControlRegistration(u32);
++
++#[cfg(feature = "snd")]
++impl SndControlRegistration {
++    fn new(ctx_id: u32, ctx_cfg: &mut ContextConfig) -> Self {
++        if ctx_cfg.enable_snd {
++            SND_CONTROLS
++                .lock()
++                .unwrap()
++                .insert(ctx_id, ctx_cfg.snd_control.clone());
++            ctx_cfg.vmr.snd_control = Some(ctx_cfg.snd_control.clone());
++        }
++        Self(ctx_id)
++    }
++}
++
++#[cfg(feature = "snd")]
++impl Drop for SndControlRegistration {
++    fn drop(&mut self) {
++        SND_CONTROLS.lock().unwrap().remove(&self.0);
++    }
++}
++
++/// Runs `f` on the audio controls of a configured or started context.
++#[cfg(all(feature = "snd", target_os = "macos"))]
++fn with_snd_control(ctx_id: u32, f: impl FnOnce(&devices::virtio::SndControl) -> i32) -> i32 {
++    // Lock order: CTX_MAP, then SND_CONTROLS (as in krun_start_enter).
++    let ctx_map = CTX_MAP.lock().unwrap();
++    if let Some(cfg) = ctx_map.get(&ctx_id) {
++        return if cfg.enable_snd {
++            f(&cfg.snd_control)
++        } else {
++            -libc::ENODEV
++        };
++    }
++    match SND_CONTROLS.lock().unwrap().get(&ctx_id) {
++        Some(control) => f(control),
++        None => -libc::ENODEV,
++    }
++}
++
++#[allow(clippy::missing_safety_doc)]
++#[no_mangle]
++pub unsafe extern "C" fn krun_snd_set_output_device(
++    ctx_id: u32,
++    coreaudio_device_uid: *const c_char,
++) -> i32 {
++    #[cfg(all(feature = "snd", target_os = "macos"))]
++    {
++        let uid = if coreaudio_device_uid.is_null() {
++            None
++        } else {
++            match CStr::from_ptr(coreaudio_device_uid).to_str() {
++                Ok(uid) => Some(uid.to_string()),
++                Err(_) => return -libc::EINVAL,
++            }
++        };
++        if uid
++            .as_deref()
++            .is_some_and(|uid| !devices::virtio::snd::output_device_exists(uid))
++        {
++            return -libc::ENODEV;
++        }
++        with_snd_control(ctx_id, |control| {
++            control.set_output_device(uid);
++            KRUN_SUCCESS
++        })
++    }
++    #[cfg(not(all(feature = "snd", target_os = "macos")))]
++    {
++        let _ = (ctx_id, coreaudio_device_uid);
++        -libc::ENOTSUP
++    }
++}
++
++#[no_mangle]
++pub extern "C" fn krun_snd_set_volume(ctx_id: u32, gain: f32, mute: bool) -> i32 {
++    #[cfg(all(feature = "snd", target_os = "macos"))]
++    {
++        if !(0.0..=1.0).contains(&gain) {
++            return -libc::EINVAL;
++        }
++        with_snd_control(ctx_id, |control| {
++            control.set_volume(gain, mute);
++            KRUN_SUCCESS
++        })
++    }
++    #[cfg(not(all(feature = "snd", target_os = "macos")))]
++    {
++        let _ = (ctx_id, gain, mute);
++        -libc::ENOTSUP
++    }
++}
++
++#[no_mangle]
++pub extern "C" fn krun_snd_set_buffer_ms(ctx_id: u32, ms: u32) -> i32 {
++    #[cfg(all(feature = "snd", target_os = "macos"))]
++    {
++        if ms > devices::virtio::SndControl::MAX_BUFFER_MS {
++            return -libc::EINVAL;
++        }
++        with_snd_control(ctx_id, |control| {
++            control.set_buffer_ms(ms);
++            KRUN_SUCCESS
++        })
++    }
++    #[cfg(not(all(feature = "snd", target_os = "macos")))]
++    {
++        let _ = (ctx_id, ms);
++        -libc::ENOTSUP
++    }
++}
++
+ #[allow(unused_assignments)]
+ #[no_mangle]
+ #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+@@ -2992,6 +3114,8 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
+     // finds the context in one of the two maps.
+     #[cfg(feature = "gpu")]
+     let _display_control = DisplayControlRegistration::new(ctx_id, &mut ctx_cfg);
++    #[cfg(feature = "snd")]
++    let _snd_control = SndControlRegistration::new(ctx_id, &mut ctx_cfg);
+     drop(ctx_map);
+ 
+     if ctx_cfg.vmr.external_kernel.is_none()
+diff --git a/src/vmm/src/builder.rs b/src/vmm/src/builder.rs
+index e43a98b..2daa5a4 100644
+--- a/src/vmm/src/builder.rs
++++ b/src/vmm/src/builder.rs
+@@ -1079,7 +1079,8 @@ pub fn build_microvm(
+ 
+     #[cfg(feature = "snd")]
+     if vm_resources.snd_device {
+-        attach_snd_device(&mut vmm, intc.clone())?;
++        let control = vm_resources.snd_control.clone().unwrap_or_default();
++        attach_snd_device(&mut vmm, intc.clone(), control)?;
+     }
+ 
+     if let Some(s) = &vm_resources.kernel_cmdline.epilog {
+@@ -2351,10 +2352,14 @@ fn attach_input_devices(
+ }
+ 
+ #[cfg(feature = "snd")]
+-fn attach_snd_device(vmm: &mut Vmm, intc: IrqChip) -> std::result::Result<(), StartMicrovmError> {
++fn attach_snd_device(
++    vmm: &mut Vmm,
++    intc: IrqChip,
++    control: Arc<devices::virtio::SndControl>,
++) -> std::result::Result<(), StartMicrovmError> {
+     use self::StartMicrovmError::*;
+ 
+-    let snd = Arc::new(Mutex::new(devices::virtio::Snd::new().unwrap()));
++    let snd = Arc::new(Mutex::new(devices::virtio::Snd::new(control).unwrap()));
+     let id = String::from(snd.lock().unwrap().id());
+ 
+     // The device mutex mustn't be locked here otherwise it will deadlock.
+diff --git a/src/vmm/src/resources.rs b/src/vmm/src/resources.rs
+index 5d22aca..1719a80 100644
+--- a/src/vmm/src/resources.rs
++++ b/src/vmm/src/resources.rs
+@@ -179,6 +179,9 @@ pub struct VmResources {
+     #[cfg(feature = "snd")]
+     /// Enable the virtio-snd device.
+     pub snd_device: bool,
++    /// Runtime audio settings (krun_snd_set_*), shared with the virtio-snd backend.
++    #[cfg(feature = "snd")]
++    pub snd_control: Option<Arc<devices::virtio::SndControl>>,
+     /// File to send console output.
+     pub console_output: Option<PathBuf>,
+     /// SMBIOS OEM Strings
+@@ -442,6 +445,8 @@ mod tests {
+             input_backends: Vec::new(),
+             #[cfg(feature = "snd")]
+             snd_device: false,
++            #[cfg(feature = "snd")]
++            snd_control: None,
+             console_output: None,
+             smbios_oem_strings: None,
+             nested_enabled: false,

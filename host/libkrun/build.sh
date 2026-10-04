@@ -12,8 +12,10 @@
 #   Rust           $RUST_TOOLCHAIN via rustup (deps need >= 1.87)
 #   Homebrew       dtc, xz, lld (init cross-link), libepoxy
 #
-# Features: make GPU=1 BLK=1 NET=1 INPUT=1. v1.19.6 has no TIMESYNC make flag (the
-# vsock timesync is always built); SND needs PipeWire (Linux only) and is left out.
+# Features: make GPU=1 BLK=1 NET=1 INPUT=1 SND=1. v1.19.6 has no TIMESYNC make flag (the
+# vsock timesync is always built). SND on macOS uses the CoreAudio virtio-snd backend from
+# patch 0014 (no PipeWire); its debug knob STEAMAC_SND_DUMP=/path.wav records the playback
+# stream as handed to CoreAudio.
 #
 # Output (work/out/host):
 #   lib/libkrun.1.dylib      install_name @rpath/libkrun.1.dylib, ad-hoc signed
@@ -34,7 +36,7 @@ TAG=v1.19.6
 COMMIT=227b2de6ed323fe180e02f871c5f325a90c13cc2
 RUST_TOOLCHAIN=${RUST_TOOLCHAIN:-1.90.0}
 BREW_DEPS="dtc xz lld libepoxy pkgconf"
-MAKE_FLAGS="GPU=1 BLK=1 NET=1 INPUT=1"
+MAKE_FLAGS="GPU=1 BLK=1 NET=1 INPUT=1 SND=1"
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
