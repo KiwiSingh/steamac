@@ -12,7 +12,8 @@
 <meta property="og:url" content="https://fxgl.github.io/steamac/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#06090e">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='26' height='26' rx='7' fill='%2306090e' stroke='%2366c0f4' stroke-width='2'/%3E%3Cpath d='M10 20l6-10 6 10' fill='none' stroke='%2366c0f4' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="media/icon.png">
+<link rel="apple-touch-icon" href="media/icon.png">
 <link rel="stylesheet" href="assets/style.css">
 <script>
   (function () {
@@ -29,7 +30,7 @@
 
 <header class="nav">
   <a class="brand" href="#top" aria-label="FX Steam Launcher">
-    <span class="brand-mark" aria-hidden="true"></span>
+    <img class="brand-mark" src="media/icon.png" alt="" width="28" height="28">
     <span class="brand-name">FX Steam Launcher</span>
   </a>
   <nav class="nav-links">
@@ -216,7 +217,7 @@
         <p class="info-lede"><span lang="en">The real SteamOS gamepad UI, drawn by gamescope inside the VM and presented by a native Metal window.</span><span lang="ru">Настоящий игровой интерфейс SteamOS: его рисует gamescope внутри ВМ, а показывает нативное окно на Metal.</span></p>
         <ul>
           <li><span lang="en">Guest resolution follows the window at constant DPI — the EDID is computed from your screen's physical size, so text stays crisp in a window or full screen (Ctrl+Cmd+F).</span><span lang="ru">Разрешение гостя следует за размером окна при постоянном DPI — EDID считается из физического размера экрана, поэтому текст чёткий и в окне, и на весь экран (Ctrl+Cmd+F).</span></li>
-          <li><span lang="en">Resizing is live: the new size reaches SteamOS as a display change, no reboot.</span><span lang="ru">Ресайз — на лету: новый размер приходит в SteamOS как смена дисплея, без перезагрузки.</span></li>
+          <li><span lang="en">Resizing is live: the new size reaches SteamOS as a display change, no reboot. Or pick a preset — Steam Deck 1280×800 up to 4K and 21:9 — or Fit to screen.</span><span lang="ru">Ресайз — на лету: новый размер приходит в SteamOS как смена дисплея, без перезагрузки. Или выберите пресет — от Steam Deck 1280×800 до 4K и 21:9 — или Fit to screen.</span></li>
           <li><span lang="en">The launcher overlay shows boot and shutdown progress reported by an agent inside SteamOS. Closing the window presses the power button: clean shutdown in 2–4 s.</span><span lang="ru">Оверлей лаунчера показывает прогресс загрузки и выключения — его сообщает агент внутри SteamOS. Закрыть окно = нажать кнопку питания: чистое выключение за 2–4 с.</span></li>
         </ul>
         <p class="tags"><span>gamescope</span><span>Metal</span><span>EDID</span><span>virtio-gpu</span></p>
@@ -277,7 +278,7 @@
         <ul>
           <li><span lang="en">The image comes from Valve as a signed RAUC bundle; signature and sha256 are verified. The SteamOS root filesystem is never modified — VM bits live in the initramfs and a separate read-only layer.</span><span lang="ru">Образ скачивается с серверов Valve подписанным RAUC-бандлом; подпись и sha256 проверяются. Корневая ФС SteamOS не изменяется — всё для ВМ живёт в initramfs и отдельном read-only слое.</span></li>
           <li><span lang="en">So official updates just work: RAUC installs into the other A/B slot and rolls back the standard way, with the initramfs acting as the bootloader.</span><span lang="ru">Поэтому официальные обновления просто работают: RAUC ставит их в другой слот A/B и откатывает штатно, а initramfs играет роль загрузчика.</span></li>
-          <li><span lang="en">vCPU and GPU threads run at user-interactive QoS; networking goes through gvproxy, with SSH on localhost:2222.</span><span lang="ru">Потоки vCPU и GPU работают с QoS user-interactive; сеть — через gvproxy, SSH на localhost:2222.</span></li>
+          <li><span lang="en">vCPU and GPU threads run at user-interactive QoS; networking goes through gvproxy. SSH into SteamOS is one switch in Settings, off by default, with a generated password per disk.</span><span lang="ru">Потоки vCPU и GPU работают с QoS user-interactive; сеть — через gvproxy. SSH в SteamOS — один переключатель в настройках, по умолчанию выключен, пароль генерируется для каждого диска.</span></li>
         </ul>
         <p class="tags"><span>libkrun</span><span>Hypervisor.framework</span><span>RAUC A/B</span><span>gvproxy</span></p>
       </article>
@@ -349,13 +350,13 @@
       <ol class="settings-tabs" role="tablist" aria-label="Settings tabs">
         <li><button type="button" role="tab" data-tab="general" aria-selected="true">
           <b>General</b>
-          <span lang="en">Boot and shutdown overlay, open in full screen, and a frame-pacing log: every 5 s, guest and on-screen frame intervals, latency, dropped frames.</span>
-          <span lang="ru">Оверлей загрузки и выключения, запуск на весь экран и журнал плавности: каждые 5 с — интервалы кадров гостя и на экране, задержка, пропущенные кадры.</span>
+          <span lang="en">Boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; frame-pacing log; Report a Problem with the logs you choose.</span>
+          <span lang="ru">Оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; журнал плавности; Report a Problem с выбранными логами.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="display" aria-selected="false">
           <b>Display</b>
-          <span lang="en">Physical size from the screen, DPI or millimetres sets SteamOS's UI scale; refresh rate; follow the window size or keep a fixed resolution and scale the picture.</span>
-          <span lang="ru">Физический размер — по экрану, в DPI или миллиметрах — задаёт масштаб интерфейса SteamOS; частота обновления; следовать размеру окна или держать разрешение и масштабировать картинку.</span>
+          <span lang="en">Resolution presets from Steam Deck 1280×800 to 4K and 21:9, Fit to screen or Custom; physical size (screen, DPI or mm) sets SteamOS's UI scale; refresh rate; follow the window size; Metal Performance HUD.</span>
+          <span lang="ru">Пресеты разрешения от Steam Deck 1280×800 до 4K и 21:9, Fit to screen или Custom; физический размер (по экрану, в DPI или мм) задаёт масштаб интерфейса SteamOS; частота обновления; следовать размеру окна; Metal Performance HUD.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="mouse" aria-selected="false">
           <b>Mouse</b>
@@ -374,18 +375,18 @@
         </button></li>
         <li><button type="button" role="tab" data-tab="advanced" aria-selected="false">
           <b>Advanced</b>
-          <span lang="en">vCPUs, memory, SSH port, network on or off, and the SteamOS disk image — used in place, never copied. Reset All Settings brings the defaults back.</span>
-          <span lang="ru">vCPU, память, порт SSH, сеть и образ диска SteamOS — используется на месте, никогда не копируется. Reset All Settings возвращает значения по умолчанию.</span>
+          <span lang="en">vCPUs and memory; SSH into SteamOS with one switch (off by default, a generated password per disk); network on or off; the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
+          <span lang="ru">vCPU и память; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
         </button></li>
       </ol>
 
       <div class="settings-window">
-        <img src="media/settings-general.png" data-tab="general" class="show" alt="Settings: General tab" width="600" height="700" loading="lazy">
-        <img src="media/settings-display.png" data-tab="display" alt="Settings: Display tab" width="600" height="700" loading="lazy">
-        <img src="media/settings-mouse.png" data-tab="mouse" alt="Settings: Mouse tab" width="600" height="700" loading="lazy">
-        <img src="media/settings-controller.png" data-tab="controller" alt="Settings: Controller tab" width="600" height="700" loading="lazy">
-        <img src="media/settings-sound.png" data-tab="sound" alt="Settings: Sound tab" width="600" height="700" loading="lazy">
-        <img src="media/settings-advanced.png" data-tab="advanced" alt="Settings: Advanced tab" width="600" height="700" loading="lazy">
+        <img src="media/settings-general.png" data-tab="general" class="show" alt="Settings: General tab" width="600" height="800" loading="lazy">
+        <img src="media/settings-display.png" data-tab="display" alt="Settings: Display tab" width="600" height="800" loading="lazy">
+        <img src="media/settings-mouse.png" data-tab="mouse" alt="Settings: Mouse tab" width="600" height="800" loading="lazy">
+        <img src="media/settings-controller.png" data-tab="controller" alt="Settings: Controller tab" width="600" height="800" loading="lazy">
+        <img src="media/settings-sound.png" data-tab="sound" alt="Settings: Sound tab" width="600" height="800" loading="lazy">
+        <img src="media/settings-advanced.png" data-tab="advanced" alt="Settings: Advanced tab" width="600" height="800" loading="lazy">
         <!-- Click targets over the screenshot's own toolbar icons. -->
         <div class="toolbar-hit" aria-hidden="true">
           <i data-tab="general"></i><i data-tab="display"></i><i data-tab="mouse"></i><i data-tab="controller"></i><i data-tab="sound"></i><i data-tab="advanced"></i>
@@ -402,19 +403,37 @@
 
     <div class="get-grid">
       <div class="get-card get-main">
-        <a class="btn btn-primary btn-big" data-dl href="https://github.com/fxgl/steamac/releases/latest">
-          <span lang="en">Download FX Steam Launcher</span><span lang="ru">Скачать FX Steam Launcher</span>
-          <small data-ver></small>
-        </a>
-        <a class="all-releases" href="https://github.com/fxgl/steamac/releases"><span lang="en">All releases</span><span lang="ru">Все релизы</span> →</a>
+        <div class="get-head">
+          <img class="app-icon" src="media/icon.png" alt="FX Steam Launcher icon" width="96" height="96">
+          <div>
+            <a class="btn btn-primary btn-big" data-dl href="https://github.com/fxgl/steamac/releases/latest">
+              <span lang="en">Download FX Steam Launcher</span><span lang="ru">Скачать FX Steam Launcher</span>
+              <small data-ver></small>
+            </a>
+            <a class="all-releases" href="https://github.com/fxgl/steamac/releases"><span lang="en">All releases</span><span lang="ru">Все релизы</span> →</a>
+          </div>
+        </div>
         <ol class="steps">
           <li><span lang="en">Download the DMG, open it and drag FX Steam Launcher to Applications. It is signed and notarized by Apple.</span><span lang="ru">Скачайте DMG, откройте и перетащите FX Steam Launcher в «Программы». Приложение подписано и нотаризовано Apple.</span></li>
-          <li><span lang="en">Launch it and choose <b>Create New Disk…</b>: the launcher downloads the signed SteamOS image from Valve's servers (~4.4 GB), verifies Valve's signature and builds the disk. No Docker needed.</span><span lang="ru">Запустите и выберите <b>Create New Disk…</b>: лаунчер скачает подписанный образ SteamOS с серверов Valve (~4,4 ГБ), проверит подпись Valve и соберёт диск. Docker не нужен.</span></li>
+          <li><span lang="en">Launch it and choose <b>Create New Disk…</b>: pick the SteamOS branch and the size of the games partition. The launcher downloads Valve's signed image (~4.5 GB), checks the signature and checksum and writes the disk. No Docker needed.</span><span lang="ru">Запустите и выберите <b>Create New Disk…</b>: укажите ветку SteamOS и размер раздела под игры. Лаунчер скачает подписанный образ Valve (~4,5 ГБ), проверит подпись и контрольную сумму и запишет диск. Docker не нужен.</span></li>
           <li><span lang="en">Sign in to Steam and install games — Steam brings Proton 11 (ARM64) and FEX itself.</span><span lang="ru">Войдите в Steam и ставьте игры — Proton 11 (ARM64) и FEX Steam поставит сам.</span></li>
         </ol>
+        <figure class="create-disk">
+          <img src="media/create-disk.png" alt="Create SteamOS Disk window" width="560" height="588" loading="lazy">
+          <figcaption><span lang="en">Create New Disk: everything comes from Valve's servers, the disk is sparse</span><span lang="ru">Create New Disk: всё скачивается с серверов Valve, диск разреженный</span></figcaption>
+        </figure>
       </div>
 
       <div class="get-card">
+        <h3><span lang="en">New in 1.1</span><span lang="ru">Новое в 1.1</span></h3>
+        <ul class="news">
+          <li><span lang="en">Smoother sound: buffering fixes in the CoreAudio backend and the guest's virtio-snd driver</span><span lang="ru">Ровнее звук: исправления буферизации в бэкенде CoreAudio и драйвере virtio-snd гостя</span></li>
+          <li><span lang="en">Resolution presets (Steam Deck 1280×800 up to 4K and 21:9), Fit to screen, Custom</span><span lang="ru">Пресеты разрешения (от Steam Deck 1280×800 до 4K и 21:9), Fit to screen, Custom</span></li>
+          <li><span lang="en">In the background the sound fades out; optionally the game pauses</span><span lang="ru">В фоне звук плавно выключается; по желанию игра встаёт на паузу</span></li>
+          <li><span lang="en">A “still working” card when the GPU idles for 2 s, “not responding” if SteamOS stops answering</span><span lang="ru">Карточка «still working», если GPU простаивает 2 с, и «not responding», если SteamOS перестала отвечать</span></li>
+          <li><span lang="en">Report a Problem with the logs you choose; crash reports you can turn off</span><span lang="ru">Report a Problem с выбранными логами; отчёты о сбоях, которые можно отключить</span></li>
+          <li><span lang="en">Metal Performance HUD (Ctrl+Cmd+P) and a new app icon</span><span lang="ru">Metal Performance HUD (Ctrl+Cmd+P) и новая иконка</span></li>
+        </ul>
         <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
 <pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
 <span class="c"># guest kernel, Mesa and the SteamOS disk</span>
@@ -425,9 +444,10 @@ cd steamac
         <h3><span lang="en">Requirements</span><span lang="ru">Требования</span></h3>
         <ul class="req">
           <li><span lang="en">Mac with Apple silicon, macOS 15 or later</span><span lang="ru">Mac на Apple silicon, macOS 15 или новее</span></li>
-          <li><span lang="en">~21 GB free to create the disk; the image is sparse and grows as you install games</span><span lang="ru">~21 ГБ свободного места на создание диска; образ разреженный и растёт по мере установки игр</span></li>
+          <li><span lang="en">~20 GB free to create the disk (about 14 GB disk + 6 GB download cache); the disk is sparse and grows as you install games</span><span lang="ru">~20 ГБ свободного места на создание диска (около 14 ГБ диск + 6 ГБ кеш загрузки); диск разреженный и растёт по мере установки игр</span></li>
           <li><span lang="en">To build from source: Xcode 26+, Homebrew, rustup, OrbStack</span><span lang="ru">Для сборки из исходников: Xcode 26+, Homebrew, rustup, OrbStack</span></li>
         </ul>
+        <p class="privacy"><span lang="en">Crash reports and rare errors go to the developers' own Sentry server: no name, IP, Steam account, game titles or files. Turn them off at first run or in Settings → General.</span><span lang="ru">Отчёты о сбоях и редких ошибках уходят на собственный Sentry-сервер разработчиков: без имени, IP, аккаунта Steam, названий игр и файлов. Отключаются при первом запуске или в Settings → General.</span></p>
       </div>
     </div>
   </div>

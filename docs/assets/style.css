@@ -48,12 +48,7 @@ code { font-family: var(--mono); font-size: .92em; background: rgba(255, 255, 25
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 650; letter-spacing: .01em; }
 .brand:hover { text-decoration: none; }
-.brand-mark {
-  width: 22px; height: 22px; border-radius: 6px;
-  border: 2px solid var(--steam2);
-  background: linear-gradient(135deg, rgba(102, 192, 244, .35), transparent 60%);
-  box-shadow: 0 0 16px rgba(102, 192, 244, .45);
-}
+.brand-mark { width: 28px; height: 28px; display: block; filter: drop-shadow(0 0 10px rgba(102, 192, 244, .35)); }
 .nav-links { display: flex; gap: 22px; margin-left: auto; font-size: 14px; }
 .nav-links a { color: var(--muted); }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
@@ -353,7 +348,7 @@ h1 em {
 }
 .settings-tabs button[aria-selected="true"] b { color: #fff; }
 .settings-window {
-  position: relative; aspect-ratio: 600 / 700; border-radius: 12px; overflow: hidden;
+  position: relative; aspect-ratio: 600 / 800; border-radius: 12px; overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .22); background: #f6f6f6;
   box-shadow: 0 50px 120px rgba(0, 0, 0, .6), 0 0 0 1px rgba(0, 0, 0, .5), 0 0 80px rgba(26, 159, 255, .15);
   transform: perspective(1600px) rotateY(-9deg) rotateX(3deg);
@@ -366,7 +361,7 @@ h1 em {
 }
 .settings-window img.show { opacity: 1; }
 .toolbar-hit i {
-  position: absolute; top: 3.7%; width: 9.4%; height: 6.4%; border-radius: 8px; cursor: pointer;
+  position: absolute; top: 3.25%; width: 9.4%; height: 5.75%; border-radius: 8px; cursor: pointer;
 }
 .toolbar-hit i:hover { background: rgba(0, 0, 0, .05); }
 .toolbar-hit i:nth-child(1) { left: 20.3%; }
@@ -382,6 +377,18 @@ h1 em {
 .get-card h3 { margin: 0 0 12px; font-size: 16px; }
 .get-card h3 + pre { margin-top: 0; }
 .all-releases { display: inline-block; margin: 14px 0 0 4px; font-size: 14px; }
+.get-head { display: flex; align-items: center; gap: 20px; }
+.app-icon { width: 96px; height: 96px; flex: none; filter: drop-shadow(0 12px 30px rgba(26, 159, 255, .35)); }
+.create-disk { margin: 22px 0 0; }
+.create-disk img {
+  display: block; width: 100%; max-width: 440px; height: auto; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .2); box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+}
+.create-disk figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.news { margin: 0 0 24px; padding-left: 18px; color: #b6c4d4; }
+.news li { margin: 6px 0; }
+.news li::marker { color: var(--steam2); }
+.privacy { margin: 18px 0 0; font-size: 13px; color: var(--muted); }
 .steps { margin: 26px 0 0; padding-left: 22px; color: #b6c4d4; }
 .steps li { margin: 0 0 12px; padding-left: 4px; }
 pre {
@@ -424,6 +431,8 @@ pre .c { color: #5f7186; }
   .shots { grid-template-columns: 1fr 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-window { order: -1; width: min(100%, 440px); margin: 0 auto; transform: none; }
+  .get-head { flex-wrap: wrap; gap: 14px; }
+  .app-icon { width: 72px; height: 72px; }
 }
 
 /* Reduced motion / no JS: no scroll choreography; the layers are shown as a static exploded view
