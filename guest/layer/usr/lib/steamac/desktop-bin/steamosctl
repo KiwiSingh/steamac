@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# Return to Gaming Mode must reach the outer SteamOS manager, not Plasma's
+# isolated D-Bus session. Other SteamOS controls use the same manager.
+export DBUS_SESSION_BUS_ADDRESS="${STEAMAC_SESSION_BUS:?missing outer SteamOS session bus}"
+exec /usr/bin/steamosctl "$@"

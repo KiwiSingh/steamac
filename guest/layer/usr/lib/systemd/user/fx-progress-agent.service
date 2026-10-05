@@ -2,11 +2,11 @@
 # Reports session -> Steam client update -> Steam UI ready, and the shutdown
 # kind, over /dev/virtio-ports/fx.progress (see
 # guest/progress-agent/src/main.rs for the protocol and lifecycle).
-# Pulled in by gamescope-session.target (.wants symlink in the layer); stops
-# with it, so it receives SIGTERM when the session is torn down.
+# Pulled in by gaming and desktop targets; stops with their shared graphical
+# session so heartbeat reporting resumes after either session switch.
 [Unit]
 Description=FX Steam Launcher progress reporter
-PartOf=gamescope-session.target
+PartOf=graphical-session.target
 # DISPLAY is imported into the user manager by gamescope-onready before
 # gamescope-session.service reports ready.
 After=gamescope-session.service

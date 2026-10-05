@@ -25,4 +25,5 @@ if grep -q 'ld-musl' "$bin"; then
 fi
 install -m 0755 "$bin" "$OUT/fx-progress-agent.tmp"
 mv "$OUT/fx-progress-agent.tmp" "$OUT/fx-progress-agent"
+sh /src/guest/progress-agent/tests/desktop-session.sh "$OUT/fx-progress-agent"
 echo "[progress-agent] $OUT/fx-progress-agent: $(stat -c %s "$OUT/fx-progress-agent") bytes, sha256 $(sha256sum "$OUT/fx-progress-agent" | cut -c1-16), $(rustc -V)"

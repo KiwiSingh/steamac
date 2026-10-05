@@ -10,6 +10,7 @@ This is **[KiwiSingh’s fork](https://github.com/KiwiSingh/steamac)** of **[fxg
 
 - SteamOS disk creation and Steam updates on an external SSD.
 - Steam’s setup and main interface through MoltenVK.
+- Switching into the Plasma desktop and returning to Gaming Mode on the tested Steam Frame image.
 - A Bluetooth Sony DualSense, recognized by Steam as a **PS5 Controller**, with corrected face buttons, analog/digital triggers, stick axes, stick clicks, and PS button.
 - **Digimon Story: Time Stranger:** the fork’s owner reports successful gameplay on an Apple M3 Mac and confirms the corrected controller mapping works. This is one user’s result, not a benchmark or a guarantee for other Macs or games.
 
@@ -17,7 +18,7 @@ Broad DirectX 12 compatibility, ray tracing, and other games remain unverified. 
 
 ## Install a release
 
-Download the launcher from **[this fork’s Releases](https://github.com/KiwiSingh/steamac/releases)**. Read the release notes for signing status and the exact bundled components. The first fork release is [`v1.2.0-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.0-preview.1). Early fork builds are prereleases and are ad-hoc signed, **not Apple-notarized**; downloaded builds may require approval in macOS **System Settings → Privacy & Security**, or you can build locally instead.
+Download the launcher from **[this fork’s Releases](https://github.com/KiwiSingh/steamac/releases)**. Read the release notes for signing status and the exact bundled components. The desktop-session fix is included in [`v1.2.1-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.1-preview.1). Early fork builds are prereleases and are ad-hoc signed, **not Apple-notarized**; downloaded builds may require approval in macOS **System Settings → Privacy & Security**, or you can build locally instead.
 
 1. Extract the app and place **FX Steam Launcher.app** in your Applications folder. An Applications folder on an external SSD also works.
 2. Launch it. Choose **Create New Disk…**, then **Choose SSD…** to select a mounted writable external SSD or a folder on it. **Location…** selects a custom image filename.

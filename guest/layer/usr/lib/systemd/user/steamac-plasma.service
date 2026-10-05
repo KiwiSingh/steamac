@@ -1,0 +1,12 @@
+[Unit]
+Description=Steamac nested Plasma desktop
+PartOf=graphical-session.target
+After=gamescope-session.service
+
+[Service]
+Type=exec
+Slice=session.slice
+EnvironmentFile=/usr/share/deckard/mesavars.sh
+UnsetEnvironment=XDG_DESKTOP_PORTAL_DIR KWIN_COMPOSE
+ExecStart=/usr/lib/steamac/start-desktop
+TimeoutStopSec=5

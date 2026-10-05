@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+# Plasma needs its own compositor and session bus, rather than competing with
+# Gamescope as the window manager. The image already supplies this wrapper.
+# Preserve the outer bus for SteamOS session selection from the nested desktop.
+export STEAMAC_SESSION_BUS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+export PATH="/usr/lib/steamac/desktop-bin:$PATH"
+unset KWIN_COMPOSE
+exec /usr/bin/steamos-nested-desktop

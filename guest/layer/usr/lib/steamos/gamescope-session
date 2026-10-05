@@ -64,8 +64,11 @@ GAMESCOPE_ARGS=(
 )
 
 GAMESCOPE_SESSION_TARGET="${GAMESCOPE_SESSION_TARGET:-gamescope-session.target}"
+# gamescope-onready exits after notifying systemd. Both sessions must survive
+# that exit; desktop mode starts its compositor from a separate user service.
+GAMESCOPE_ARGS+=(--keep-alive)
 if [[ "${GAMESCOPE_SESSION_TARGET}" == "gamescope-session.target" ]]; then
-  GAMESCOPE_ARGS+=(--keep-alive --steam)
+  GAMESCOPE_ARGS+=(--steam)
   [[ "${STEAMAC_GAMESCOPE_MANGOAPP:-1}" == 1 ]] && GAMESCOPE_ARGS+=(--mangoapp)
 fi
 

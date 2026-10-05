@@ -1,6 +1,6 @@
 # External SSD / selectable Vulkan fork
 
-This fork changes the default storage and keeps MoltenVK as the default Vulkan implementation. KosmicKrisp is experimental. The remaining upstream README describes the original MoltenVK release; its game compatibility results do not validate this fork.
+This fork changes the default storage and keeps MoltenVK as the default Vulkan implementation. KosmicKrisp is experimental. The upstream game compatibility results do not validate this fork.
 
 ## Storage
 
@@ -84,3 +84,9 @@ The bridge covers buttons, sticks, triggers and D-pad. Sony profiles use the joy
 - Disk creation verified Valve's signed SteamOS stable bundle and began downloading to `/Volumes/Zweidrive/steamac/steamos.img` with its cache on Zweidrive. The 96 GiB home image finished creation, verified its rootfs checksum and booted SteamOS. The original host crashed when the graphical session began. With the native-heap patch, an isolated boot using an APFS clone of that disk reached the graphical session and Steam client startup without that crash. This check used headless mode with networking disabled; a usable Steam login screen, full guest rebuild, guest DualSense recognition and DX12 gameplay remain unverified.
 
 Sources: [Mesa KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html), [vkd3d-proton driver requirements](https://github.com/HansKristian-Work/vkd3d-proton#drivers), [Linux PlayStation driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c).
+
+## Desktop mode
+
+Choose **Switch to Desktop** in Steam to start Plasma, then use **Return to Gaming Mode** on its desktop. The fork replaces the Steam Frame image’s VR-only desktop target with a nested Plasma Wayland session inside Gamescope. It keeps Gamescope alive after its readiness helper exits and continues the launcher’s heartbeat and desktop pointer reporting across the switch. Desktop session controls route to the outer SteamOS session bus so the return shortcut works.
+
+Upgrade the launcher app to `v1.2.1-preview.1` or later and reboot the VM; the existing SteamOS disk and game library are reused. This fix was tested with the current Steam Frame image on the owner’s M3 Mac. Other image revisions need testing.

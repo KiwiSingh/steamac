@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Repack the current guest layer with this checkout's startup files, then
 # produce an ad-hoc signed, non-notarized app ZIP. Requires Docker and macOS.
-# Kernel, initramfs, Venus and progress agent are preserved from work/out.
+# Kernel, initramfs and Venus are preserved from work/out. Rebuild the guest
+# progress agent so release packages include changes to its protocol/lifecycle.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -11,12 +12,16 @@ TAG=${1:?usage: package-fork-release.sh <release-tag>}
 SRC="$ROOT/work/out/FX Steam Launcher.app"
 WORK="$ROOT/work/release"
 mkdir -p "$WORK"
+. "$ROOT/scripts/config.env"
+"$DOCKER" run --rm --platform linux/arm64 -v "$ROOT":/src:ro -v "$ROOT/work":/work \
+  "$RUST_IMAGE" /src/scripts/steps/25-progress-agent.sh
 "$DOCKER" run --rm -v "$ROOT":/src:ro -v "$ROOT/work":/work alpine:latest sh -c '
   apk add --no-cache erofs-utils bash coreutils findutils >/dev/null
   rm -rf /work/release/layer
   mkdir -p /work/release/layer
   fsck.erofs --extract=/work/release/layer /work/out/steamac-layer.img
   cp -a /src/guest/layer/usr/. /work/release/layer/usr/
+  install -m 0755 /work/cache/progress-agent/fx-progress-agent /work/release/layer/usr/lib/steamac/fx-progress-agent
   bash -n /work/release/layer/usr/share/deckard/RUNSTEAM.sh
   find /work/release/layer -type d -exec chmod 0755 {} +
   find /work/release/layer -type f -perm -u+x -exec chmod 0755 {} +

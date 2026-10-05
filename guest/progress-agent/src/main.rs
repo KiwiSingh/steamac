@@ -385,14 +385,23 @@ fn main() {
     let mut collector = collect::Collector::new();
     let mut freezer = freeze::Freezer::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
+    let desktop = std::env::var("GAMESCOPE_SESSION_TARGET")
+        .map_or(false, |v| v == "plasma-session.target");
     let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
-    if already {
+    if desktop {
+        // Desktop startup does not launch Big Picture. Waiting for Steam's
+        // gaming UI here would leave the host overlay stuck indefinitely.
+        rep.port.send("ready");
+        rep.port.send("focus desktop");
+    } else if already {
         eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
     } else {
         report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector, &mut freezer);
     }
     // Once after `ready` (or at agent start on a later session): current focus.
-    focus.pump(&mut rep.port, true);
+    if !desktop {
+        focus.pump(&mut rep.port, true);
+    }
 
     // Idle until the session is torn down: block in ppoll(2) on the X
     // connection (focus changes), the heartbeat timer, host requests on the
@@ -412,7 +421,9 @@ fn main() {
             rep.port.flush();
             serve_host(&mut rep.port, &mut collector, &mut freezer, &focus);
             collector.pump(&mut rep.port);
-            focus.pump(&mut rep.port, false);
+            if !desktop {
+                focus.pump(&mut rep.port, false);
+            }
             if let Some(hb) = heartbeat.as_ref() {
                 hb.pump(&mut rep.port);
             }

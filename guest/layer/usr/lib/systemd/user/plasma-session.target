@@ -1,0 +1,8 @@
+# Replace the Frame's VR desktop target. Steamac masks SteamVR services.
+[Unit]
+Description=Steamac Plasma desktop session
+Requires=graphical-session.target gamescope-session.service
+BindsTo=graphical-session.target gamescope-session.service
+After=graphical-session.target
+PropagatesStopTo=graphical-session.target
+Wants=steamac-plasma.service fx-progress-agent.service
