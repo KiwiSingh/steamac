@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assemble work/out/FX Steam Launcher.app (called by build.sh with the freshly built binary):
 #   Contents/MacOS/steamac-vm           launcher, rpath @executable_path/../Frameworks only
-#   Contents/Frameworks/*.dylib         libkrun, libvirglrenderer, libvulkan, KosmicKrisp + their non-system
+#   Contents/Frameworks/*.dylib         libkrun, libvirglrenderer, libvulkan, MoltenVK, optional KosmicKrisp + their non-system
 #                                       dependencies (libepoxy), install names @rpath/<name>
 #   Contents/Resources/                 gvproxy, Image, initramfs.cpio.gz, steamac-layer.img,
 #                                       desync + steamdeck-images.pem (Valve RAUC CA) for
@@ -79,12 +79,19 @@ copy_lib() {
     fi
 }
 
-for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libvulkan_kosmickrisp.dylib; do
+for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libMoltenVK.dylib; do
     copy_lib "$KRUN_PREFIX/lib/$lib"
 done
 
 mkdir -p "$TMP/Contents/Resources/vulkan"
-python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); p["ICD"]["library_path"]="../../Frameworks/libvulkan_kosmickrisp.dylib"; json.dump(p,open(sys.argv[2],"w"),indent=2)' "$KRUN_PREFIX/share/vulkan/icd.d/kosmickrisp.json" "$TMP/Contents/Resources/vulkan/kosmickrisp.json"
+# MoltenVK is required; include the experimental ICD when it has been built.
+for spec in "MoltenVK_icd.json:libMoltenVK.dylib" "kosmickrisp.json:libvulkan_kosmickrisp.dylib"; do
+    manifest=${spec%%:*}
+    library=${spec#*:}
+    [[ -f "$KRUN_PREFIX/share/vulkan/icd.d/$manifest" && -f "$KRUN_PREFIX/lib/$library" ]] || continue
+    copy_lib "$KRUN_PREFIX/lib/$library"
+    python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); p["ICD"]["library_path"]="../../Frameworks/"+sys.argv[3]; json.dump(p,open(sys.argv[2],"w"),indent=2)' "$KRUN_PREFIX/share/vulkan/icd.d/$manifest" "$TMP/Contents/Resources/vulkan/$manifest" "$library"
+done
 
 # The executable: only the bundle's Frameworks on its rpath.
 while read -r rp; do

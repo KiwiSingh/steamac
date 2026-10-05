@@ -24,14 +24,25 @@ do {
     exit(2)
 }
 
-// Pin KosmicKrisp before virglrenderer creates a Vulkan instance.
+// Select one bundled driver before virglrenderer creates a Vulkan instance.
+// KosmicKrisp remains an explicit experimental opt-in.
+let vulkanDriver = ProcessInfo.processInfo.environment["STEAMAC_VULKAN_DRIVER"] ?? "moltenvk"
+guard ["moltenvk", "kosmickrisp"].contains(vulkanDriver) else {
+    FileHandle.standardError.write(Data("Unknown STEAMAC_VULKAN_DRIVER: \(vulkanDriver)\n".utf8))
+    exit(2)
+}
+let manifestName = vulkanDriver == "moltenvk" ? "MoltenVK_icd.json" : "kosmickrisp.json"
 let vulkanManifest: String
 if let resources = AppBundle.resources {
-    vulkanManifest = resources + "/vulkan/kosmickrisp.json"
+    vulkanManifest = resources + "/vulkan/" + manifestName
 } else {
     let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
     vulkanManifest = executable.resolvingSymlinksInPath().deletingLastPathComponent().path
-        + "/host/share/vulkan/icd.d/kosmickrisp.json"
+        + "/host/share/vulkan/icd.d/" + manifestName
+}
+guard FileManager.default.fileExists(atPath: vulkanManifest) else {
+    FileHandle.standardError.write(Data("Selected Vulkan driver is not bundled: \(vulkanManifest)\n".utf8))
+    exit(2)
 }
 setenv("VK_DRIVER_FILES", vulkanManifest, 1)
 unsetenv("VK_ICD_FILENAMES")

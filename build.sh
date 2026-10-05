@@ -4,7 +4,7 @@
 # rustup, OrbStack (or another Docker with arm64 + privileged containers).
 #
 #   ./build.sh            host stack, guest kernel, guest Venus Mesa, disk image
-#   ./build.sh host       only the macOS side (KosmicKrisp, virglrenderer, libkrun, launcher)
+#   ./build.sh host       only the macOS side (MoltenVK, virglrenderer, libkrun, launcher)
 #   ./build.sh guest      only the guest side (kernel, rootfs, Mesa, initramfs, layer, disk)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -16,7 +16,7 @@ export RUSTUP_HOME="$PWD/work/rustup"
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" "$CARGO_HOME" "$RUSTUP_HOME"
 
 host() {
-    host/kosmickrisp/build.sh
+    host/vulkan/build.sh
     host/virglrenderer/build.sh
     host/libkrun/build.sh
     host/launcher/build.sh

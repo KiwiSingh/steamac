@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(dir=root / "work", prefix="fork-check-") as tmp
     env = dict(os.environ, TMPDIR=str(t))
     for name in ("build.sh", "run.sh", "scripts/build-image.sh", "scripts/steps/40-disk.sh",
                  "scripts/steps/50-check.sh", "host/kosmickrisp/build.sh",
-                 "host/virglrenderer/build.sh", "host/launcher/build.sh", "host/launcher/bundle.sh"):
+                 "host/vulkan/build.sh", "host/virglrenderer/build.sh", "host/launcher/build.sh", "host/launcher/bundle.sh"):
         subprocess.run(["bash", "-n", str(root / name)], env=env, check=True)
     (t / "work/out").mkdir(parents=True)
     (t / "scripts").mkdir()

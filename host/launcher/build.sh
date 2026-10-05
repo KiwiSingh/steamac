@@ -62,7 +62,7 @@ DSYMS="$OUT/dSYMs"
 rm -rf "$DSYMS.new"
 mkdir -p "$DSYMS.new"
 dsymutil "$BIN" -o "$DSYMS.new/steamac-vm.dSYM"
-for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libvulkan_kosmickrisp.dylib; do
+for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libMoltenVK.dylib libvulkan_kosmickrisp.dylib; do
     [[ -f "$KRUN_PREFIX/lib/$lib" ]] || continue
     dsymutil "$KRUN_PREFIX/lib/$lib" -o "$DSYMS.new/$lib.dSYM" 2>&1 | grep -v 'no debug symbols in executable' >&2 || true
 done

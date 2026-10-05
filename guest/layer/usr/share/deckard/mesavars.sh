@@ -1,7 +1,7 @@
 # steamac: replaces the Frame's /usr/share/deckard/mesavars.sh
 # (EnvironmentFile of gamescope-session.service and steam.service).
 # The VM has no Adreno: Vulkan is Mesa Venus (libvulkan_virtio.so, added by the
-# steamac layer from guest/mesa) over virtio-gpu to the host's MoltenVK, and GL
+# steamac layer from guest/mesa) over virtio-gpu to the host's selected Vulkan driver, and GL
 # is the stock zink_dri.so on top of that Vulkan device. Values from guest/mesa.
 #
 # Dropped from stock: VRCOMPOSITOR_TU_DEBUG (Turnip-only, for the SteamVR

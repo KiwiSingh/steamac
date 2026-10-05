@@ -1,6 +1,6 @@
-# External SSD / KosmicKrisp fork
+# External SSD / selectable Vulkan fork
 
-This fork changes the default storage and Vulkan implementation. The remaining upstream README describes the original MoltenVK release; its game compatibility results do not validate this fork.
+This fork changes the default storage and keeps MoltenVK as the default Vulkan implementation. KosmicKrisp is experimental. The remaining upstream README describes the original MoltenVK release; its game compatibility results do not validate this fork.
 
 ## Storage
 
@@ -27,16 +27,24 @@ This fork patches KosmicKrisp to expose separate native device-local and host-vi
 
 `host/kosmickrisp/build.sh` runs a real Vulkan regression test: it follows Venus's allocation policy, uploads an imported staging buffer into an optimal image, copies it back and verifies every byte. It checks that linear images only offer shareable memory. The original driver crashed this test with SIGSEGV; the patched driver passes.
 
-The rendering path is:
-`Proton vkd3d-proton → guest Vulkan/Venus → virglrenderer → Vulkan loader → KosmicKrisp → Metal 4`.
+Experimental KosmicKrisp guest presentation requires `MESA_VK_WSI_DEBUG=buffer` on both Steam and Gamescope services (MoltenVK uses the normal presentation path): KosmicKrisp does not support color attachments on linear images, so Mesa renders into native textures and copies into shared display buffers. Buffers only advertise shareable memory; virglrenderer remaps unbound exported allocations (including common WSI's memory-type-zero dma-buf sync probe) to a host-import-compatible type. Dedicated images are never remapped.
 
-The host now links the Vulkan **loader**, because Mesa exposes the ICD interface rather than MoltenVK's directly linked Vulkan API. The launcher pins `VK_DRIVER_FILES` to its own KosmicKrisp manifest before renderer initialization. Bundles contain the loader, ICD, a relative-path manifest, and recursively copied non-system dynamic dependencies. The existing Venus renderer/shared-memory smoke test runs with this ICD selected.
+The launcher now starts the normal 2D Steam gamepad interface. The Frame-only `-deckard` and `-vrgamepadui` arguments are opt-in through `STEAMAC_STEAM_VR_UI=1`. Without a VR compositor those arguments can leave Steam's UI hidden even after successful startup.
+
+MoltenVK is the default at build and launch. `STEAMAC_VULKAN_DRIVER=kosmickrisp ./build.sh host` builds the experimental path; `STEAMAC_VULKAN_DRIVER=kosmickrisp ./run.sh` selects it at launch. The app bundles KosmicKrisp only when its library and manifest exist, and refuses a missing or unknown driver instead of silently selecting another ICD. Build MoltenVK as well before bundling, since every app includes the default driver.
+
+The software desktop fallback has been removed: disabling Xwayland GLamor failed in the current guest, which has no software OpenGL driver. KosmicKrisp successfully rendered the updater but failed to display Steam's main interface because of browser graphics-buffer export errors. It is not currently a usable default.
+
+The rendering path is:
+`Proton vkd3d-proton → guest Vulkan/Venus → virglrenderer → Vulkan loader → selected ICD → Metal`.
+
+The host now links the Vulkan **loader**, because Mesa exposes the ICD interface rather than MoltenVK's directly linked Vulkan API. The launcher pins `VK_DRIVER_FILES` to the selected bundled driver manifest before renderer initialization. Bundles contain the loader, ICD, a relative-path manifest, and recursively copied non-system dynamic dependencies. The existing Venus renderer/shared-memory smoke test runs with this ICD selected.
 
 Build prerequisites (the new driver script checks them and does not install them silently):
 `meson ninja pkgconf llvm libclc spirv-llvm-translator spirv-tools vulkan-loader vulkan-headers`.
 The remaining host builds also need `dtc xz lld libepoxy`, rustup and their existing prerequisites. Guest builds require a running Docker/OrbStack engine with privileged arm64 containers.
 
-Build with `./build.sh`; individual host driver builds use `host/kosmickrisp/build.sh`. The Homebrew build uses shared LLVM, matching the SPIR-V translator. Mixing statically linked LLVM in `mesa_clc` with the translator's shared LLVM duplicates analysis state and crashes shader generation. Shared LLVM is a build-tool dependency, not a runtime dependency of the KosmicKrisp ICD.
+Build with `./build.sh`; individual selected driver builds use `host/vulkan/build.sh`. The Homebrew build uses shared LLVM, matching the SPIR-V translator. Mixing statically linked LLVM in `mesa_clc` with the translator's shared LLVM duplicates analysis state and crashes shader generation. Shared LLVM is a build-tool dependency, not a runtime dependency of the KosmicKrisp ICD.
 
 Steam's ARM-compatible Proton supplies vkd3d-proton and DXVK's shared DXGI. Select the compatible Proton version for the game in Steam. No macOS Wine DLLs, fake Vulkan feature overrides or global guest ICD overrides are installed.
 
@@ -69,6 +77,7 @@ The bridge covers buttons, sticks, triggers and D-pad with standard Linux button
 - KosmicKrisp host build completed on Apple M3 / macOS 27.2 with Homebrew LLVM 23.1.2. Both `mesa_clc` shader-generation jobs passed after switching to shared LLVM.
 - Rebuilt virglrenderer passed renderer initialization, Venus context/capset creation and host-blob shared-memory export. This smoke test does not exercise a guest Vulkan allocation or rendering.
 - The DX12 diagnostic can also be compiled on macOS; run it with this fork's `VK_DRIVER_FILES` manifest. The host Apple M3 driver passed its baseline (Vulkan 1.4.363). Guest-visible capabilities and real game compatibility still require runtime testing.
+- MoltenVK default restoration: the rebuilt launcher and signed bundle passed the Venus shared-memory smoke check; the local VM visibly reached the Steam language-selection setup screen. This used the patched MoltenVK library from the original v1.1 release, the rebuilt renderer, and the existing guest layer with persistent 2D launch overrides. Gameplay and DX12 remain unverified.
 - Launcher release build, signed app assembly and all eight display formats (CPU PNG and Metal offscreen rendering) passed.
 - A direct host Vulkan check passed device creation, external host-memory import, GPU transfer and CPU readback.
 - For this launch, the unchanged guest kernel, initramfs, guest layer and libkrun were reused from the official upstream v1.1 DMG; the launcher, virglrenderer and KosmicKrisp were rebuilt. The reused guest layer does not yet include this fork's `steamac-dx12-check` binary.

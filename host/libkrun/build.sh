@@ -8,7 +8,7 @@
 #   libkrun        tag v1.19.6 (227b2de6), github.com/libkrun/libkrun
 #   patches/       applied in order (git format-patch series, see each header)
 #   virglrenderer  host/virglrenderer/build.sh output in work/out/host (built first if
-#                  missing); Venus over KosmicKrisp (host/kosmickrisp)
+#                  missing); Venus over the selected Vulkan ICD (host/vulkan)
 #   Rust           $RUST_TOOLCHAIN via rustup (deps need >= 1.87)
 #   Homebrew       dtc, xz, lld (init cross-link), libepoxy
 #

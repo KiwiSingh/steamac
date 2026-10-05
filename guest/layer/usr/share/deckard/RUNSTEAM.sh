@@ -3,20 +3,14 @@
 # steam.service copies this file over ~/.local/share/Steam/RUNSTEAM.sh on every
 # start (cp -f, so it also replaces the copy unpacked from steam.tar.zst).
 #
-# Default: byte-for-byte stock behaviour — stock flags (-deckard, -vrgamepadui)
-# and the stock client branch from package/beta (the Frame tarball ships
-# linux_arm64_beta_<hash>, the Steam Frame client beta; logging in and running
-# Proton games works with it in the VM).
+# Default: the regular 2D gamepad interface. The Frame-only -deckard and
+# -vrgamepadui flags select hidden VR texture-stream windows and must not be
+# used for the VM's desktop display. STEAMAC_STEAM_VR_UI=1 restores those flags
+# for explicit VR experiments (requires a working VR compositor).
 #
-# Opt-in: /etc/steamac/steam-client-branch (first word, e.g. steamdeck_stable
-# or steamdeck_publicbeta; lives on the /etc overlay of var-X) switches the
-# client to that public arm64 Steam Deck channel
-# (client-update.steamstatic.com/steam_client_<branch>_linuxarm64). The branch
-# is then written to package/beta before every launch (the bootstrapper
-# downloads/installs that client, shown by the FX boot overlay) and the
-# Frame-only flags -deckard (Steam Frame client personality) and -vrgamepadui
-# (VR gamepad UI) are dropped. Remove the file and package/beta to go back.
-# Same flags as the hashtagbasit/SteamOS-ARM-Handhelds handheld RUNSTEAM.sh.
+# Optional /etc/steamac/steam-client-branch selects a public arm64 client
+# channel, e.g. steamdeck_stable or steamdeck_publicbeta. That channel is
+# written to package/beta before launch; public channels always use the 2D UI.
 
 # verbose
 #export PS4='${LINENO}: '
@@ -36,8 +30,13 @@ if [[ -r "${STEAMAC_BRANCH_CONF}" ]]; then
     echo "steamac: ignoring invalid branch '${_branch:-}' in ${STEAMAC_BRANCH_CONF}" >&2
   fi
 fi
-STEAMAC_DECKARD_ARG=(-deckard)
-STEAMAC_VRUI_ARG=(-vrgamepadui)
+STEAMAC_DECKARD_ARG=()
+STEAMAC_VRUI_ARG=()
+
+if [[ "${STEAMAC_STEAM_VR_UI:-0}" == 1 ]]; then
+  STEAMAC_DECKARD_ARG=(-deckard)
+  STEAMAC_VRUI_ARG=(-vrgamepadui)
+fi
 if [[ -n "${STEAMAC_BRANCH}" ]]; then
   STEAMAC_DECKARD_ARG=()
   STEAMAC_VRUI_ARG=()

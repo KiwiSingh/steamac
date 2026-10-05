@@ -85,6 +85,16 @@ int main(void) {
       &pp));
   VkPhysicalDeviceMemoryProperties mp;
   vkGetPhysicalDeviceMemoryProperties(physical, &mp);
+  /* An exported WSI buffer can be allocated before its fd is requested.
+   * Every advertised buffer type must therefore support host-pointer sharing.
+   */
+  for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+    if ((req.memoryTypeBits & (1u << i)) &&
+        !(mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+      fprintf(stderr, "Buffer requirements advertise unshareable type %u\n", i);
+      return 1;
+    }
+  }
   uint32_t type = 0;
   while (type < mp.memoryTypeCount &&
          (!(req.memoryTypeBits & pp.memoryTypeBits & (1u << type)) ||
