@@ -19,7 +19,8 @@
 #    (virglrenderer dma-buf imports): layouts, memory size and pixel data use that pitch.
 # 5. xfb.c: transform feedback captured by geometry shaders (DXVK stream-output style without
 #    position and with rasterizer discard, strips with varying vertex counts, lines, 2 buffers,
-#    buffer offsets/sizes, counter buffers), buffer contents checked.
+#    buffer offsets/sizes, counter buffers), buffer contents checked; transform feedback queries
+#    (primitives written/needed, overflow, other streams, vkd3d-proton and Venus result copies).
 # 6. zero_init.c: compute shaders with zero-initialized workgroup memory (literal and
 #    specialization-constant workgroup sizes), read back after a dispatch dirtied the memory.
 # 7. free_after_signal.c: memory freed after a timeline semaphore signalled while the command buffer
@@ -36,6 +37,8 @@
 #    elements read.
 # 11. device_address.c: atomics on vector components behind buffer device addresses (vkd3d-proton's
 #    scalar-layout uvec3 counter, std430 uvec4 with a dynamic component, ivec2), values read back.
+# 12. queries.c: occlusion query results copied from a later command buffer, one copy per query with
+#    availability and wait (Venus' query feedback): availability of queries other than 0.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -141,3 +144,7 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/device_address.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/device_address"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/device_address" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/queries.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/queries"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/queries" "$gspv"

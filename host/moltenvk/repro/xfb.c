@@ -21,6 +21,10 @@
  * Geometry-shader pipelines without a fragment shader (Metal mesh pipelines need a fragment function
  * when they rasterize, and assert otherwise): a depth-only pass (v.vert + zink_passthrough.geom,
  * D32_SFLOAT only, depth read back) and dynamic rasterizer discard.
+ * Transform feedback queries (primitives written / needed, stream 0 only): counts of points, strip triangles,
+ * lines and an overflowing range, indexed stream 1 and inactive transform feedback counting nothing, results
+ * through vkCmdCopyQueryPoolResults (vkd3d-proton's resolve, Venus' query feedback), vkGetQueryPoolResults and
+ * after vkResetQueryPool.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,7 +141,8 @@ static VkResult pipeline(const char *vs, const char *gs, int fragment, int disca
 
 static VkImageView target;
 
-static VkCommandBuffer begin_cmd(void)
+/* Command buffer recording into a render pass on target; queries [0, query_count) of query_pool are reset first. */
+static VkCommandBuffer begin_cmd_queries(VkQueryPool query_pool, uint32_t query_count)
 {
 	VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
 		.commandBufferCount = 1 };
@@ -146,6 +151,8 @@ static VkCommandBuffer begin_cmd(void)
 	VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
 	CK(vkBeginCommandBuffer(cmd, &bi));
+	if (query_pool)
+		vkCmdResetQueryPool(cmd, query_pool, 0, query_count);
 	VkRenderingAttachmentInfo att = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = target,
 		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE };
@@ -153,6 +160,11 @@ static VkCommandBuffer begin_cmd(void)
 		.layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
 	vkCmdBeginRendering(cmd, &rinfo);
 	return cmd;
+}
+
+static VkCommandBuffer begin_cmd(void)
+{
+	return begin_cmd_queries(VK_NULL_HANDLE, 0);
 }
 
 static void end_cmd(VkCommandBuffer cmd)
@@ -204,7 +216,9 @@ int main(int argc, char **argv)
 	if (vkEnumeratePhysicalDevices(inst, &n, &pd) < 0 || !n) { printf("FAIL no physical device\n"); return 1; }
 	VkPhysicalDeviceTransformFeedbackFeaturesEXT xfbf = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT,
 		.transformFeedback = VK_TRUE };
-	VkPhysicalDeviceVulkan13Features v13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &xfbf,
+	VkPhysicalDeviceVulkan12Features v12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &xfbf,
+		.hostQueryReset = VK_TRUE };
+	VkPhysicalDeviceVulkan13Features v13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &v12,
 		.dynamicRendering = VK_TRUE };
 	VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v13,
 		.features = { .geometryShader = VK_TRUE } };
@@ -232,7 +246,7 @@ int main(int argc, char **argv)
 	         (unsigned long long)xfbp.maxTransformFeedbackBufferSize, xfbp.maxTransformFeedbackBufferDataStride,
 	         xfbp.transformFeedbackQueries, xfbp.transformFeedbackDraw);
 	check(xfbp.maxTransformFeedbackBuffers >= 2 && xfbp.maxTransformFeedbackStreams == 1 &&
-	      xfbp.maxTransformFeedbackBufferDataStride >= 40, msg);
+	      xfbp.maxTransformFeedbackBufferDataStride >= 40 && xfbp.transformFeedbackQueries, msg);
 
 	/* Render target (only for the rasterizing case). */
 	VkImageCreateInfo imci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
@@ -527,6 +541,158 @@ int main(int argc, char **argv)
 			for (uint32_t k = 0; k < 6; k++)
 				ok &= points_vertex_ok(xb + 40 * k, k / 3, k % 3);
 			check(ok, "dynamic rasterizer discard: draws with discard off and on, 6 records captured");
+		}
+	}
+
+	/* 9. Transform feedback queries (VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT: primitives written, primitives
+	 *    needed), begun inside the render pass like DXVK, indexed like vkd3d-proton (stream = D3D stream):
+	 *      query 3: stream 0, two so_points draws (6 points each)          -> 12 written, 12 needed
+	 *      query 1: stream 1 around the same draws (only stream 0 exists)  -> 0, 0
+	 *      query 4: so_points with a range for 4 records (3 per primitive) -> 3 written, 6 needed
+	 *      query 2: draw without transform feedback active                 -> 0, 0
+	 *      query 5: so_strip, 1 or 2 triangles per input primitive         -> 6 triangles
+	 *      query 6: so_lines, 2 lines per input primitive                  -> 4 lines
+	 *      queries 0 and 7: reset, never used                              -> unavailable
+	 *    Read back with vkCmdCopyQueryPoolResults in the same command buffer (64-bit, packed: vkd3d-proton's
+	 *    resolve), vkGetQueryPoolResults (64-bit with availability, 32-bit), vkCmdCopyQueryPoolResults with
+	 *    availability from a later command buffer (Venus' query feedback, stride 24), and after vkResetQueryPool. */
+	{
+		VkPipeline points, strip, lines;
+		int have = pipeline("so.vert.spv", "so_points.geom.spv", 0, 1, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, &points) == VK_SUCCESS &&
+		           pipeline("so.vert.spv", "so_strip.geom.spv", 1, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, &strip) == VK_SUCCESS &&
+		           pipeline("so.vert.spv", "so_lines.geom.spv", 1, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, &lines) == VK_SUCCESS;
+		VkQueryPoolCreateInfo qpci = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+			.queryType = VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT, .queryCount = 8 };
+		VkQueryPool qp = VK_NULL_HANDLE;
+		VkResult r = vkCreateQueryPool(dev, &qpci, NULL, &qp);
+		snprintf(msg, sizeof(msg), "create VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT query pool (VkResult %d)", r);
+		check(r == VK_SUCCESS, msg);
+		if (have && r == VK_SUCCESS) {
+			PFN_vkCmdBeginQueryIndexedEXT begin_indexed =
+				(PFN_vkCmdBeginQueryIndexedEXT)vkGetDeviceProcAddr(dev, "vkCmdBeginQueryIndexedEXT");
+			PFN_vkCmdEndQueryIndexedEXT end_indexed =
+				(PFN_vkCmdEndQueryIndexedEXT)vkGetDeviceProcAddr(dev, "vkCmdEndQueryIndexedEXT");
+			uint8_t *xa, *xb, *xs0, *xs1, *xl;
+			uint64_t *copied;
+			VkBuffer abuf = buffer(1024, xfb_usage, (void **)&xa), bbuf = buffer(1024, xfb_usage, (void **)&xb);
+			VkBuffer sbufs[2] = { buffer(1024, xfb_usage, (void **)&xs0), buffer(1024, xfb_usage, (void **)&xs1) };
+			VkBuffer lbuf = buffer(1024, xfb_usage, (void **)&xl);
+			VkBuffer cbuf = buffer(8 * 24, VK_BUFFER_USAGE_TRANSFER_DST_BIT, (void **)&copied);
+			memset(copied, 0xab, 8 * 24);
+			VkDeviceSize zero = 0, small = 160, offs[2] = { 0, 0 };
+
+			VkCommandBuffer cmd = begin_cmd_queries(qp, 8);
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, points);
+			bind_xfb(cmd, 0, 1, &abuf, &zero, NULL);
+			begin_xfb(cmd, 0, 0, NULL, NULL);
+			begin_indexed(cmd, qp, 3, 0, 0);
+			begin_indexed(cmd, qp, 1, 0, 1);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			end_indexed(cmd, qp, 1, 1);
+			end_indexed(cmd, qp, 3, 0);
+			end_xfb(cmd, 0, 0, NULL, NULL);
+
+			bind_xfb(cmd, 0, 1, &bbuf, &zero, &small);
+			begin_xfb(cmd, 0, 0, NULL, NULL);
+			vkCmdBeginQuery(cmd, qp, 4, 0);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			vkCmdEndQuery(cmd, qp, 4);
+			end_xfb(cmd, 0, 0, NULL, NULL);
+
+			vkCmdBeginQuery(cmd, qp, 2, 0);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			vkCmdEndQuery(cmd, qp, 2);
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, strip);
+			bind_xfb(cmd, 0, 2, sbufs, offs, NULL);
+			begin_xfb(cmd, 0, 0, NULL, NULL);
+			vkCmdBeginQuery(cmd, qp, 5, 0);
+			vkCmdDraw(cmd, 12, 1, 0, 0);
+			vkCmdEndQuery(cmd, qp, 5);
+			end_xfb(cmd, 0, 0, NULL, NULL);
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, lines);
+			bind_xfb(cmd, 0, 1, &lbuf, &zero, NULL);
+			begin_xfb(cmd, 0, 0, NULL, NULL);
+			vkCmdBeginQuery(cmd, qp, 6, 0);
+			vkCmdDraw(cmd, 6, 1, 0, 0);
+			vkCmdEndQuery(cmd, qp, 6);
+			end_xfb(cmd, 0, 0, NULL, NULL);
+			vkCmdEndRendering(cmd);
+
+			vkCmdCopyQueryPoolResults(cmd, qp, 1, 6, cbuf, 0, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+			VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_HOST_READ_BIT };
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+			CK(vkEndCommandBuffer(cmd));
+			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd };
+			CK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+			CK(vkQueueWaitIdle(queue));
+
+			/* Queries 1..6: written, needed */
+			static const uint64_t want[6][2] = { { 0, 0 }, { 0, 0 }, { 12, 12 }, { 3, 6 }, { 6, 6 }, { 4, 4 } };
+			int ok = 1;
+			for (uint32_t q = 0; q < 6; q++)
+				ok &= copied[2 * q] == want[q][0] && copied[2 * q + 1] == want[q][1];
+			snprintf(msg, sizeof(msg), "xfb queries, vkCmdCopyQueryPoolResults 64-bit: stream 0 12/12, stream 1 0/0, overflow 3/6, "
+			         "inactive 0/0, strip 6/6, lines 4/4 (got %llu/%llu %llu/%llu %llu/%llu %llu/%llu %llu/%llu %llu/%llu)",
+			         (unsigned long long)copied[4], (unsigned long long)copied[5], (unsigned long long)copied[0],
+			         (unsigned long long)copied[1], (unsigned long long)copied[6], (unsigned long long)copied[7],
+			         (unsigned long long)copied[2], (unsigned long long)copied[3], (unsigned long long)copied[8],
+			         (unsigned long long)copied[9], (unsigned long long)copied[10], (unsigned long long)copied[11]);
+			check(ok, msg);
+			ok = 1;
+			for (uint32_t k = 0; k < 12; k++)
+				ok &= points_vertex_ok(xa + 40 * k, (k / 3) % 2, k % 3);
+			check(ok, "xfb queries: records of the queried draws captured as without queries");
+
+			uint64_t host[8][3];
+			memset(host, 0xab, sizeof(host));
+			r = vkGetQueryPoolResults(dev, qp, 0, 8, sizeof(host), host, 24, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+			ok = r == VK_NOT_READY && host[0][2] == 0 && host[7][2] == 0;
+			for (uint32_t q = 1; q < 7; q++)
+				ok &= host[q][0] == want[q - 1][0] && host[q][1] == want[q - 1][1] && host[q][2] == 1;
+			snprintf(msg, sizeof(msg), "xfb queries, vkGetQueryPoolResults 64-bit with availability: 1..6 available with "
+			         "the same results, unused 0 and 7 unavailable (VkResult %d, want %d)", r, VK_NOT_READY);
+			check(ok, msg);
+
+			uint32_t host32[2] = { 0, 0 };
+			r = vkGetQueryPoolResults(dev, qp, 4, 1, sizeof(host32), host32, 8, VK_QUERY_RESULT_WAIT_BIT);
+			snprintf(msg, sizeof(msg), "xfb queries, vkGetQueryPoolResults 32-bit: overflow query %u/%u (want 3/6, VkResult %d)",
+			         host32[0], host32[1], r);
+			check(r == VK_SUCCESS && host32[0] == 3 && host32[1] == 6, msg);
+
+			/* Venus' query feedback: copies with availability from a later command buffer, stride 24. */
+			memset(copied, 0xab, 8 * 24);
+			VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+				.commandBufferCount = 1 };
+			VkCommandBuffer fb;
+			CK(vkAllocateCommandBuffers(dev, &ai, &fb));
+			VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+			CK(vkBeginCommandBuffer(fb, &bi));
+			vkCmdCopyQueryPoolResults(fb, qp, 3, 4, cbuf, 0, 24, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
+			                                                        VK_QUERY_RESULT_WAIT_BIT);
+			vkCmdCopyQueryPoolResults(fb, qp, 7, 1, cbuf, 4 * 24, 24, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+			vkCmdPipelineBarrier(fb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+			CK(vkEndCommandBuffer(fb));
+			si.pCommandBuffers = &fb;
+			CK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+			CK(vkQueueWaitIdle(queue));
+			ok = copied[3 * 4 + 2] == 0 && copied[3 * 4] == 0xababababababababull;
+			for (uint32_t q = 0; q < 4; q++)
+				ok &= copied[3 * q] == want[q + 2][0] && copied[3 * q + 1] == want[q + 2][1] && copied[3 * q + 2] == 1;
+			check(ok, "xfb queries, vkCmdCopyQueryPoolResults with availability from a later command buffer (Venus query "
+			          "feedback): 3..6 available with their results, unused 7 unavailable and its results untouched");
+
+			vkResetQueryPool(dev, qp, 3, 1);
+			memset(host, 0xab, sizeof(host));
+			r = vkGetQueryPoolResults(dev, qp, 3, 1, 24, host, 24, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT |
+			                                                       VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+			snprintf(msg, sizeof(msg), "xfb queries, vkResetQueryPool: unavailable, partial results 0 (got %llu/%llu, available %llu)",
+			         (unsigned long long)host[0][0], (unsigned long long)host[0][1], (unsigned long long)host[0][2]);
+			check(host[0][0] == 0 && host[0][1] == 0 && host[0][2] == 0, msg);
 		}
 	}
 
