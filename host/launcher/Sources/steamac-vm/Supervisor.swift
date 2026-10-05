@@ -21,6 +21,8 @@ enum Supervisor {
     static func rebootMarker(_ dir: String) -> String { dir + "/reboot" }
 
     nonisolated(unsafe) private static var childPid: pid_t = 0
+    /// The running VM process (0 between boots).
+    static var vmPid: pid_t { childPid }
     nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
 
     /// Remove /tmp/steamac-<pid> run dirs whose launcher is gone (left behind by kill -9).
@@ -123,11 +125,15 @@ enum Supervisor {
             env[netSockEnv] = gvproxy?.vfkitSocket
             env[frameEnv] = frame
             CrashReporting.supervisorBoot(o, boot: boot, runDir: dir, env: &env)
-            let status = spawnAndWait(exe, CommandLine.arguments, env)
+            let vmExit = spawnAndWait(exe, CommandLine.arguments, env)
+            let status = vmExit.status
             childPid = 0
             if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
             gvproxy?.stop()
-            CrashReporting.vmExited(status: status)
+            if CrashReporting.terminationSignals.contains(vmExit.signal) {
+                log("VM process terminated by \(CrashReporting.signalName(vmExit.signal)) (a termination request, not a crash)")
+            }
+            CrashReporting.vmExited(vmExit)
 
             let marker = rebootMarker(dir)
             if let contents = try? String(contentsOfFile: marker, encoding: .utf8) {
@@ -155,8 +161,9 @@ enum Supervisor {
     /// Reboot-marker contents written by the first-run sheet (not a reboot: boot number unchanged).
     static let firstRunMarker = "firstrun"
 
-    /// posix_spawn (same process group, so the VM process can own the terminal) + waitpid.
-    private static func spawnAndWait(_ exe: String, _ argv: [String], _ env: [String: String]) -> Int32 {
+    /// posix_spawn (same process group, so the VM process can own the terminal) + waitpid. The
+    /// exit details (jetsam) and final memory footprint are read from the zombie before reaping.
+    private static func spawnAndWait(_ exe: String, _ argv: [String], _ env: [String: String]) -> VMExit {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
@@ -177,16 +184,35 @@ enum Supervisor {
         let rc = posix_spawn(&pid, exe, nil, &attr, cArgs, cEnv)
         guard rc == 0 else {
             log("error: cannot start VM process: \(String(cString: strerror(rc)))")
-            return 1
+            return VMExit(status: 1)
         }
         childPid = pid
+        var exit = VMExit(status: 1)
+        // NOTE_EXIT fires when the process becomes a zombie; its data carries NOTE_EXIT_DETAIL
+        // bits (NOTE_EXIT_MEMORY = jetsam, the kernel's jetsam cause in the high bits). Not
+        // registered if it already exited (ESRCH).
+        let kq = kqueue()
+        if kq >= 0 {
+            var change = Darwin.kevent(ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+                                       fflags: UInt32(NOTE_EXIT) | UInt32(NOTE_EXIT_DETAIL), data: 0, udata: nil)
+            if kevent(kq, &change, 1, nil, 0, nil) == 0 {
+                var event = Darwin.kevent()
+                var n: Int32
+                repeat { n = kevent(kq, nil, 0, &event, 1, nil) } while n < 0 && errno == EINTR
+                if n == 1 && event.fflags & UInt32(NOTE_EXIT_DETAIL) != 0 {
+                    exit.detail = UInt32(truncatingIfNeeded: event.data)
+                }
+            }
+            close(kq)
+        }
+        exit.peakFootprint = VMExit.footprint(pid: pid)?.peak
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 {
-            if errno != EINTR { return 1 }
+            if errno != EINTR { return exit }
         }
         // WIFEXITED / WEXITSTATUS / WTERMSIG (macros are not imported into Swift).
         let low = status & 0x7f
-        if low == 0 { return (status >> 8) & 0xff }
-        return 128 + low
+        exit.status = low == 0 ? (status >> 8) & 0xff : 128 + low
+        return exit
     }
 }

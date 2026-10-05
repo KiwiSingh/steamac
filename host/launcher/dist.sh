@@ -68,6 +68,12 @@ mkdir -p "$WORK"
 APP="$WORK/$NAME.app"
 ditto "$SRC" "$APP"
 /usr/libexec/PlistBuddy -c 'Delete :SteamacBuildOut' "$APP/Contents/Info.plist" 2>/dev/null || true
+# Official builds report crash events as environment "release" only when this key names the team
+# whose Developer ID signed the running code (CrashReporting.buildKind); everything else, including
+# --no-notarize test builds, reports "source-build".
+if [[ $notarize == 1 ]]; then
+    /usr/libexec/PlistBuddy -c "Add :SteamacDistTeamID string $team" "$APP/Contents/Info.plist"
+fi
 
 echo "=== signing with \"$identity\" (hardened runtime)"
 sign() { codesign --force --timestamp --options runtime --sign "$identity" "$@"; }

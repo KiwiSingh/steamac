@@ -4,6 +4,7 @@ import Foundation
 import MachO
 import Metal
 import Sentry
+import Security
 import SystemConfiguration
 
 /// Crash and error reporting through Sentry (self-hosted, sentry.fxgam.es). Opt-out: Settings >
@@ -31,8 +32,9 @@ enum CrashReporting {
     static let summary = "Crash reports and rare errors go to the FX Steam Launcher developers (Sentry). No personal data."
     static let whatIsSent = [
         "Crash reports of the launcher and the VM process: crash reason, stack traces, loaded libraries.",
-        "A few errors: guest GPU context lost, shader pipeline compile failures, libkrun panics, failed disk "
-            + "creation or first-start setup, VM stopped unexpectedly, SteamOS not responding.",
+        "A few errors: guest GPU context lost, shader pipeline compile failures (with an excerpt of the failing "
+            + "Metal shader source), libkrun panics, failed disk creation or first-start setup, VM stopped "
+            + "unexpectedly or killed (with the Mac's memory use), SteamOS not responding.",
         "The launcher's last ~200 log lines (launcher, MoltenVK, libkrun and virglrenderer messages; home "
             + "folder paths shortened to ~) and the boot stages.",
         "Versions and setup: app, macOS, libkrun/virglrenderer/MoltenVK builds, kernel, SteamOS build, Mac "
@@ -50,6 +52,7 @@ enum CrashReporting {
         case provisionFailed = "provision-failed"
         case diskCreationFailed = "disk-creation-failed"
         case vmExited = "vm-exited-unexpectedly"
+        case vmKilled = "vm-killed"
         case notResponding = "steamos-not-responding"
         case test = "test-event"
 
@@ -61,6 +64,7 @@ enum CrashReporting {
             case .provisionFailed: return "SteamOS first-start setup failed"
             case .diskCreationFailed: return "Disk creation failed"
             case .vmExited: return "VM exited unexpectedly"
+            case .vmKilled: return "VM process killed"
             case .notResponding: return "SteamOS not responding"
             case .test: return "Sentry test event"
             }
@@ -78,7 +82,7 @@ enum CrashReporting {
         /// Reports of this kind per process.
         var budget: Int {
             switch self {
-            case .gpuContextFatal, .vmExited, .notResponding, .provisionFailed, .diskCreationFailed: return 2
+            case .gpuContextFatal, .vmExited, .vmKilled, .notResponding, .provisionFailed, .diskCreationFailed: return 2
             default: return 5
             }
         }
@@ -101,8 +105,12 @@ enum CrashReporting {
     /// Supervisor: run dir of the current boot (VM-process tags, user-exit marker).
     nonisolated(unsafe) private static var runDir: String?
     nonisolated(unsafe) private static var lineScanner = LineScanner()
+    /// The open multi-line message a delayed report was scheduled for (LineScanner.pendingSerial).
+    nonisolated(unsafe) private static var scheduledSerial: Int?
     /// Most recent event this process sent (Report a Problem associates its feedback with it).
     nonisolated(unsafe) private static var lastEvent: String?
+    /// Supervisor: host memory pressure while the VM runs.
+    private static let memoryWatch = MemoryWatch()
 
     private static func locked<T>(_ body: () -> T) -> T {
         lock.lock()
@@ -117,8 +125,40 @@ enum CrashReporting {
         return "\(LauncherSettings.defaultDomain)@\(version)+\(commit)"
     }
 
+    /// What kind of build this is (tag `build_kind`; the environment unless this is a test run).
+    enum BuildKind: String {
+        /// dist.sh: Developer ID signed by the team it recorded (SteamacDistTeamID) and notarized.
+        case release
+        /// Any other .app (bundle.sh, ad-hoc or re-signed copies, third-party builds).
+        case sourceBuild = "source-build"
+        /// The dev launcher work/out/steamac-vm (not a bundle).
+        case development
+    }
+
+    static let buildKind: BuildKind = {
+        guard AppBundle.releaseDefaults else { return .development }
+        guard let team = Bundle.main.object(forInfoDictionaryKey: "SteamacDistTeamID") as? String,
+              signedByDeveloperID(team: team) else { return .sourceBuild }
+        return .release
+    }()
+
     static var environment: String {
-        test || !AppBundle.releaseDefaults ? "development" : "release"
+        test ? "development" : buildKind.rawValue
+    }
+
+    /// The running code's signature is valid and a Developer ID Application certificate of `team`
+    /// signed it (Apple's Developer ID requirement). Ad-hoc re-signing drops the team; Info.plist
+    /// is sealed by the signature, so the key cannot be added to a signed copy either.
+    private static func signedByDeveloperID(team: String) -> Bool {
+        guard team.count == 10, team.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) else { return false }
+        let text = "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+            + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"\(team)\""
+        var code: SecCode?
+        var requirement: SecRequirement?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess, let requirement
+        else { return false }
+        return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
     }
 
     private static var cacheDir: String {
@@ -155,12 +195,14 @@ enum CrashReporting {
             ? (options.explicit.contains(noFlag) ? noFlag : "\(disableEnv)=0") : nil
         configured = true
         // Supervisor: tap stderr of both processes: the session log Report a Problem attaches
-        // (always) and, while reporting is on, breadcrumbs and error patterns.
+        // (always) and, while reporting is on, breadcrumbs and error patterns. Memory pressure
+        // changes go to that log too (and into "VM process killed" reports).
         if role == .launcher && !options.isSelftest {
             tap = StderrTap.install { line in
                 RollingLog.launcher.append(line)
                 observe(line: line)
             }
+            memoryWatch.start()
         }
         if let reason = runOverride {
             log("crash reporting: off for this run (\(reason))")
@@ -223,7 +265,7 @@ enum CrashReporting {
             }
         }
         locked { running = true }
-        log("crash reporting: on (\(environment), \(releaseName))")
+        log("crash reporting: on (\(environment), build \(buildKind.rawValue), \(releaseName))")
     }
 
     private static func stop(reason: String) {
@@ -289,6 +331,7 @@ enum CrashReporting {
             "gpu": MTLCreateSystemDefaultDevice()?.name ?? "none",
             "vm_cpus": String(options.cpus),
             "vm_mem_mib": String(options.memMiB),
+            "build_kind": buildKind.rawValue,
         ]
         if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacMVKPatchRevision") as? String { t["mvk_patch"] = rev }
         for (tag, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"),
@@ -318,13 +361,28 @@ enum CrashReporting {
     }
 
     /// VM-process tags the supervisor's reports carry too (run dir file, read at report time).
-    private static func vmContext(_ new: [String: String]) {
+    private static func vmContext(_ new: [String: String], removing: String? = nil) {
         setTags(new)
+        if let key = removing {
+            let had = locked { tags.removeValue(forKey: key) != nil }
+            if had && locked({ running }) { SentrySDK.configureScope { $0.removeTag(key: key) } }
+        }
         guard role == .vm, let dir = Supervisor.runDir else { return }
-        let keys = ["boot", "display_mode", "kernel", "steamos_build", "layer", "network", "sound", "mouse"]
+        let keys = ["boot", "display_mode", "kernel", "steamos_build", "layer", "network", "sound", "mouse", "appid"]
         let snapshot = locked { tags.filter { keys.contains($0.key) } }
         if let data = try? JSONSerialization.data(withJSONObject: snapshot) {
             try? data.write(to: URL(fileURLWithPath: dir + "/sentry-tags.json"), options: .atomic)
+        }
+    }
+
+    /// VM process: the game that has the guest's focus (`appid` tag of both processes' events
+    /// while it has; Steam, the desktop or an unknown app id clear it).
+    static func focusedGame(_ focus: GuestFocus) {
+        guard configured, role == .vm else { return }
+        if case .game(let id) = focus, id > 0 {
+            vmContext(["appid": String(id)])
+        } else {
+            vmContext([:], removing: "appid")
         }
     }
 
@@ -352,6 +410,7 @@ enum CrashReporting {
         let run = locked { tags["run"] } ?? String(format: "%08x", arc4random())
         env[runIdEnv] = run
         setTags(["run": run, "boot": String(boot), "vm_cpus": String(o.cpus), "vm_mem_mib": String(o.memMiB)])
+        memoryWatch.reset()
         followSetting()
     }
 
@@ -361,36 +420,74 @@ enum CrashReporting {
         FileManager.default.createFile(atPath: dir + "/user-exit", contents: nil)
     }
 
-    /// The VM process ended in a way the user did not ask for: a crash signal, or a non-zero exit
-    /// without a user request (window close, menu, signal, restart).
+    /// Ways to ask a process to end (logout, `kill`, ^C, the terminal closing). The VM process
+    /// handles them (guest power key); one that kills it came before its handlers were installed
+    /// (first-run sheet, startup) and is no crash.
+    static let terminationSignals: Set<Int32> = [SIGTERM, SIGINT, SIGHUP]
+
+    /// The VM process ended in a way the user did not ask for: a crash signal, SIGKILL, or a
+    /// non-zero exit without a user request (window close, menu, signal, restart; Force Quit in
+    /// the app menu exits with status 1 after one).
     static func unexpectedExit(status: Int32, runDir dir: String) -> Bool {
         guard status != 0 else { return false }
-        let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
         let signal = status > 128 ? status - 128 : 0
-        if signal == 0 && userExit { return false }
-        return !(userExit && [SIGKILL, SIGTERM, SIGINT, SIGHUP].contains(signal))
+        if terminationSignals.contains(signal) { return false }
+        let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
+        return !(userExit && (signal == 0 || signal == SIGKILL))
     }
 
-    /// "VM process crashed (SIGABRT)" / "VM process exited with status 1".
+    static let killedSummary = "VM process killed (SIGKILL — memory pressure or force quit)"
+
+    /// "VM process crashed (SIGABRT)" / "VM process killed (SIGKILL …)" / "VM process exited with status 1".
     static func exitSummary(status: Int32) -> String {
-        status > 128 ? "VM process crashed (\(signalName(status - 128)))" : "VM process exited with status \(status)"
+        guard status > 128 else { return "VM process exited with status \(status)" }
+        let signal = status - 128
+        return signal == SIGKILL ? killedSummary : "VM process crashed (\(signalName(signal)))"
     }
 
-    /// Supervisor: the VM process ended. Reports non-zero exits the user did not ask for and
-    /// every crash (signal); flushes before the supervisor exits.
-    static func vmExited(status: Int32) {
-        guard configured, role == .launcher, let dir = runDir, unexpectedExit(status: status, runDir: dir) else { return }
+    /// Supervisor: the VM process ended. A multi-line message still collecting lines is reported
+    /// whatever the exit; besides, non-zero exits the user did not ask for and every crash
+    /// (signal) are. Flushes before the supervisor exits.
+    static func vmExited(_ exit: VMExit) {
+        guard configured, role == .launcher, let dir = runDir else { return }
+        let unexpected = unexpectedExit(status: exit.status, runDir: dir)
         let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
-        let signal = status > 128 ? status - 128 : 0
+        let signal = exit.signal
         followSetting()
         tap?.waitIdle()   // the VM process's last lines are breadcrumbs of this report
         let (pending, last) = locked { (lineScanner.flushPending(), lineScanner.lastError) }
-        for (kind, key, message) in pending { report(kind, key: key, message: message) }
-        let what = exitSummary(status: status)
-        let lastError = last.map { ": \($0)" } ?? ""
-        report(.vmExited, key: signal != 0 ? signalName(signal) : "status \(status)", message: what + lastError,
-               tags: ["exit_status": String(status), "signal": signal != 0 ? signalName(signal) : "none",
-                      "user_exit": userExit ? "yes" : "no"])
+        for f in pending { report(f.kind, key: f.key, message: f.message, extra: f.extra) }
+        guard unexpected else {
+            if !pending.isEmpty { flush() }
+            return
+        }
+        var exitTags = ["exit_status": String(exit.status), "signal": signal != 0 ? signalName(signal) : "none",
+                        "user_exit": userExit ? "yes" : "no"]
+        if signal == SIGKILL {
+            // jetsam (the kernel's memory kill) or someone's SIGKILL: Force Quit in the Dock or
+            // the Force Quit window, Activity Monitor, kill -9.
+            let host = HostMemory.current()
+            let pressure = memoryWatch.summary()
+            let reason = exit.detail == nil ? "unknown" : exit.killedForMemory ? "jetsam" : "not-jetsam"
+            let detail = exit.detail.map { " (exit detail 0x\(String($0, radix: 16)))" } ?? ""
+            let lines = [
+                killedSummary,
+                "killed by the kernel for memory (jetsam): \(reason == "jetsam" ? "yes" : reason == "unknown" ? "unknown" : "no")\(detail)",
+                "VM memory \(locked { tags["vm_mem_mib"] } ?? "?") MiB; VM process peak footprint "
+                    + (exit.peakFootprint.map(gib) ?? "?"),
+                host.summary,
+                "memory pressure since the VM started: " + pressure.text,
+            ]
+            exitTags["kill_reason"] = reason
+            exitTags["memory_pressure"] = host.pressure
+            exitTags["memory_pressure_max"] = pressure.maxLevel
+            if let pct = host.availablePercent { exitTags["host_mem_available_pct"] = String(pct) }
+            report(.vmKilled, key: reason, message: lines.joined(separator: "\n"), level: .warning, tags: exitTags)
+        } else {
+            let lastError = last.map { ": \($0)" } ?? ""
+            report(.vmExited, key: signal != 0 ? signalName(signal) : "status \(exit.status)",
+                   message: exitSummary(status: exit.status) + lastError, tags: exitTags)
+        }
         flush()
     }
 
@@ -450,19 +547,29 @@ enum CrashReporting {
         return crumb
     }
 
-    /// Supervisor tap: one stderr line of either process.
+    /// Supervisor tap: one stderr line of either process. MSL source lines MoltenVK logs after a
+    /// failed shader compile go into that report, not the breadcrumbs.
     private static func observe(line: String) {
         guard locked({ running }) else { return }
-        SentrySDK.addBreadcrumb(breadcrumb(for: line))
-        for (kind, key, message) in locked({ lineScanner.feed(line) }) {
-            report(kind, key: key, message: message)
+        if !line.hasPrefix(LineScanner.mslPrefix) { SentrySDK.addBreadcrumb(breadcrumb(for: line)) }
+        let (found, serial) = locked { (lineScanner.feed(line), lineScanner.pendingSerial) }
+        for f in found { report(f.kind, key: f.key, message: f.message, extra: f.extra) }
+        // A multi-line message nothing followed yet: report it after a pause.
+        guard let serial, locked({ scheduledSerial != serial }) else { return }
+        locked { scheduledSerial = serial }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+            for f in locked({ lineScanner.flushPending(serial: serial) }) {
+                report(f.kind, key: f.key, message: f.message, extra: f.extra)
+            }
         }
     }
 
     // MARK: reports
 
-    /// Rate-limited, deduplicated report (no-op when reporting is off).
-    static func report(_ kind: Kind, key: String, message: String, tags extra: [String: String] = [:]) {
+    /// Rate-limited, deduplicated report (no-op when reporting is off). `extra`: long scrubbed
+    /// details (event extra data), `tags`: short searchable values.
+    static func report(_ kind: Kind, key: String, message: String, level: SentryLevel = .error,
+                       tags extraTags: [String: String] = [:], extra: [String: String] = [:]) {
         guard configured else { return }
         guard locked({ running }) else { return }
         // Supervisor: the VM process's Settings window may have turned reporting off meanwhile.
@@ -476,10 +583,11 @@ enum CrashReporting {
             return true
         }
         guard allowed, test || ReportedStore.claim(fingerprint, quietPeriod: kind.quietPeriod) else { return }
-        let event = Event(level: kind == .test ? .info : .error)
+        let event = Event(level: kind == .test ? .info : level)
         event.message = SentryMessage(formatted: String(scrub(message).prefix(2000)))
         event.fingerprint = [kind.rawValue, String(key.prefix(200))]
-        var t = extra
+        if !extra.isEmpty { event.extra = extra.mapValues { String(scrub($0).prefix(8000)) } }
+        var t = extraTags
         t["kind"] = kind.rawValue
         if role == .launcher, let dir = runDir,
            let data = FileManager.default.contents(atPath: dir + "/sentry-tags.json"),
@@ -499,10 +607,11 @@ enum CrashReporting {
 
     /// `--sentry-test-event`: a test event from this process (VM process: then exit, after the
     /// SDK sent it and any crash report left by an earlier VM process). `--sentry-test-crash
-    /// MODE`: the VM process crashes right away (abort | segv | metal), or (panic) boots with a
-    /// kernel command line longer than libkrun's 2048-byte limit: `Cmdline::insert_str().unwrap()`
-    /// panics inside krun_start_enter, and a panic cannot unwind out of the extern "C" function,
-    /// so Rust aborts the process.
+    /// MODE`: the VM process crashes right away (abort | segv | metal), dies by SIGKILL (kill: a
+    /// "VM process killed" report) or SIGTERM (term: none), logs a sample shader compile failure
+    /// (shader), or (panic) boots with a kernel command line longer than libkrun's 2048-byte
+    /// limit: `Cmdline::insert_str().unwrap()` panics inside krun_start_enter, and a panic cannot
+    /// unwind out of the extern "C" function, so Rust aborts the process.
     static func runTests(_ options: inout Options) {
         guard configured, options.sentryTestEvent || options.sentryTestCrash != nil else { return }
         if options.sentryTestEvent {
@@ -716,7 +825,7 @@ enum CrashReporting {
         return nil
     }
 
-    private static func signalName(_ sig: Int32) -> String {
+    static func signalName(_ sig: Int32) -> String {
         switch sig {
         case SIGABRT: return "SIGABRT"
         case SIGSEGV: return "SIGSEGV"
@@ -736,20 +845,45 @@ enum CrashReporting {
 }
 
 /// Error patterns in the supervisor's stderr stream (both processes). Multi-line messages
-/// (MoltenVK compile errors, Rust panics) collect their continuation lines first.
+/// (MoltenVK compile errors, Rust panics) collect their continuation lines first. virglrenderer's
+/// "pipeline N creation failed on host" is no report of its own (a breadcrumb only): the
+/// MoltenVK error before it carries the details.
 private struct LineScanner {
-    private var pending: (kind: CrashReporting.Kind, header: String, lines: [String])?
+    struct Finding {
+        let kind: CrashReporting.Kind
+        let key: String
+        let message: String
+        var extra: [String: String] = [:]
+    }
+
+    /// MoltenVK (patch) logs the source of a shader library that failed to compile after the
+    /// error: the first 40 lines, a "... (N lines total)" line, then "L: text" around each
+    /// error location.
+    static let mslPrefix = "[mvk-msl] "
+
+    private var pending: (kind: CrashReporting.Kind, header: String, lines: [String], msl: [String])?
+    /// Changes with each new multi-line message (CrashReporting reports one left open after a pause).
+    private(set) var pendingSerial: Int?
+    private var serial = 0
     /// Last launcher error line (`[steamac-vm] error: …`), for VM exit reports.
     private(set) var lastError: String?
 
-    mutating func feed(_ line: String) -> [(CrashReporting.Kind, String, String)] {
-        var out: [(CrashReporting.Kind, String, String)] = []
+    mutating func feed(_ line: String) -> [Finding] {
+        var out: [Finding] = []
         if var p = pending {
-            let continuation = !line.hasPrefix("[") && !line.hasPrefix("thread '") && p.lines.count < 6
-            if continuation && !line.trimmingCharacters(in: .whitespaces).isEmpty {
+            if p.kind == .pipelineCompile && line.hasPrefix(Self.mslPrefix) {
+                if p.msl.count < 120 { p.msl.append(String(line.dropFirst(Self.mslPrefix.count))) }
+                pending = p
+                return out
+            }
+            let continuation = !line.hasPrefix("[") && !line.hasPrefix("thread '")
+            if continuation && p.lines.count >= 6 && p.kind == .pipelineCompile && p.msl.isEmpty {
+                return out   // more compiler output than the report keeps; the source may follow
+            }
+            if continuation && p.lines.count < 6 && p.msl.isEmpty && !line.trimmingCharacters(in: .whitespaces).isEmpty {
                 p.lines.append(line)
                 pending = p
-                if p.kind == .rustPanic && p.lines.count >= 1 { out.append(finish()) }
+                if p.kind == .rustPanic { out.append(finish()) }
                 return out
             }
             out.append(finish())
@@ -762,34 +896,48 @@ private struct LineScanner {
         if line.contains("fatal decoder state") || line.contains("vn_dispatch_command failed")
             || line.contains("hit device lost") || line.contains("CS error") || line.contains("Lost VkDevice")
             || line.contains("VK_ERROR_DEVICE_LOST") {
-            out.append((.gpuContextFatal, "boot \(ProcessInfo.processInfo.environment[Supervisor.bootEnv] ?? "")",
-                        "Guest GPU context fatal: \(line)"))
+            out.append(Finding(kind: .gpuContextFatal, key: "boot \(ProcessInfo.processInfo.environment[Supervisor.bootEnv] ?? "")",
+                               message: "Guest GPU context fatal: \(line)"))
         } else if line.hasPrefix("[mvk-error]") && line.contains("compile failed") {
-            pending = (.pipelineCompile, line, [])
-        } else if line.contains("creation failed on host") && line.contains("pipeline") {
-            out.append((.pipelineCompile, CrashReporting.normalize(line), "Pipeline creation failed on host: \(line)"))
+            begin(.pipelineCompile, line)
         } else if line.hasPrefix("thread '") && line.contains("panicked at") {
-            pending = (.rustPanic, line, [])
+            begin(.rustPanic, line)
         }
         return out
     }
 
-    /// A multi-line message still collecting continuation lines (the VM process ended).
-    mutating func flushPending() -> [(CrashReporting.Kind, String, String)] {
-        pending == nil ? [] : [finish()]
+    /// The multi-line message still collecting lines (the VM process ended), or only the one
+    /// `serial` names (a pause after it).
+    mutating func flushPending(serial only: Int? = nil) -> [Finding] {
+        guard pending != nil, only == nil || only == pendingSerial else { return [] }
+        return [finish()]
     }
 
-    private mutating func finish() -> (CrashReporting.Kind, String, String) {
+    private mutating func begin(_ kind: CrashReporting.Kind, _ header: String) {
+        serial += 1
+        pendingSerial = serial
+        pending = (kind, header, [], [])
+    }
+
+    private mutating func finish() -> Finding {
         let p = pending!
         pending = nil
+        pendingSerial = nil
         let detail = p.lines.joined(separator: "\n")
         switch p.kind {
         case .rustPanic:
             // thread 'name' panicked at src/x.rs:12:5:\n<message>
             let at = p.header.range(of: "panicked at ").map { String(p.header[$0.upperBound...]) } ?? p.header
-            return (.rustPanic, CrashReporting.normalize(at), "Rust panic at \(at) \(detail)")
+            return Finding(kind: .rustPanic, key: CrashReporting.normalize(at), message: "Rust panic at \(at) \(detail)")
         default:
-            return (p.kind, CrashReporting.normalize(p.header + "\n" + detail), "\(p.header)\n\(detail)")
+            var f = Finding(kind: p.kind, key: CrashReporting.normalize(p.header + "\n" + detail), message: "\(p.header)\n\(detail)")
+            // Head ("<text>", "... (N lines total)") and error context ("L: <text>") are separate
+            // extras, so long head lines never crowd out the lines around the error.
+            let isContext = { (s: String) in s.firstIndex(of: ":").map { !s[..<$0].isEmpty && s[..<$0].allSatisfy(\.isNumber) } ?? false }
+            let head = p.msl.filter { !isContext($0) }, context = p.msl.filter(isContext)
+            if !head.isEmpty { f.extra["msl_source"] = head.joined(separator: "\n") }
+            if !context.isEmpty { f.extra["msl_error_context"] = context.joined(separator: "\n") }
+            return f
         }
     }
 }
@@ -910,10 +1058,173 @@ final class StderrTap {
     }
 }
 
-/// `--sentry-test-crash MODE` (VM process): crash inside C / Metal / libkrun code.
+/// How the VM process ended (Supervisor.spawnAndWait reads the details from the zombie before it
+/// reaps it).
+struct VMExit {
+    /// Exit status, or 128 + the signal that killed it.
+    var status: Int32
+    /// kevent NOTE_EXIT_DETAIL bits, nil when the exit was not observed.
+    var detail: UInt32?
+    /// Lifetime peak phys_footprint, bytes (a zombie's current footprint is already 0).
+    var peakFootprint: UInt64?
+
+    var signal: Int32 { status > 128 ? status - 128 : 0 }
+    /// The kernel's memorystatus (jetsam) killed it.
+    var killedForMemory: Bool { (detail ?? 0) & UInt32(NOTE_EXIT_MEMORY) != 0 }
+
+    /// phys_footprint and its lifetime peak of a running or zombie process, bytes.
+    static func footprint(pid: pid_t) -> (current: UInt64, peak: UInt64)? {
+        var ri = rusage_info_v4()
+        let rc = withUnsafeMutablePointer(to: &ri) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+        }
+        return rc == 0 ? (ri.ri_phys_footprint, ri.ri_lifetime_max_phys_footprint) : nil
+    }
+}
+
+extension CrashReporting {
+    static func gib(_ bytes: UInt64) -> String {
+        bytes < 1 << 30 ? "\(bytes >> 20) MiB" : String(format: "%.1f GiB", Double(bytes) / 1_073_741_824)
+    }
+
+    /// The host's memory right now (vm_stat numbers, swap, the kernel's pressure level).
+    struct HostMemory {
+        /// normal / warning / critical (kern.memorystatus_vm_pressure_level).
+        var pressure: String
+        /// kern.memorystatus_level: memory available to apps, percent.
+        var availablePercent: Int?
+        var summary: String
+
+        static func pressureLevel() -> String {
+            switch sysctlInt("kern.memorystatus_vm_pressure_level") {
+            case 1: return "normal"
+            case 2: return "warning"
+            case 4: return "critical"
+            default: return "unknown"
+            }
+        }
+
+        static func current() -> HostMemory {
+            let pressure = pressureLevel()
+            let available = sysctlInt("kern.memorystatus_level")
+            var parts = ["host: \(gib(ProcessInfo.processInfo.physicalMemory)) RAM"]
+            var vm = vm_statistics64()
+            var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+            let kr = withUnsafeMutablePointer(to: &vm) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count) }
+            }
+            if kr == KERN_SUCCESS {
+                let page = UInt64(vm_kernel_page_size)
+                parts.append("free \(gib(UInt64(vm.free_count) * page))")
+                parts.append("active \(gib(UInt64(vm.active_count) * page))")
+                parts.append("inactive \(gib(UInt64(vm.inactive_count) * page))")
+                parts.append("wired \(gib(UInt64(vm.wire_count) * page))")
+                parts.append("compressed \(gib(UInt64(vm.compressor_page_count) * page))")
+            }
+            var swap = xsw_usage()
+            var size = MemoryLayout<xsw_usage>.size
+            if sysctlbyname("vm.swapusage", &swap, &size, nil, 0) == 0 {
+                parts.append("swap used \(gib(swap.xsu_used)) of \(gib(swap.xsu_total))")
+            }
+            parts.append("available \(available.map { "\($0) %" } ?? "?")")
+            parts.append("pressure \(pressure)")
+            return HostMemory(pressure: pressure, availablePercent: available, summary: parts.joined(separator: ", "))
+        }
+
+        private static func sysctlInt(_ name: String) -> Int? {
+            var value: Int32 = 0
+            var size = MemoryLayout<Int32>.size
+            return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : nil
+        }
+    }
+}
+
+/// Supervisor: the host's memory pressure changes (DispatchSource) while a VM process runs,
+/// with that process's footprint at each, for "VM process killed" reports; each change is
+/// also logged (launcher log, breadcrumbs).
+private final class MemoryWatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var source: DispatchSourceMemoryPressure?
+    private var started = Date()
+    private var events: [(at: Date, level: String, footprint: UInt64?)] = []
+
+    func start() {
+        guard source == nil else { return }
+        let s = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .global(qos: .utility))
+        s.setEventHandler { [weak self, weak s] in
+            guard let e = s?.data else { return }
+            self?.record(e.contains(.critical) ? "critical" : e.contains(.warning) ? "warning" : "normal")
+        }
+        s.resume()
+        source = s
+    }
+
+    /// A new VM process: the history starts with the current level.
+    func reset() {
+        let level = CrashReporting.HostMemory.pressureLevel()
+        lock.withLock {
+            started = Date()
+            events = [(started, level, nil)]
+        }
+    }
+
+    private func record(_ level: String) {
+        let pid = Supervisor.vmPid
+        let footprint = pid > 0 ? VMExit.footprint(pid: pid)?.current : nil
+        lock.withLock {
+            events.append((Date(), level, footprint))
+            if events.count > 24 { events.removeSubrange(1..<(events.count - 23)) }   // keep the start
+        }
+        log("memory pressure: \(level)" + (footprint.map { " (VM process footprint \(CrashReporting.gib($0)))" } ?? ""))
+    }
+
+    /// "normal at start; warning 5m12s ago (VM 14.2 GiB); critical 40s ago (VM 15.1 GiB)" and the
+    /// highest level seen.
+    func summary() -> (text: String, maxLevel: String) {
+        let rank = ["normal": 1, "warning": 2, "critical": 3]
+        return lock.withLock {
+            let now = Date()
+            var max = "unknown"
+            var parts: [String] = []
+            for (i, e) in events.enumerated() {
+                if rank[e.level, default: 0] > rank[max, default: 0] { max = e.level }
+                let age = Int(now.timeIntervalSince(e.at))
+                let when = i == 0 ? "at start (\(age / 60)m\(age % 60)s ago)" : "\(age / 60)m\(age % 60)s ago"
+                parts.append("\(e.level) \(when)" + (e.footprint.map { " (VM \(CrashReporting.gib($0)))" } ?? ""))
+            }
+            return (parts.isEmpty ? "not watched" : parts.joined(separator: "; "), max)
+        }
+    }
+}
+
+/// `--sentry-test-crash MODE` (VM process): crash inside C / Metal / libkrun code, die by a signal
+/// (kill: SIGKILL, term: SIGTERM, no report), or (shader) log a MoltenVK shader compile failure
+/// with its MSL source and vkr's pipeline line, then exit normally.
 private enum TestCrash {
     static func run(_ mode: String) -> Never {
         switch mode {
+        case "kill":
+            kill(getpid(), SIGKILL)
+        case "term":
+            signal(SIGTERM, SIG_DFL)
+            kill(getpid(), SIGTERM)
+            Thread.sleep(forTimeInterval: 1)
+        case "shader":
+            let source = (1...60).map { "[mvk-msl] // sentry test MSL line \($0)" }
+                + ["[mvk-msl] ... (60 lines total)", "[mvk-msl] 12: // sentry test MSL line 12"]
+            let text = """
+                [mvk-error] VK_ERROR_INITIALIZATION_FAILED: Shader library compile failed (Error code 3):
+                program_source:12:66: error: member reference base type 'void' is not a structure or union (sentry test)
+                                        spvDescriptorSet0.u0.atomic_store(3u, 0u).x;
+                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+                .
+                \(source.joined(separator: "\n"))
+                [2026-01-01T00:00:00.000000Z WARN  krun_rutabaga_gfx::virgl_renderer] virglrenderer: vkr: pipeline 1 creation failed on host; draws using it will be skipped
+
+                """
+            text.withCString { _ = write(STDERR_FILENO, $0, strlen($0)) }
+            Thread.sleep(forTimeInterval: 0.5)
+            exit(0)
         case "segv":
             // EXC_BAD_ACCESS inside libsystem's memset.
             memset(UnsafeMutableRawPointer(bitPattern: 16), 0, 64)
