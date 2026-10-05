@@ -1,0 +1,16 @@
+"Language" "russian" 
+"Tokens" 
+{ 
+"SteamBootstrapper_UpdateCleanup"				"Очистка..."
+"SteamBootstrapper_UpdateComplete"			"Обновление завершено, запуск %appname%..."
+"SteamBootstrapper_UpdateChecking"			"Проверка на наличие обновлений..."
+"SteamBootstrapper_UpdatePrepare"				"Подготовка к обновлению..."
+"SteamBootstrapper_UpdateDownload"			"Загрузка обновления..."
+"SteamBootstrapper_UpdateDownloading"			"Загрузка обновления (%bytes% из %size% КБ)..."
+"SteamBootstrapper_UpdateExtractingPackage"	"Разархивирование пакета..."
+"SteamBootstrapper_UpdateInstalling"			"Установка обновления..."
+"SteamBootstrapper_InstallVerify"				"Проверка установки..."
+"SteamBootstrapper_DownloadComplete"			"Загрузка выполнена."
+"SteamBootstrapper_PercentComplete"			"Готово %percent%%%"
+"SteamBootstrapper_WindowTitle"			"%appname%"
+}

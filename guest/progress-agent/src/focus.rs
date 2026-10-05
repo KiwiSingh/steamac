@@ -34,7 +34,7 @@ fn load_named() -> std::collections::HashSet<u32> {
     lines.filter_map(|l| l.trim().parse().ok()).collect()
 }
 
-const STEAM_UI_APPID: u32 = 769;
+pub(crate) const STEAM_UI_APPID: u32 = 769;
 
 struct Conn {
     conn: RustConnection,

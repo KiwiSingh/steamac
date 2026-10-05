@@ -1,0 +1,16 @@
+"Language" "english" 
+"Tokens" 
+{ 
+SteamBootstrapper_UpdateCleanup				"Cleaning up..."
+SteamBootstrapper_UpdateComplete			"Update complete, launching %appname%..."
+SteamBootstrapper_UpdateChecking			"Checking for available updates..."
+SteamBootstrapper_UpdatePrepare				"Preparing to update..."
+SteamBootstrapper_UpdateDownload			"Downloading update..."
+SteamBootstrapper_UpdateDownloading			"Downloading update (%bytes% of %size% KB)..."
+SteamBootstrapper_UpdateExtractingPackage	"Extracting package..."
+SteamBootstrapper_UpdateInstalling			"Installing update..."
+SteamBootstrapper_InstallVerify				"Verifying installation..."
+SteamBootstrapper_DownloadComplete			"Download complete."
+SteamBootstrapper_PercentComplete			"%percent%%% complete"
+SteamBootstrapper_WindowTitle			"%appname%"
+}

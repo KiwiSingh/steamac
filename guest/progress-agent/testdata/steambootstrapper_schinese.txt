@@ -1,0 +1,16 @@
+"Language" "schinese" 
+"Tokens" 
+{ 
+"SteamBootstrapper_UpdateCleanup"				"正在清理..."
+"SteamBootstrapper_UpdateComplete"			"更新完成，正在启动 %appname%..."
+"SteamBootstrapper_UpdateChecking"			"正在检查可用更新..."
+"SteamBootstrapper_UpdatePrepare"				"正在准备更新..."
+"SteamBootstrapper_UpdateDownload"			"正在下载更新..."
+"SteamBootstrapper_UpdateDownloading"			"正在下载更新 (已下载 %bytes%，共 %size% KB)..."
+"SteamBootstrapper_UpdateExtractingPackage"	"正在展开安装包..."
+"SteamBootstrapper_UpdateInstalling"			"正在安装更新..."
+"SteamBootstrapper_InstallVerify"				"正在验证安装..."
+"SteamBootstrapper_DownloadComplete"			"下载完成。"
+"SteamBootstrapper_PercentComplete"			"已完成 %percent%%%"
+"SteamBootstrapper_WindowTitle"			"%appname%"
+}

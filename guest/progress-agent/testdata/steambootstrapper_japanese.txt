@@ -1,0 +1,16 @@
+"Language" "japanese" 
+"Tokens" 
+{ 
+"SteamBootstrapper_UpdateCleanup"				"クリーンアップ中..."
+"SteamBootstrapper_UpdateComplete"			"更新が完了しました。%appname% を起動します..."
+"SteamBootstrapper_UpdateChecking"			"更新を確認中..."
+"SteamBootstrapper_UpdatePrepare"				"更新の準備中..."
+"SteamBootstrapper_UpdateDownload"			"更新をダウンロード中..."
+"SteamBootstrapper_UpdateDownloading"			"更新をダウンロード中（%bytes% / %size% KB）..."
+"SteamBootstrapper_UpdateExtractingPackage"	"パッケージを抽出中..."
+"SteamBootstrapper_UpdateInstalling"			"更新をインストール中..."
+"SteamBootstrapper_InstallVerify"				"インストール状況を確認中..."
+"SteamBootstrapper_DownloadComplete"			"ダウンロードが終了しました。"
+"SteamBootstrapper_PercentComplete"			"%percent%%% 完了"
+"SteamBootstrapper_WindowTitle"			"%appname%"
+}

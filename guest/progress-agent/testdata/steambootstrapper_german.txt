@@ -1,0 +1,16 @@
+"Language" "german" 
+"Tokens" 
+{ 
+"SteamBootstrapper_UpdateCleanup"				"Bereinigen …"
+"SteamBootstrapper_UpdateComplete"			"Aktualisierung abgeschlossen, %appname% wird geladen …"
+"SteamBootstrapper_UpdateChecking"			"Suche nach verfügbaren Updates …"
+"SteamBootstrapper_UpdatePrepare"				"Update wird vorbereitet …"
+"SteamBootstrapper_UpdateDownload"			"Update wird heruntergeladen …"
+"SteamBootstrapper_UpdateDownloading"			"Update wird heruntergeladen (%bytes% von %size% KB) …"
+"SteamBootstrapper_UpdateExtractingPackage"	"Paket wird extrahiert …"
+"SteamBootstrapper_UpdateInstalling"			"Update wird installiert …"
+"SteamBootstrapper_InstallVerify"				"Installation wird überprüft …"
+"SteamBootstrapper_DownloadComplete"			"Download ist abgeschlossen."
+"SteamBootstrapper_PercentComplete"			"%percent% %% abgeschlossen"
+"SteamBootstrapper_WindowTitle"			"%appname%"
+}

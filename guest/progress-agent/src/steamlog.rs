@@ -129,24 +129,9 @@ fn parse_local_time(s: &str) -> Option<i64> {
     }
 }
 
-/// "Downloading update (12,514 of 662,547 KB)..." -> (12514, 662547)
-pub fn parse_download(text: &str) -> Option<(u64, u64)> {
-    let rest = text.strip_prefix("Downloading update (")?;
-    let (a, rest) = rest.split_once(" of ")?;
-    let b = rest.split(' ').next()?;
-    let digits = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().ok();
-    Some((digits(a)?, digits(b)?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn download_line() {
-        assert_eq!(parse_download("Downloading update (12,514 of 662,547 KB)..."), Some((12514, 662547)));
-        assert_eq!(parse_download("Downloading update..."), None);
-    }
 
     #[test]
     fn stamped_line() {

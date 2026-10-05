@@ -31,8 +31,9 @@
 //! Lifecycle
 //!   1. port missing (older launcher) -> exit 0 quietly.
 //!   2. `stage session 100`, then follow the Steam bootstrapper log
-//!      (steamlog.rs) and the X11 window list (ui.rs) until the Big Picture
-//!      window has been on screen for 1.5 s -> `ready`.
+//!      (steamlog.rs, messages in any Steam language: steamstrings.rs) and the
+//!      X11 window list (ui.rs) until a Steam UI window has been full-screen
+//!      and focused for 1.5 s -> `ready`.
 //!   3. `ready` is sent at most once per boot (marker in /tmp, keyed by
 //!      boot_id): a restarted session/agent goes straight to step 4.
 //!   4. Idle in ppoll(2) on the X connection and the heartbeat timerfd (no
@@ -50,7 +51,8 @@
 //!                             (a regular file, FIFO or another char device)
 //!   FX_PROGRESS_STEAM_LOG=<path>  bootstrapper log to follow
 //!   FX_PROGRESS_FORCE=1       ignore the once-per-boot `ready` marker
-//!   FX_PROGRESS_STEAM_ROOT=<dir>  Steam root for appmanifest lookup (default ~/.local/share/Steam)
+//!   FX_PROGRESS_STEAM_ROOT=<dir>  Steam root for appmanifest lookup and the
+//!                             bootstrapper's language files (default ~/.local/share/Steam)
 //!
 //! `fx-progress-agent clock-sync` is a separate mode, run as root by
 //! fx-clock-sync.service: it steps the wall clock after the launcher resumes a
@@ -70,6 +72,7 @@ mod port;
 mod shutdown;
 mod sleep;
 mod steamlog;
+mod steamstrings;
 mod ui;
 mod freeze;
 
@@ -150,6 +153,8 @@ struct Reporter {
     /// (log timestamp, KB) samples for the download rate.
     dl_samples: Vec<(i64, u64)>,
     pct: i32,
+    /// Bootstrapper messages of every Steam UI language.
+    msgs: steamstrings::Messages,
 }
 
 impl Reporter {
@@ -178,54 +183,62 @@ impl Reporter {
         }
     }
 
+    /// One bootstrapper log line. Its progress messages are in the Steam UI
+    /// language (steamstrings.rs); its plain log lines are always English.
     fn steam_line(&mut self, l: &steamlog::Line) {
+        use steamstrings::Msg;
         let t = l.text.as_str();
-        if let Some((done, total)) = steamlog::parse_download(t) {
-            self.pending_start = None;
-            let pct = if total > 0 { (done * 100 / total).min(100) as i32 } else { -1 };
-            self.stage(Stage::Download, pct, "Downloading Steam update");
-            if let Some(ts) = l.ts {
-                self.dl_samples.push((ts, done));
-                self.dl_samples.retain(|&(t0, _)| ts - t0 <= 5);
-            }
-            let mb = |kb: u64| kb as f64 / 1000.0;
-            let rate = match (self.dl_samples.first(), self.dl_samples.last()) {
-                (Some(&(t0, k0)), Some(&(t1, k1))) if t1 > t0 && k1 >= k0 => {
-                    Some(mb(k1 - k0) / (t1 - t0) as f64)
-                }
-                _ => None,
-            };
-            let detail = match rate {
-                Some(r) => format!("{:.0} / {:.0} MB · {:.1} MB/s", mb(done), mb(total), r),
-                None => format!("{:.0} / {:.0} MB", mb(done), mb(total)),
-            };
-            self.log(&detail);
-        } else if t.starts_with("Startup - ") {
+        if t.starts_with("Startup - ") {
             self.stage(Stage::Check, -1, "Starting Steam client");
-        } else if t.starts_with("Verifying installation") {
-            self.stage(Stage::Check, -1, "Verifying Steam installation");
+            return;
         } else if t.starts_with("Verification complete") {
             if self.stage < Stage::Start {
                 self.pending_start = Some(Instant::now() + START_GRACE);
             }
-        } else if t.starts_with("Checking for available updates") || t.starts_with("Downloading update...") {
-            self.pending_start = None;
-            self.stage(Stage::Check, -1, "Checking for Steam updates");
-        } else if t.starts_with("Download complete") {
-            self.stage(Stage::Download, 100, "Steam update downloaded");
-        } else if t.starts_with("Extracting package") {
-            self.stage(Stage::Install, 10, "Extracting Steam update");
-        } else if t.starts_with("Installing update") {
-            self.stage(Stage::Install, 50, "Installing Steam update");
-        } else if t.starts_with("Cleaning up") {
-            self.stage(Stage::Install, 90, "Installing Steam update");
-        } else if t.starts_with("Update complete") {
-            self.stage(Stage::Install, 100, "Steam update installed");
-            self.stage(Stage::Start, -1, "Restarting Steam");
+            return;
         } else if t.starts_with("Nothing to do") || t.starts_with("Download skipped") {
             self.pending_start = None;
             self.stage(Stage::Start, -1, "Starting Steam");
+            return;
         }
+        match self.msgs.classify(t) {
+            Some(Msg::Downloading(done, total)) => self.download(l.ts, done, total),
+            Some(Msg::Verifying) => self.stage(Stage::Check, -1, "Verifying Steam installation"),
+            Some(Msg::Checking | Msg::DownloadStarting) => {
+                self.pending_start = None;
+                self.stage(Stage::Check, -1, "Checking for Steam updates");
+            }
+            Some(Msg::Downloaded) => self.stage(Stage::Download, 100, "Steam update downloaded"),
+            Some(Msg::Extracting) => self.stage(Stage::Install, 10, "Extracting Steam update"),
+            Some(Msg::Installing) => self.stage(Stage::Install, 50, "Installing Steam update"),
+            Some(Msg::CleaningUp) => self.stage(Stage::Install, 90, "Installing Steam update"),
+            Some(Msg::UpdateComplete) => {
+                self.stage(Stage::Install, 100, "Steam update installed");
+                self.stage(Stage::Start, -1, "Restarting Steam");
+            }
+            None => {}
+        }
+    }
+
+    /// "Downloading update (<done> of <total> KB)..." -> stage + "583 / 662 MB · 12.4 MB/s".
+    fn download(&mut self, ts: Option<i64>, done: u64, total: u64) {
+        self.pending_start = None;
+        let pct = if total > 0 { (done * 100 / total).min(100) as i32 } else { -1 };
+        self.stage(Stage::Download, pct, "Downloading Steam update");
+        if let Some(ts) = ts {
+            self.dl_samples.push((ts, done));
+            self.dl_samples.retain(|&(t0, _)| ts - t0 <= 5);
+        }
+        let mb = |kb: u64| kb as f64 / 1000.0;
+        let rate = match (self.dl_samples.first(), self.dl_samples.last()) {
+            (Some(&(t0, k0)), Some(&(t1, k1))) if t1 > t0 && k1 >= k0 => Some(mb(k1 - k0) / (t1 - t0) as f64),
+            _ => None,
+        };
+        let detail = match rate {
+            Some(r) => format!("{:.0} / {:.0} MB · {:.1} MB/s", mb(done), mb(total), r),
+            None => format!("{:.0} / {:.0} MB", mb(done), mb(total)),
+        };
+        self.log(&detail);
     }
 
     fn tick(&mut self, now: Instant) {
@@ -344,6 +357,7 @@ fn report_boot(
                     if now.duration_since(since) >= SETTLE {
                         rep.stage(Stage::Start, 100, "Steam is ready");
                         rep.port.send("ready");
+                        eprintln!("fx-progress: ready: Steam UI {}", ui.on_screen_window());
                         let _ = std::fs::write(ready_marker(), boot_id());
                         return;
                     }
@@ -388,6 +402,8 @@ fn main() {
         }
     };
     install_signals();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
+    let steam_root = std::env::var("FX_PROGRESS_STEAM_ROOT").unwrap_or_else(|_| format!("{home}/.local/share/Steam"));
     let mut rep = Reporter {
         port,
         stage: Stage::Session,
@@ -396,6 +412,7 @@ fn main() {
         pending_start: None,
         dl_samples: Vec::new(),
         pct: -1,
+        msgs: steamstrings::Messages::new(steam_root, format!("{home}/.steam/registry.vdf")),
     };
 
     let mut focus = focus::Focus::new();
