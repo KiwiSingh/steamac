@@ -847,7 +847,9 @@ enum CrashReporting {
 /// Error patterns in the supervisor's stderr stream (both processes). Multi-line messages
 /// (MoltenVK compile errors, Rust panics) collect their continuation lines first. virglrenderer's
 /// "pipeline N creation failed on host" is no report of its own (a breadcrumb only): the
-/// MoltenVK error before it carries the details.
+/// MoltenVK error before it carries the details. A resource destroyed while its context still
+/// uses it waits for the next lines: when the context itself goes right after, that was a guest
+/// process exiting, not a lost device (see `destroyCandidate`).
 private struct LineScanner {
     struct Finding {
         let kind: CrashReporting.Kind
@@ -862,14 +864,35 @@ private struct LineScanner {
     static let mslPrefix = "[mvk-msl] "
 
     private var pending: (kind: CrashReporting.Kind, header: String, lines: [String], msl: [String])?
-    /// Changes with each new multi-line message (CrashReporting reports one left open after a pause).
-    private(set) var pendingSerial: Int?
+    private var multiSerial: Int?
+    /// virglrenderer (patch 0010) logs "resource N destroyed while ring R uses it (CS error)" /
+    /// "… while the context replies into it (CS error)" and makes the context fatal. A guest
+    /// process that exits frees its ring buffers before its context goes ("vkr: destroying
+    /// context N"): Steam's gldriverquery probe does that on every start. So the line waits;
+    /// "destroying context" within `teardownLines` lines drops it, any other sign of the fatal
+    /// state, more lines or a pause (flushPending) report it.
+    private var destroyCandidate: (line: String, serial: Int, lines: Int)?
+    private static let teardownLines = 12
+    /// Newest open message (multi-line or waiting); CrashReporting reports it after a pause.
+    var pendingSerial: Int? { [multiSerial, destroyCandidate?.serial].compactMap { $0 }.max() }
     private var serial = 0
     /// Last launcher error line (`[steamac-vm] error: …`), for VM exit reports.
     private(set) var lastError: String?
 
     mutating func feed(_ line: String) -> [Finding] {
         var out: [Finding] = []
+        if var c = destroyCandidate {
+            if line.contains("vkr: destroying context") {
+                destroyCandidate = nil   // the owning guest process exited
+            } else if line.contains("went fatal") || (Self.isGPUFatal(line) && !Self.isDestroyCSError(line))
+                        || c.lines >= Self.teardownLines {
+                destroyCandidate = nil
+                out.append(gpuFatal(c.line))
+            } else {
+                c.lines += 1
+                destroyCandidate = c
+            }
+        }
         if var p = pending {
             if p.kind == .pipelineCompile && line.hasPrefix(Self.mslPrefix) {
                 if p.msl.count < 120 { p.msl.append(String(line.dropFirst(Self.mslPrefix.count))) }
@@ -893,11 +916,13 @@ private struct LineScanner {
         } else if line.contains("failed assertion") || line.contains("panicked at") || line.hasPrefix("Fatal error: ") {
             lastError = String(line.prefix(300))
         }
-        if line.contains("fatal decoder state") || line.contains("vn_dispatch_command failed")
-            || line.contains("hit device lost") || line.contains("CS error") || line.contains("Lost VkDevice")
-            || line.contains("VK_ERROR_DEVICE_LOST") {
-            out.append(Finding(kind: .gpuContextFatal, key: "boot \(ProcessInfo.processInfo.environment[Supervisor.bootEnv] ?? "")",
-                               message: "Guest GPU context fatal: \(line)"))
+        if Self.isDestroyCSError(line) {
+            if destroyCandidate == nil {
+                serial += 1
+                destroyCandidate = (line, serial, 0)
+            }
+        } else if Self.isGPUFatal(line) {
+            out.append(gpuFatal(line))
         } else if line.hasPrefix("[mvk-error]") && line.contains("compile failed") {
             begin(.pipelineCompile, line)
         } else if line.hasPrefix("thread '") && line.contains("panicked at") {
@@ -906,23 +931,45 @@ private struct LineScanner {
         return out
     }
 
-    /// The multi-line message still collecting lines (the VM process ended), or only the one
-    /// `serial` names (a pause after it).
+    /// The open messages — a multi-line message still collecting lines, a destroyed-resource CS
+    /// error still waiting for its context — (the VM process ended), or only the one `serial`
+    /// names (a pause after it).
     mutating func flushPending(serial only: Int? = nil) -> [Finding] {
-        guard pending != nil, only == nil || only == pendingSerial else { return [] }
-        return [finish()]
+        var out: [Finding] = []
+        if let c = destroyCandidate, only == nil || only == c.serial {
+            destroyCandidate = nil
+            out.append(gpuFatal(c.line))
+        }
+        if pending != nil, only == nil || only == multiSerial { out.append(finish()) }
+        return out
+    }
+
+    private static func isGPUFatal(_ line: String) -> Bool {
+        line.contains("fatal decoder state") || line.contains("vn_dispatch_command failed")
+            || line.contains("hit device lost") || line.contains("CS error") || line.contains("Lost VkDevice")
+            || line.contains("VK_ERROR_DEVICE_LOST")
+    }
+
+    private static func isDestroyCSError(_ line: String) -> Bool {
+        line.contains("CS error")
+            && (line.contains(" destroyed while ring ") || line.contains(" destroyed while the context replies into it"))
+    }
+
+    private func gpuFatal(_ line: String) -> Finding {
+        Finding(kind: .gpuContextFatal, key: "boot \(ProcessInfo.processInfo.environment[Supervisor.bootEnv] ?? "")",
+                message: "Guest GPU context fatal: \(line)")
     }
 
     private mutating func begin(_ kind: CrashReporting.Kind, _ header: String) {
         serial += 1
-        pendingSerial = serial
+        multiSerial = serial
         pending = (kind, header, [], [])
     }
 
     private mutating func finish() -> Finding {
         let p = pending!
         pending = nil
-        pendingSerial = nil
+        multiSerial = nil
         let detail = p.lines.joined(separator: "\n")
         switch p.kind {
         case .rustPanic:
