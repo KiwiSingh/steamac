@@ -191,6 +191,7 @@ final class GamepadBridge {
             s.buttons[BTN.NORTH] = east.isPressed
             s.buttons[BTN.WEST] = north.isPressed
             s.buttons[BTN.TOUCHPAD] = touchpadButton(of: p)?.isPressed ?? false
+            s.buttons[BTN.MISC1] = false
             s.buttons[BTN.TL2] = p.leftTrigger.isPressed
             s.buttons[BTN.TR2] = p.rightTrigger.isPressed
         } else {
@@ -240,14 +241,15 @@ final class GamepadBridge {
 
     private func apply(_ next: PadState) {
         var events: [(UInt16, UInt16, Int32)] = []
-        for c in deviceButtons where next.buttons[c] != state.buttons[c] {
+        for c in deviceButtons where (next.buttons[c] ?? false) != (state.buttons[c] ?? false) {
+            let pressed = next.buttons[c] ?? false
             if c == BTN.TOUCHPAD {
-                log("gamepad: touchpad button \(next.buttons[c]! ? "pressed" : "released")")
+                log("gamepad: touchpad button \(pressed ? "pressed" : "released")")
             }
-            events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))
+            events.append((EV.KEY, c, pressed ? 1 : 0))
         }
-        for a in GamepadBridge.axisCodes where next.axes[a] != state.axes[a] {
-            events.append((EV.ABS, a, next.axes[a]!))
+        for a in GamepadBridge.axisCodes where (next.axes[a] ?? 0) != (state.axes[a] ?? 0) {
+            events.append((EV.ABS, a, next.axes[a] ?? 0))
         }
         state = next
         device.send(events)
