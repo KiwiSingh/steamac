@@ -21,7 +21,7 @@ final class LauncherSettings: ObservableObject {
     enum Key: String, CaseIterable {
         // General
         case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground,
-             closeAction
+             closeAction, checkForUpdates
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
              windowSizePreset, metalHUD
@@ -170,6 +170,8 @@ final class LauncherSettings: ObservableObject {
     @Published var muteInBackground = true { didSet { save(.muteInBackground, muteInBackground) } }
     @Published var pauseInBackground = false { didSet { save(.pauseInBackground, pauseInBackground) } }
     @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
+    /// New-version check when the app starts (UpdateChecker; never in development builds); applies now.
+    @Published var checkForUpdates = true { didSet { save(.checkForUpdates, checkForUpdates) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }
     @Published var fixedDPI = 110 { didSet { save(.fixedDPI, fixedDPI) } }
@@ -247,6 +249,7 @@ final class LauncherSettings: ObservableObject {
         bool(.muteInBackground, &muteInBackground)
         bool(.pauseInBackground, &pauseInBackground)
         if let s = d.string(forKey: Key.closeAction.rawValue).flatMap(CloseAction.init(rawValue:)) { closeAction = s }
+        bool(.checkForUpdates, &checkForUpdates)
         if let s = d.string(forKey: Key.dpiSource.rawValue).flatMap(DPISource.init(rawValue:)) { dpiSource = s }
         int(.fixedDPI, &fixedDPI)
         int(.fixedWidthMM, &fixedWidthMM)
@@ -312,6 +315,7 @@ final class LauncherSettings: ObservableObject {
         case .muteInBackground: guard let b else { return false }; muteInBackground = b
         case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
         case .closeAction: guard let v = CloseAction(rawValue: text) else { return false }; closeAction = v
+        case .checkForUpdates: guard let b else { return false }; checkForUpdates = b
         case .dpiSource: guard let v = DPISource(rawValue: text) else { return false }; dpiSource = v
         case .fixedDPI: guard let i else { return false }; fixedDPI = i
         case .fixedWidthMM: guard let i else { return false }; fixedWidthMM = i
@@ -359,7 +363,7 @@ final class LauncherSettings: ObservableObject {
         showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         muteInBackground = fresh.muteInBackground; pauseInBackground = fresh.pauseInBackground
-        closeAction = fresh.closeAction
+        closeAction = fresh.closeAction; checkForUpdates = fresh.checkForUpdates
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset

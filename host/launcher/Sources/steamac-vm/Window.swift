@@ -950,14 +950,17 @@ extension WindowController {
 }
 
 enum MainMenu {
-    static func install(target: AnyObject, settings: Selector, report: Selector, restart: Selector, suspend: Selector,
-                        shutdown: Selector, forceQuit: Selector, fullscreen: Selector, grab: Selector, overlay: Selector,
-                        metalHUD: Selector) {
+    static func install(target: AnyObject, settings: Selector, report: Selector, checkForUpdates: Selector, restart: Selector,
+                        suspend: Selector, shutdown: Selector, forceQuit: Selector, fullscreen: Selector, grab: Selector,
+                        overlay: Selector, metalHUD: Selector) {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
+        // Titled by the target's validateMenuItem ("Update Available: X.Y…" once one was found).
+        appMenu.addItem(item("Check for Updates…", checkForUpdates, target))
+        appMenu.addItem(.separator())
         appMenu.addItem(item("Settings…", settings, target, key: ","))
         appMenu.addItem(item("Report a Problem…", report, target))
         appMenu.addItem(.separator())

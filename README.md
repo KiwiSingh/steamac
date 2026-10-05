@@ -122,7 +122,7 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 
 | Вкладка | Сразу | При следующем запуске |
 |---|---|---|
-| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться). Пока агент подтверждает заморозку (`game-frozen`/`game-thawed`), окно затемнено, с карточкой «Game paused · Click to resume» и заголовком «— paused»; щелчок по окну возвращает игру и в гостя не передаётся; отчёты о сбоях (`--no-crash-reports`, см. ниже); лог статистики кадров (`--perf-stats`) | полный экран при старте |
+| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться). Пока агент подтверждает заморозку (`game-frozen`/`game-thawed`), окно затемнено, с карточкой «Game paused · Click to resume» и заголовком «— paused»; щелчок по окну возвращает игру и в гостя не передаётся; отчёты о сбоях (`--no-crash-reports`, см. ниже); **Check for updates at startup** (по умолчанию вкл., см. «Проверка обновлений»); лог статистики кадров (`--perf-stats`) | полный экран при старте |
 | Display | гость следует за размером окна; Metal Performance HUD Apple в правом верхнем углу окна (Ctrl+Cmd+P, View → Show Metal Performance HUD) | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
@@ -393,6 +393,36 @@ Rust в `krun_start_enter` из-за слишком длинной команд�
 virglrenderer и MoltenVK собраны без DWARF — там только таблицы символов). `dist.sh` загружает их и
 бинарники приложения через `sentry-cli --url https://sentry.fxgam.es debug-files upload`, если заданы
 `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` и `SENTRY_PROJECT`; иначе пишет, что загрузка пропущена.
+
+## Проверка обновлений
+
+При запуске приложения (один раз за запуск, не при каждой перезагрузке ВМ, и не чаще раза в 6 часов —
+даже между запусками) лаунчер в фоне, не задерживая загрузку, запрашивает последний релиз
+`https://api.github.com/repos/fxgl/steamac/releases/latest` (без авторизации, таймаут 10 с; черновики
+и пре-релизы не учитываются) и сравнивает тег `vX.Y[.Z]` со своей версией (`CFBundleShortVersionString`,
+численно: 1.3.10 > 1.3.9). Если вышла новая версия, рядом с окном ВМ (не поверх него, если на экране
+есть место; без фокуса — клавиатура и захваченная мышь остаются у ВМ) появляется окно «FX Steam
+Launcher X.Y is available — you have …» с описанием релиза и кнопками **Download** (открывает в
+браузере `.dmg` релиза, иначе страницу релиза), **Skip This Version** (эта версия больше не
+предлагается при запуске) и **Remind Me Later** (снова — при следующей проверке). В меню приложения
+пункт **Check for Updates…** (пока найденная версия не пропущена — «Update Available: X.Y…» с
+отметкой New, открывает это окно) проверяет сразу — без 6-часового ограничения и
+пропущенных версий — и сообщает «You're up to date» или ошибку; ошибки сети и HTTP при запуске только
+пишутся в лог (`update: …`). Выключается галочкой **Check for updates at startup** в Settings →
+General (сразу). Dev-лаунчер `work/out/steamac-vm` при запуске не проверяет (меню работает); сборки
+из исходников (`bundle.sh`) и релизы — проверяют.
+
+Приватность: запрос уходит только на `api.github.com` (GitHub) и содержит только `User-Agent:
+FXSteamLauncher/<версия>` (плюс стандартные заголовки HTTP и ETag прошлого ответа, чтобы GitHub мог
+ответить «не изменилось»); никаких идентификаторов Mac или пользователя, cookies и Sentry. Время
+проверки, ETag, ответ и пропущенная версия хранятся в настройках (`updateLastCheck`, `updateETag`,
+`updateCachedBody`, `updateCachedURL`, `updateSkippedVersion`).
+
+Тесты: `STEAMAC_UPDATE_URL` подменяет адрес (JSON релиза или массив `/releases`, `http(s)://` или
+`file://`; заодно включает проверку при запуске dev-лаунчера), `STEAMAC_FAKE_VERSION` — версию
+лаунчера; FIFO `--control-fifo`: `update check|startup|state`, `update press
+download|skip|later|ok|releases`, `update dump PNG` (окно и `-with-vm.png` — вместе с окном ВМ, как на
+экране).
 
 ## Сообщить о проблеме (Report a Problem)
 

@@ -10,7 +10,7 @@ import SwiftUI
 /// size with its warnings), and check that each capture has content.
 /// Also checks that crash-report scrubbing redacts the user, host, computer and Bonjour names,
 /// that a guest process's GPU teardown is no crash report (LineScanner), and the automatic VM size
-/// (VMSizing) on simulated Macs.
+/// (VMSizing) on simulated Macs, and the update check's version ordering and release selection.
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
         let settings = LauncherSettings.shared
@@ -28,6 +28,7 @@ enum SettingsSelfTest {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         // Crash-report scrubbing: the user, host, computer and Bonjour names never leave the Mac.
         var failures = CrashReporting.scrubSelfCheck() + CrashReporting.scannerSelfCheck() + VMSizing.selfCheck()
+            + UpdateChecker.selfCheck()
         var tabs = SettingsWindowController.Tab.allCases[...]
 
         func capture(_ name: String, _ rep: NSBitmapImageRep?) {

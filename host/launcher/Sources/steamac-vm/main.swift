@@ -210,11 +210,16 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     @objc func menuMetalHUD() { window?.toggleMetalHUD() }
     @objc func menuSettings() { settingsWindow?.show() }
     @objc func menuReport() { report?() }
+    @objc func menuCheckForUpdates() { UpdateChecker.shared.menuAction() }
 }
 
 extension Lifecycle: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(menuMetalHUD) { item.state = LauncherSettings.shared.metalHUD ? .on : .off }
+        if item.action == #selector(menuCheckForUpdates) {
+            item.title = UpdateChecker.shared.menuTitle
+            item.badge = UpdateChecker.shared.available != nil ? NSMenuItemBadge(string: "New") : nil
+        }
         if item.action == #selector(menuSuspend) {
             let suspended = suspender?.suspended ?? false
             item.title = suspended ? "Resume" : "Suspend"
@@ -426,6 +431,7 @@ do {
     wc.stallView.onReport = { openReport("stall", on: wc.window) }
     MainActor.assumeIsolated { ReportControl.open = { openReport("control", on: wc.window) } }
     MainMenu.install(target: lifecycle, settings: #selector(Lifecycle.menuSettings), report: #selector(Lifecycle.menuReport),
+                     checkForUpdates: #selector(Lifecycle.menuCheckForUpdates),
                      restart: #selector(Lifecycle.menuRestart), suspend: #selector(Lifecycle.menuSuspend),
                      shutdown: #selector(Lifecycle.menuShutdown), forceQuit: #selector(Lifecycle.menuForceQuit),
                      fullscreen: #selector(Lifecycle.menuFullscreen), grab: #selector(Lifecycle.menuGrab),
@@ -449,6 +455,8 @@ do {
     if settings.showOverlay { wc.overlay.show() }
     if options.fullscreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
     gamepad?.start()
+    // New-version check (first boot of this launch; Settings > General), after the window is up.
+    UpdateChecker.shared.start { [weak wc] in wc?.window }
     if let d = options.inputSelftestDelay { InputSelfTest.schedule(after: d, window: wc, gamepad: gamepad) }
     if let d = options.resizeSelftestDelay {
         ResizeSelfTest.start(after: d, window: wc, display: display, progress: progress,

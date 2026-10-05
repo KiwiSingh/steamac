@@ -35,6 +35,8 @@ import Foundation
 ///   status item TITLE     choose the menu-bar item's menu entry TITLE (e.g. Resume)
 ///   report …              Report a Problem sheet (ReportControl: open, fill, include, preview, send,
 ///                         retry, close, dsn, dump)
+///   update …              new-version check (UpdateChecker.control: check, startup, press
+///                         download|skip|later|ok|releases, dump PATH, state)
 enum DebugControl {
     nonisolated(unsafe) private static var settingsWindow: SettingsWindowController?
 
@@ -177,6 +179,7 @@ enum DebugControl {
             let value = args.dropFirst().joined(separator: " ")
             if !LauncherSettings.shared.set(args[0], value) { log("control: set: unknown key or bad value") }
         case "report": MainActor.assumeIsolated { ReportControl.handle(args) }
+        case "update": UpdateChecker.shared.control(args)
         default: log("control: unknown command")
         }
     }

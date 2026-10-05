@@ -175,6 +175,12 @@ struct Options {
       --no-crash-reports   no crash reports or diagnostics for this run (also STEAMAC_SENTRY=0);
                            STEAMAC_SENTRY_DEBUG=1 prints the Sentry SDK's debug log
 
+    Updates (Settings > General "Check for updates at startup", on; never in the dev launcher
+    work/out/steamac-vm): the first boot asks api.github.com for the latest fxgl/steamac release, at
+    most every 6 h; menu FX Steam Launcher > Check for Updates… checks at any time. Test hooks:
+    STEAMAC_UPDATE_URL (release JSON, http(s):// or file://; also enables the dev launcher's startup
+    check), STEAMAC_FAKE_VERSION (the version this launcher compares as)
+
     Diagnostics:
       --perf-stats         every 5 s log frame pacing (also STEAMAC_PERF_STATS=1): guest flush and
                            on-screen frame intervals (p50/p95/p99/max, count > 25 / > 50 ms), libkrun's
@@ -204,7 +210,9 @@ struct Options {
                            grab | release | menu game|global (toggle the Mouse menu checkboxes) |
                            guest LINE (as if sent on fx.progress) | dump PNG (+ -window, -overlay,
                            -screen = as composited on screen, Metal HUD included) |
-                           settings TAB|close | settings-dump PNG | set KEY VALUE | restart
+                           settings TAB|close | settings-dump PNG | set KEY VALUE | restart |
+                           update check|startup|state | update press download|skip|later|ok |
+                           update dump PNG (+ -with-vm = beside the VM window, as on screen)
 
     Window keys: Ctrl+Cmd+F fullscreen, Ctrl+Cmd+G capture/release the mouse, Ctrl+Option release,
     Ctrl+Cmd+P Metal Performance HUD on/off (Settings > Display).

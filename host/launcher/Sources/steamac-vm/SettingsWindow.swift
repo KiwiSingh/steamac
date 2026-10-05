@@ -62,7 +62,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         /// Fixed content height per tab (grouped forms scroll beyond it).
         var height: CGFloat {
             switch self {
-            case .general: return 760
+            case .general: return 830
             case .display: return 600
             case .mouse: return 470
             case .controller: return 620
@@ -298,6 +298,15 @@ private struct GeneralTab: View {
             }
             Section {
                 CrashReportsToggle(settings: settings, showsApplies: true)
+                Toggle(isOn: $settings.checkForUpdates) {
+                    Label2(title: "Check for updates at startup",
+                           detail: "Asks GitHub (api.github.com) for the newest release, at most every 6 hours; only the app "
+                               + "version is sent. "
+                               + (CrashReporting.buildKind == .development
+                                   ? "This development build never checks at startup; FX Steam Launcher > Check for Updates… does."
+                                   : "FX Steam Launcher > Check for Updates… checks at any time."),
+                           now: true)
+                }
                 Toggle(isOn: $settings.perfStats) {
                     Label2(title: "Log frame-pacing statistics",
                            detail: "Every 5 s: guest flush and on-screen frame intervals, latency, dropped frames.",
