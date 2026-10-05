@@ -3,10 +3,11 @@
 # steam.service copies this file over ~/.local/share/Steam/RUNSTEAM.sh on every
 # start (cp -f, so it also replaces the copy unpacked from steam.tar.zst).
 #
-# Default: byte-for-byte stock behaviour — stock flags (-deckard, -vrgamepadui)
-# and the stock client branch from package/beta (the Frame tarball ships
-# linux_arm64_beta_<hash>, the Steam Frame client beta; logging in and running
-# Proton games works with it in the VM).
+# Default (once a Steam account is remembered): byte-for-byte stock behaviour —
+# stock flags (-deckard, -vrgamepadui) and the stock client branch from
+# package/beta (the Frame tarball ships linux_arm64_beta_<hash>, the Steam
+# Frame client beta; running Proton games works with it in the VM). Before
+# that: sign-in mode (below).
 #
 # Opt-in: /etc/steamac/steam-client-branch (first word, e.g. steamdeck_stable
 # or steamdeck_publicbeta; lives on the /etc overlay of var-X) switches the
@@ -17,6 +18,20 @@
 # Frame-only flags -deckard (Steam Frame client personality) and -vrgamepadui
 # (VR gamepad UI) are dropped. Remove the file and package/beta to go back.
 # Same flags as the hashtagbasit/SteamOS-ARM-Handhelds handheld RUNSTEAM.sh.
+#
+# Sign-in mode: while no Steam account is remembered (config/loginusers.vdf has
+# no user with "AutoLogin"/"AllowAutoLogin" "1": fresh disk, signed out, or
+# signed in without "Remember me") and the client CDN is reachable, Steam starts
+# without -deckard/-vrgamepadui. The Frame client's sign-in screen (ON_FRAME)
+# only offers headset flows that cannot work in a VM: "Tap to confirm" pairs
+# with the phone over Bluetooth LE, "Scan QR code" opens a VR popup (fails with
+# "no VRPooledPopupStore"), leaving only the password form. Without -deckard
+# the bootstrapper itself switches package/beta to steamdeck_stable (the public
+# arm64 Steam Deck client), whose sign-in screen shows an on-screen QR code next
+# to the password form. Once an account is remembered, a watcher restarts
+# steam.service; that start has the stock flags again and -deckard makes the
+# bootstrapper switch back to the Frame client beta (one client download each
+# way, shown by the FX boot overlay).
 
 # verbose
 #export PS4='${LINENO}: '
@@ -56,6 +71,22 @@ if [ "${STEAMROOT}" == "${SIDELOADED_STEAMROOT}" ]; then
   export SUPPRESS_STEAM_OVERLAY=1
 fi
 # ==========================================================================================
+
+# steamac: sign-in mode (see header).
+STEAMAC_SIGNIN=0
+steamac_account_remembered() {
+  grep -Eqs '"(Allow)?AutoLogin"[[:space:]]+"1"' "${STEAMROOT}/config/loginusers.vdf"
+}
+if [[ "${IS_SIDELOAD}" == "0" && -z "${STEAMAC_BRANCH}" ]] && ! steamac_account_remembered; then
+  if curl -fsS -m 5 -o /dev/null --head https://client-update.steamstatic.com/steam_client_steamdeck_stable_linuxarm64; then
+    echo "steamac: no remembered Steam account: sign-in mode (Steam Deck client, on-screen QR code)"
+    STEAMAC_SIGNIN=1
+    STEAMAC_DECKARD_ARG=()
+    STEAMAC_VRUI_ARG=()
+  else
+    echo "steamac: no remembered Steam account, but client-update.steamstatic.com is unreachable: Frame client" >&2
+  fi
+fi
 
 STEAM_RT_ARM64=steamrtarm64
 STEAM_SDK_ARM64=linuxarm64
@@ -155,6 +186,23 @@ if [[ "${IS_SIDELOAD}" == "0" && -n "${STEAMAC_BRANCH}" ]]; then
     mkdir -p "${STEAMROOT}/package"
     printf '%s\n' "${STEAMAC_BRANCH}" > "${_beta_file}"
   fi
+fi
+
+# steamac: sign-in mode (see header). Only under steam.service (INVOCATION_ID),
+# which restarts Steam with the stock flags; the watcher ends with Steam ($$ is
+# Steam's PID after the exec below).
+if [[ "${STEAMAC_SIGNIN}" == "1" && -n "${INVOCATION_ID:-}" ]]; then
+  (
+    while kill -0 $$ 2>/dev/null; do
+      if steamac_account_remembered; then
+        sleep 5 # let Steam finish writing its config
+        kill -0 $$ 2>/dev/null || exit 0
+        echo "steamac: Steam account remembered: restarting Steam with the Steam Frame client" >&2
+        exec systemctl --user --no-block restart steam.service
+      fi
+      sleep 3
+    done
+  ) </dev/null >/dev/null &
 fi
 
 exec "${STEAM_COMMAND[@]}" >"${HOME}/.local/share/Steam/logs/steam_output.log" 2>&1

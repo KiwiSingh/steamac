@@ -9,9 +9,10 @@
 #  - /usr/lib/steamac/steam-gfx-env points the stock 4 GiB VRAM report limit
 #    at the Venus device instead of the Adreno device ID.
 #  - RUNSTEAM.sh is copied with cp -f instead of cp -u, so the steamac version
-#    (stock by default; opt-in public client branch via
-#    /etc/steamac/steam-client-branch, see that file) also replaces the copy
-#    unpacked from the Frame steam.tar.zst, which can be newer.
+#    (stock flags once an account is remembered; before that sign-in mode with
+#    the Steam Deck client and its on-screen QR code; opt-in public client
+#    branch via /etc/steamac/steam-client-branch; see that file) also replaces
+#    the copy unpacked from the Frame steam.tar.zst, which can be newer.
 #  - TimeoutStopSec=10 instead of 20: Steam exits on SIGTERM in 1-2 s here
 #    (state saved); the cap keeps a wedged client from holding a power-off
 #    past the 15 s budget (see gamescope-session.service for the rest).
