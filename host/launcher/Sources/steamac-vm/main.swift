@@ -159,27 +159,17 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     /// Dock icon click / opening the app again: resume a suspended VM.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard let suspender, suspender.suspended else { return true }
-        suspender.resume(origin: "dock")
+        suspender.resume(origin: "reopen: Dock icon or opening the app")
         return false
     }
 
     /// Dock "Quit" / Cmd+Q / logout: shut the guest down instead of killing it. While suspended
-    /// a user's Quit asks first (the suspended state is lost); logout / restart / shutdown of the
-    /// Mac does not.
+    /// a user's Quit asks first (the suspended state is lost; SuspendController.askQuit, answered
+    /// later without a modal loop); logout / restart / shutdown of the Mac does not.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if requestedAt == nil, let suspender, suspender.suspended, !Lifecycle.quitBySystem {
-            let alert = NSAlert()
-            alert.messageText = "SteamOS is suspended"
-            alert.informativeText = "Quitting FX Steam Launcher shuts SteamOS down: it resumes and shuts down cleanly. "
-                + "The suspended state (and a running game's unsaved progress) is not kept."
-            alert.addButton(withTitle: "Shut Down SteamOS")
-            alert.addButton(withTitle: "Cancel")
-            NSApp.activate()
-            guard alert.runModal() == .alertFirstButtonReturn else {
-                log("quit while suspended: cancelled")
-                return .terminateCancel
-            }
-            log("quit while suspended: shutting SteamOS down")
+            suspender.askQuit { [weak self] in self?.requestShutdown() }
+            return .terminateCancel
         }
         requestShutdown()
         return .terminateCancel
@@ -270,8 +260,9 @@ do {
                           mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.xbox360Pad() : nil)
     }
 
+    let clockPort = try ClockPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    inputs: inputs, netSocket: Supervisor.netSocket)
+                    clockPort: clockPort, inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
     let sound = SoundControl()
     if vm.hasSound {
@@ -362,18 +353,20 @@ do {
     wc.onSuspendRequest = { lifecycle.menuSuspend() }
     wc.attach(progress: progress)
     let ctxId = vm.ctx
-    let stall = StallMonitor(view: wc.stallView) {
+    let gpuCounters: () -> StallMonitor.Counters? = {
         var ctrl: UInt64 = 0, ring: UInt64 = 0
         let r = krun_gpu_get_activity(ctxId, &ctrl, &ring)
         return r == 0 || r == -ENOTSUP ? (ctrl, ring) : nil
     }
+    let stall = StallMonitor(view: wc.stallView, sample: gpuCounters)
     stall.onNotResponding = { CrashReporting.stallNotResponding(seconds: $0) }
     wc.attach(stall: stall)
     // Settings > General "Pause the game" in the background; no GPU-idle card while frozen.
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
     gamePause.onConfirmedChange = { [weak wc] in wc?.gamePaused($0) }
-    let suspender = SuspendController(ctx: vm.ctx, window: wc, presenter: presenter, stall: stall, gamePause: gamePause)
+    let suspender = SuspendController(ctx: vm.ctx, clock: clockPort, window: wc, presenter: presenter, stall: stall,
+                                      gamePause: gamePause, gpuCounters: gpuCounters)
     suspender.onShutdown = { lifecycle.requestShutdown() }
     suspender.onSuspendedChange = { suspended in
         if suspended {

@@ -51,8 +51,13 @@
 //!   FX_PROGRESS_STEAM_LOG=<path>  bootstrapper log to follow
 //!   FX_PROGRESS_FORCE=1       ignore the once-per-boot `ready` marker
 //!   FX_PROGRESS_STEAM_ROOT=<dir>  Steam root for appmanifest lookup (default ~/.local/share/Steam)
+//!
+//! `fx-progress-agent clock-sync` is a separate mode, run as root by
+//! fx-clock-sync.service: it steps the wall clock after the launcher resumes a
+//! suspended VM (clock.rs, port fx.clock).
 
 mod alive;
+mod clock;
 mod appname;
 mod codec;
 mod collect;
@@ -363,6 +368,9 @@ fn report_boot(
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("clock-sync") {
+        std::process::exit(clock::run());
+    }
     let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
     let port = match Port::open(&port_path) {
         Ok(p) => p,

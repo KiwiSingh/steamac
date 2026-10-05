@@ -32,6 +32,10 @@ AGENT=/work/cache/progress-agent/fx-progress-agent
 install -m 0755 "$AGENT" "$ST/usr/lib/steamac/fx-progress-agent"
 [[ -L $ST/usr/lib/systemd/user/gamescope-session.target.wants/fx-progress-agent.service ]] \
     || { echo "[layer] fx-progress-agent.service is not wanted by gamescope-session.target" >&2; exit 1; }
+# Same binary, root mode: started by udev for the launcher's fx.clock port.
+grep -q 'fx-progress-agent clock-sync' "$ST/usr/lib/systemd/system/fx-clock-sync.service" \
+    && grep -q 'fx-clock-sync.service' "$ST/usr/lib/udev/rules.d/70-fx-progress.rules" \
+    || { echo "[layer] fx-clock-sync.service / its udev rule missing" >&2; exit 1; }
 
 # Sanity: the pieces the initramfs and the A/B flow depend on.
 for f in usr/bin/splctl usr/lib/rauc/post-install.sh usr/lib/steamac/kernelsetup.sh \

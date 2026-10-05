@@ -11,14 +11,19 @@ import QuartzCore
 /// state (virglrenderer, MoltenVK, Metal) cannot be saved, so the suspended state lives only as
 /// long as this process. Resume (Dock icon, the menu-bar item, the app menu, opening the app
 /// again) shows the window, continues the vCPUs and restores the mouse capture; a "Resuming…"
-/// chip stays up until the guest's next frame. The guest's monotonic clock does not see the
-/// suspended time (libkrun shifts the virtual counter); its wall clock is behind until NTP.
+/// chip stays up until the guest's next frame, or 0.5 s if the guest does no GPU work (an idle
+/// Steam UI draws nothing). The guest's monotonic clock does not see the
+/// suspended time (libkrun shifts the virtual counter); its wall clock is set right after the
+/// resume from this process's clock (ClockPort → fx-clock-sync.service in the guest).
 final class SuspendController: NSObject, NSMenuDelegate {
     private let ctx: UInt32
+    private let clock: ClockPort?
     private weak var window: WindowController?
     private let presenter: Presenter
     private let stall: StallMonitor
     private let gamePause: GamePause
+    /// krun_gpu_get_activity (nil: no counters).
+    private let gpuCounters: () -> StallMonitor.Counters?
     var onShutdown: (() -> Void)?
     /// After a suspend (true) / resume (false).
     var onSuspendedChange: ((Bool) -> Void)?
@@ -31,16 +36,22 @@ final class SuspendController: NSObject, NSMenuDelegate {
     private var wasFullScreen = false
     private var statusItem: NSStatusItem?
     private var memoryItem: NSMenuItem?
-    private var chipFallback: DispatchWorkItem?
-    /// Longest the "Resuming…" chip waits for a guest frame (an idle Steam UI sends none).
+    private var chipTimers: [DispatchWorkItem] = []
+    private var chipShownAt: CFTimeInterval = 0
+    /// Longest the "Resuming…" chip waits for a guest frame.
     static let chipTimeout: TimeInterval = 2.5
+    /// Without GPU work by then the guest is idle (a still Steam UI draws nothing): hide.
+    static let chipIdleCheck: TimeInterval = 0.5
 
-    init(ctx: UInt32, window: WindowController, presenter: Presenter, stall: StallMonitor, gamePause: GamePause) {
+    init(ctx: UInt32, clock: ClockPort?, window: WindowController, presenter: Presenter, stall: StallMonitor,
+         gamePause: GamePause, gpuCounters: @escaping () -> StallMonitor.Counters?) {
         self.ctx = ctx
+        self.clock = clock
         self.window = window
         self.presenter = presenter
         self.stall = stall
         self.gamePause = gamePause
+        self.gpuCounters = gpuCounters
     }
 
     /// Freeze the VM and hide the window. Returns false if it could not be paused.
@@ -64,7 +75,7 @@ final class SuspendController: NSObject, NSMenuDelegate {
         log("suspend: VM paused in \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms (\(origin)); "
             + "\(SuspendController.memoryText() ?? "memory unknown")")
         wc.holdGuestSize = true
-        wc.resumeChip.hide(animated: false)
+        endChip(nil)
         wasFullScreen = wc.window.styleMask.contains(.fullScreen)
         if wasFullScreen {
             // An ordered-out full-screen window would leave its empty Space behind.
@@ -85,24 +96,32 @@ final class SuspendController: NSObject, NSMenuDelegate {
     func resume(origin: String) {
         guard suspended, let wc = window else { return }
         let seconds = suspendedAt.map { Date().timeIntervalSince($0) } ?? 0
+        if quitPrompt != nil {
+            log("quit while suspended: prompt closed, SteamOS resumes (\(origin))")
+            closeQuitPrompt()
+        }
         removeStatusItem()
         wc.onDidExitFullScreen = nil
+        endChip(nil)
         wc.resumeChip.show()
-        chipFallback?.cancel()
-        presenter.onNextFrame = { [weak self, weak wc] in
-            self?.chipFallback?.cancel()
-            wc?.resumeChip.hide()
+        chipShownAt = CACurrentMediaTime()
+        presenter.onNextFrame = { [weak self] in self?.endChip("first guest frame") }
+        // The guest is still frozen: these are the counters it left off with.
+        let before = gpuCounters()
+        let idle = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let now = self.gpuCounters()
+            if before?.ctrl == now?.ctrl && before?.ring == now?.ring { self.endChip("guest GPU idle") }
         }
-        let fallback = DispatchWorkItem { [weak self, weak wc] in
-            self?.presenter.onNextFrame = nil
-            wc?.resumeChip.hide()
-        }
-        chipFallback = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.chipTimeout, execute: fallback)
+        let timeout = DispatchWorkItem { [weak self] in self?.endChip("timeout") }
+        chipTimers = [idle, timeout]
+        DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.chipIdleCheck, execute: idle)
+        DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.chipTimeout, execute: timeout)
         wc.show()
         if wasFullScreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
         let r = krun_resume(ctx)
         if r != 0 { log("resume: krun_resume failed: \(r) (\(String(cString: strerror(-r))))") }
+        else if let clock, !clock.sendTime() { log("resume: cannot send the time to the guest (fx.clock)") }
         suspended = false
         suspendedAt = nil
         wc.holdGuestSize = false
@@ -111,6 +130,83 @@ final class SuspendController: NSObject, NSMenuDelegate {
         if wasCaptured { wc.grabPointer() }
         log("resume: VM running again after \(String(format: "%.1f", seconds)) s suspended (\(origin))")
         onSuspendedChange?(false)
+    }
+
+    /// Take the "Resuming…" chip down (`why` nil: without animation or log, e.g. on suspend).
+    private func endChip(_ why: String?) {
+        chipTimers.forEach { $0.cancel() }
+        chipTimers = []
+        presenter.onNextFrame = nil
+        guard let wc = window else { return }
+        guard let why else { return wc.resumeChip.hide(animated: false) }
+        wc.resumeChip.hide()
+        log("resume: \"Resuming…\" chip hidden after \(Int((CACurrentMediaTime() - chipShownAt) * 1000)) ms (\(why))")
+    }
+
+    // MARK: Quit while suspended
+
+    private var quitPrompt: NSAlert?
+    private var quitConfirmed: (() -> Void)?
+
+    /// Cmd+Q / Dock Quit while suspended: "SteamOS is suspended" with Shut Down SteamOS / Cancel.
+    /// A regular window, not NSAlert.runModal: the main queue keeps running (signals, the
+    /// supervisor's reopen, control FIFO), and a resume by any other path closes it.
+    func askQuit(onConfirm: @escaping () -> Void) {
+        quitConfirmed = onConfirm
+        NSApp.activate()
+        if let shown = quitPrompt { return shown.window.makeKeyAndOrderFront(nil) }
+        let alert = NSAlert()
+        alert.messageText = "SteamOS is suspended"
+        alert.informativeText = "Quitting FX Steam Launcher shuts SteamOS down: it resumes and shuts down cleanly. "
+            + "The suspended state (and a running game's unsaved progress) is not kept."
+        let shutdown = alert.addButton(withTitle: "Shut Down SteamOS")
+        shutdown.target = self
+        shutdown.action = #selector(quitPromptShutdown)
+        let cancel = alert.addButton(withTitle: "Cancel")
+        cancel.target = self
+        cancel.action = #selector(quitPromptCancel)
+        alert.layout()
+        (alert.window as? NSPanel)?.hidesOnDeactivate = false
+        alert.window.center()
+        alert.window.makeKeyAndOrderFront(nil)
+        quitPrompt = alert
+        log("quit while suspended: asking (Shut Down SteamOS / Cancel)")
+    }
+
+    private func closeQuitPrompt() {
+        quitPrompt?.window.orderOut(nil)
+        quitPrompt = nil
+        quitConfirmed = nil
+    }
+
+    @objc private func quitPromptShutdown() {
+        let confirmed = quitConfirmed
+        closeQuitPrompt()
+        log("quit while suspended: shutting SteamOS down")
+        confirmed?()
+    }
+
+    @objc private func quitPromptCancel() {
+        closeQuitPrompt()
+        log("quit while suspended: cancelled; SteamOS stays suspended")
+    }
+
+    /// Control FIFO `quit-prompt shutdown|cancel|dump PATH`: press a button / PNG of the prompt.
+    func controlQuitPrompt(_ args: [String]) {
+        guard let alert = quitPrompt else { return log("control: no quit prompt open") }
+        switch args.first {
+        case "shutdown": alert.buttons[0].performClick(nil)
+        case "cancel": alert.buttons[1].performClick(nil)
+        case "dump":
+            let path = args.dropFirst().first ?? "quit-prompt.png"
+            guard let view = alert.window.contentView?.superview ?? alert.window.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            if let png = rep.representation(using: .png, properties: [:]), (try? png.write(to: URL(fileURLWithPath: path))) != nil {
+                log("control: quit prompt dumped to \(path) (window \(alert.window.windowNumber), visible \(alert.window.isVisible))")
+            }
+        default: log("control: quit-prompt shutdown|cancel|dump PATH")
+        }
     }
 
     // MARK: menu-bar item
@@ -204,8 +300,41 @@ final class SuspendController: NSObject, NSMenuDelegate {
     }
 }
 
+/// The `fx.clock` virtio-console port (host → guest only): `time <unix_ns>` after every resume.
+/// The guest's root service fx-clock-sync (guest/progress-agent/src/clock.rs) steps its wall
+/// clock forward to it; the monotonic clock keeps hiding the suspended time.
+final class ClockPort {
+    static let name = "fx.clock"
+    /// Handed to libkrun: host → guest data is read from here.
+    let guestInputFd: Int32
+    /// Handed to libkrun: the guest never writes; /dev/null.
+    let guestOutputFd: Int32
+    private let writeFd: Int32
+
+    init() throws {
+        var p: [Int32] = [0, 0]
+        guard pipe(&p) == 0 else { throw OptionError("pipe: \(String(cString: strerror(errno)))") }
+        guestInputFd = p[0]; writeFd = p[1]
+        guestOutputFd = open("/dev/null", O_WRONLY | O_CLOEXEC)
+        guard guestOutputFd >= 0 else { throw OptionError("/dev/null: \(String(cString: strerror(errno)))") }
+        for fd in p { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        // Never block the main thread if the guest does not read (no service, older layer).
+        _ = fcntl(writeFd, F_SETFL, fcntl(writeFd, F_GETFL) | O_NONBLOCK)
+    }
+
+    /// This process's wall clock, taken right before the write; false if the pipe did not take it.
+    func sendTime() -> Bool {
+        var ts = timespec()
+        clock_gettime(CLOCK_REALTIME, &ts)
+        let bytes = Array("time \(Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec))\n".utf8)
+        var n: Int
+        repeat { n = Darwin.write(writeFd, bytes, bytes.count) } while n < 0 && errno == EINTR
+        return n == bytes.count
+    }
+}
+
 /// "Resuming…" chip at the top of the VM picture (FX overlay style), from Resume until the
-/// guest's next frame.
+/// guest's next frame (0.5 s while the guest's GPU is idle, 2.5 s at most).
 final class ResumeChipView: NSView {
     private let chip = CALayer()
     private let dot = CALayer()

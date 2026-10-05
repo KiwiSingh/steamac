@@ -3,3 +3,7 @@
 # session user's fx-progress-agent. The /dev/virtio-ports/fx.progress symlink
 # itself comes from systemd's stock 50-udev-default.rules.
 SUBSYSTEM=="virtio-ports", ATTR{name}=="fx.progress", MODE="0666"
+# steamac: the launcher's port "fx.clock" (host -> guest wall-clock time after
+# a resume from suspend) is read by the root service fx-clock-sync.service;
+# the device node keeps the default root-only mode.
+SUBSYSTEM=="virtio-ports", ATTR{name}=="fx.clock", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fx-clock-sync.service"

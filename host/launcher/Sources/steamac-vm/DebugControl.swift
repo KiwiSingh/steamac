@@ -26,10 +26,11 @@ import Foundation
 ///   close                 the window's close button (Settings > General "When closing the window")
 ///   suspend | resume      menu Suspend / Resume
 ///   reopen                Dock icon click / opening the app again
-///   quit                  Quit (Cmd+Q); while suspended this opens the confirmation alert, whose
-///                         modal loop blocks further control commands until it is answered by hand
+///   quit                  Quit (Cmd+Q); while suspended this opens the "SteamOS is suspended" prompt
+///   quit-prompt shutdown|cancel|dump PATH   press the prompt's button / PNG of the prompt
 ///   status open|close|dump PATH   open / close the menu-bar item's menu while suspended; log its
 ///                         items and write a PNG of its button
+///   status item TITLE     choose the menu-bar item's menu entry TITLE (e.g. Resume)
 ///   report …              Report a Problem sheet (ReportControl: open, fill, include, preview, send,
 ///                         retry, close, dsn, dump)
 enum DebugControl {
@@ -153,8 +154,16 @@ enum DebugControl {
         case "reopen": _ = lifecycle.applicationShouldHandleReopen(NSApp, hasVisibleWindows: wc.window.isVisible)
         case "quit":
             DispatchQueue.main.async { NSApp.terminate(nil) }
+        case "quit-prompt": lifecycle.suspender?.controlQuitPrompt(args)
         case "status":
             if args.first == "close" { lifecycle.suspender?.statusMenu?.cancelTracking() }
+            else if args.first == "item" {
+                let title = args.dropFirst().joined(separator: " ")
+                guard let menu = lifecycle.suspender?.statusMenu, let i = menu.items.firstIndex(where: { $0.title == title }) else {
+                    log("control: no menu-bar item entry \"\(title)\""); break
+                }
+                menu.performActionForItem(at: i)
+            }
             else if args.first == "dump" { lifecycle.suspender?.dumpStatusItem(to: args.dropFirst().first ?? "status-item.png") }
             // Async: the menu tracks in a modal loop.
             else { DispatchQueue.main.async { lifecycle.suspender?.statusButton?.performClick(nil) } }

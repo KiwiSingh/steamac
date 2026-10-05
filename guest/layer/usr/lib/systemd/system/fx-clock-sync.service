@@ -1,0 +1,23 @@
+# steamac: wall clock after an in-memory suspend of the VM. The launcher hides
+# the suspended time from the guest's monotonic clock, so the wall clock falls
+# behind by it; after every resume the launcher writes its own time to the
+# virtio-console port fx.clock and this service steps CLOCK_REALTIME to it
+# (forward only, monotonic clocks untouched; timesyncd resynchronises after
+# the step). See guest/progress-agent/src/clock.rs.
+# Started by udev when the port appears (70-fx-progress.rules); launchers
+# without suspend have no such port and never start it.
+[Unit]
+Description=FX Steam Launcher wall clock after suspend
+ConditionPathExists=/dev/virtio-ports/fx.clock
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamac/fx-progress-agent clock-sync
+Restart=on-failure
+RestartSec=2
+CapabilityBoundingSet=CAP_SYS_TIME
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
