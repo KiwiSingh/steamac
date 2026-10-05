@@ -61,9 +61,9 @@ At VM boot, the selected connected GameController profile determines the virtio-
 - DualShock profile: Sony `054c:09cc` (a representative DualShock 4 profile, not USB hardware discovery).
 - Other controllers: their reported name and a Steamac virtual ID `1af4:0010`; they are never assigned a fictitious Xbox 360 ID. GameController does not expose arbitrary hardware VID/PID.
 
-Connect the controller **before booting**. No guest gamepad is created if none is connected. Virtio-input devices are fixed at boot. A different model attached later is not routed under the previous model's identity; restart the VM. Selecting another controller in Settings marks a restart pending. Reconnecting the same profile is supported.
+Connect the controller **before booting**. The launcher finishes AppKit startup and allows up to two seconds for asynchronous controller discovery before creating the guest device. No guest gamepad is created if none is connected. Virtio-input devices are fixed at boot. A different model attached later is not routed under the previous model's identity; restart the VM. Selecting another controller in Settings marks a restart pending. Reconnecting the same profile is supported.
 
-The bridge covers buttons, sticks, triggers and D-pad with standard Linux button positions (square/X is west, triangle/Y is north). It is **not raw USB/HID passthrough**. Gyro, touchpad, adaptive triggers, rumble, audio and LED output are not implemented. Guest Steam/SDL recognition still needs a real-controller runtime check.
+The bridge covers buttons, sticks, triggers and D-pad with standard Linux button positions (square/X is west, triangle/Y is north). It is **not raw USB/HID passthrough**. Gyro, touchpad, adaptive triggers, rumble, audio and LED output are not implemented. A Bluetooth DualSense was verified locally: Linux exposes Sony `054c:0ce6` with `js0`/evdev, Steam identifies it as a PS5 Controller, and the setup screen shows PlayStation prompts. Rumble and advanced HID features remain unsupported.
 
 ## Validation
 

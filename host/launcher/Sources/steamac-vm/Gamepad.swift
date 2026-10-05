@@ -67,6 +67,18 @@ final class GamepadBridge {
         connected.first { identifier(of: $0) == settings.controllerID } ?? connected.first
     }
 
+    /// Controller enumeration is asynchronous at process launch. Let connection
+    /// notifications arrive before fixing the guest's controller identity.
+    static func prepareForBoot() {
+        GCController.shouldMonitorBackgroundEvents = true
+        _ = GCController.controllers()
+        let deadline = Date().addingTimeInterval(2)
+        while connected.isEmpty && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        log("gamepad discovery: \(connected.count) connected controller(s)")
+    }
+
     /// Extended gamepads in connection order.
     static var connected: [GCController] {
         GCController.controllers().filter { $0.extendedGamepad != nil }

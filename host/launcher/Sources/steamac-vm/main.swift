@@ -226,6 +226,10 @@ do {
 
     var inputs: VMInputs?
     if !options.headless {
+        // GameController publishes connected devices after AppKit startup.
+        let app = SteamacApplication.shared
+        app.finishLaunching()
+        if options.gamepad { GamepadBridge.prepareForBoot() }
         inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(),
                           mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.controllerPad(settings: settings) : nil)
     }
