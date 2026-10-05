@@ -1,0 +1,16 @@
+# The initramfs binds a synthesized cmdline over /proc/cmdline. Linux rejects
+# unprivileged procfs mounts when every visible procfs has covered entries.
+# Keep an intact procfs available so Flatpak/bubblewrap can create their own
+# procfs in a user/PID namespace, while SteamOS retains its synthesized cmdline.
+[Unit]
+Description=Intact procfs for Steamac application sandboxes
+Before=systemd-user-sessions.service
+
+[Mount]
+What=proc
+Where=/run/steamac/proc
+Type=proc
+Options=nosuid,nodev,noexec
+
+[Install]
+WantedBy=multi-user.target

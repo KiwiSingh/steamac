@@ -92,3 +92,9 @@ Choose **Switch to Desktop** in Steam to start Plasma, then use **Return to Gami
 Upgrade the launcher app to `v1.2.1-preview.1` or later and reboot the VM; the existing SteamOS disk and game library are reused. This fix was tested with the current Steam Frame image on the owner’s M3 Mac. Other image revisions need testing.
 
 Desktop mouse input uses the relative Gamescope path in Auto mode. Coordinates are mapped to the nested 1280×800 desktop surface, including the letterboxing Gamescope applies in fullscreen or differently sized windows. This fixes clicks sticking at screen edges. Keep Mouse → Auto selected for the bundled nested desktop; explicit Tablet mode is for a compositor that receives tablet events directly.
+
+## Flatpak app startup
+
+The initramfs binds a synthesized command line over `/proc/cmdline` for SteamOS slot detection. Linux prevents an unprivileged user namespace from mounting procfs when no intact procfs is visible in its parent mount namespace. This caused Chromium and Vesktop to exit during Flatpak sandbox setup.
+
+`run-steamac-proc.mount`, enabled by the guest layer’s multi-user target, supplies a separate intact procfs at `/run/steamac/proc` with `nosuid,nodev,noexec`. Flatpak can mount its sandbox’s procfs without removing SteamOS’s command-line overlay or disabling the sandbox. See [Linux procfs mount restrictions](https://www.kernel.org/doc/html/latest/filesystems/proc.html). Version `v1.2.3-preview.1` includes the persistent fix.
