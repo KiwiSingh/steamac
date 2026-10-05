@@ -1,0 +1,58 @@
+From 6369a78baf5691e573050e3b30191eee457022f5 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@localhost>
+Date: Mon, 5 Oct 2026 19:30:00 +0300
+Subject: [PATCH 19/19] MSL: Access vector components behind buffer device
+ addresses as scalars
+
+Atomics on a vector component reached through a buffer device address did not compile:
+'atomic_fetch_add_explicit((device atomic_uint*)&region_buffer->region_count[0u], ...)' ("address of
+vector element requested"). vkd3d-proton creates such a pipeline (cs_emit_nv_memory_decompression_regions,
+'atomicAdd(region_buffer.region_count.x, 1)' on a scalar-layout uvec3) on every D3D12 device creation, so
+D3D12CreateDevice failed with E_FAIL.
+
+Vector components of SSBOs and workgroup memory are already accessed through a scalar pointer
+('((device uint*)&v)[0u]'), which an atomic can take the address of and which keeps a component store from
+writing the whole vector. That cast is chosen by the effective storage class of the access chain base, and
+for a physical pointer this was the storage class of the variable the pointer value was loaded from (push
+constant, function variable). Report PhysicalStorageBuffer for physical pointers and cast their vector
+components the same way.
+---
+ spirv_glsl.cpp | 7 +++++++
+ spirv_msl.cpp  | 3 ++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/spirv_glsl.cpp b/spirv_glsl.cpp
+index f9ce6cb..26721bc 100644
+--- a/spirv_glsl.cpp
++++ b/spirv_glsl.cpp
+@@ -20129,6 +20129,13 @@ uint32_t CompilerGLSL::get_accumulated_member_location(const SPIRVariable &var,
+ 
+ StorageClass CompilerGLSL::get_expression_effective_storage_class(uint32_t ptr)
+ {
++	// A physical pointer carries its storage class in its type. The variable it was loaded from
++	// (a push constant, a function variable holding the pointer value, ...) says nothing about the
++	// memory it points to.
++	auto &ptr_type = expression_type(ptr);
++	if (ptr_type.pointer && ptr_type.storage == StorageClassPhysicalStorageBuffer)
++		return StorageClassPhysicalStorageBuffer;
++
+ 	auto *var = maybe_get_backing_variable(ptr);
+ 
+ 	// If the expression has been lowered to a temporary, we need to use the Generic storage class.
+diff --git a/spirv_msl.cpp b/spirv_msl.cpp
+index 3a1ba85..12cc966 100644
+--- a/spirv_msl.cpp
++++ b/spirv_msl.cpp
+@@ -10710,7 +10710,8 @@ bool CompilerMSL::prepare_access_chain_for_scalar_access(std::string &expr, cons
+ 	// For packed types, we could technically omit this if we know the reference does not have to turn into a pointer
+ 	// of some kind, but that requires external analysis passes to figure out, and
+ 	// this case is likely rare enough that we don't need to bother.
+-	if (storage == StorageClassStorageBuffer || storage == StorageClassWorkgroup)
++	if (storage == StorageClassStorageBuffer || storage == StorageClassWorkgroup ||
++	    storage == StorageClassPhysicalStorageBuffer)
+ 	{
+ 		const char *addr_space = storage == StorageClassWorkgroup ? "threadgroup" : "device";
+ 		expr = join("((", addr_space, " ", type_to_glsl(type), "*)&", enclose_expression(expr), ")");
+-- 
+2.50.1 (Apple Git-155)
+

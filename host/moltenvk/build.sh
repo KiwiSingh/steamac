@@ -276,6 +276,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         zeroed temporary), texture atomic_store() without '.x' and with the value first,"
 	echo "         bounds use the ArrayStride of the array type and the offset of a runtime array, and"
 	echo "         every use of a bounds-checked access chain is checked (read-modify-write stores)"
+	echo "  0019 = steamac: vector components behind buffer device addresses accessed through a scalar"
+	echo "         pointer, like SSBO components (atomics took the address of a vector element: vkd3d-proton's"
+	echo "         device-creation pipeline cs_emit_nv_memory_decompression_regions failed to compile)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

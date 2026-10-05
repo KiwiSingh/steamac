@@ -34,6 +34,8 @@
 #    strides, static/dynamic/per instance/zero divisor, attributes past the stride, attributes of undescribed
 #    bindings, with and without geometry shader emulation), one process per case; points check the
 #    elements read.
+# 11. device_address.c: atomics on vector components behind buffer device addresses (vkd3d-proton's
+#    scalar-layout uvec3 counter, std430 uvec4 with a dynamic component, ivec2), values read back.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -135,3 +137,7 @@ fi
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/vertex_input.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/vertex_input"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/vertex_input" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/device_address.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/device_address"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/device_address" "$gspv"

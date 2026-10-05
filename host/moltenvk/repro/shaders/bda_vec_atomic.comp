@@ -1,0 +1,39 @@
+#version 450
+// Atomics on vector components behind buffer device addresses (device_address.c).
+// The scalar-layout uvec3 counter, reached through a pointer value in a function variable, is
+// vkd3d-proton's memory_regions_t (cs_emit_nv_memory_decompression_regions.comp, created on every
+// D3D12 device creation).
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 32) in;
+
+layout(buffer_reference, scalar) buffer packed_t {
+	uvec3 count;
+	uint reserved;
+	uint slots[];
+};
+
+layout(buffer_reference, std430) buffer aligned_t {
+	uvec4 counters;
+	ivec2 low;
+};
+
+layout(push_constant) uniform pc_t {
+	uint64_t packed_raw;
+	aligned_t aligned;
+};
+
+void main()
+{
+	uint id = gl_GlobalInvocationID.x;
+
+	packed_t p = packed_t(packed_raw);
+	uint slot = atomicAdd(p.count.x, 1u);
+	p.slots[slot] = id + 1u;
+	atomicMax(p.count.z, id);
+
+	atomicAdd(aligned.counters[id & 3u], 1u);
+	atomicMin(aligned.low.y, -int(id));
+}
