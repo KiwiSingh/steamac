@@ -160,14 +160,38 @@ enum SettingsSelfTest {
                 }
                 let selected = popup.title
                 let tabShot = sw.snapshot()
+                func itemTitles() -> [String] { popup.menu?.items.map { $0.isSeparatorItem ? "----" : $0.title } ?? [] }
+                // SwiftUI fills the picker's menu only when it opens. Read the items the moment
+                // tracking begins, then close it. While another app is frontmost (the Mac in use)
+                // an open can fail — tracking never starts, or ends at once when the other app
+                // takes activation — so re-activate and retry a few times.
                 var titles: [String] = []
-                let timer = Timer(timeInterval: 0.5, repeats: false) { _ in
-                    titles = popup.menu?.items.map { $0.isSeparatorItem ? "----" : $0.title } ?? []
-                    popup.menu?.cancelTracking()
+                var attempts = 0
+                let nc = NotificationCenter.default
+                let began = nc.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { n in
+                    guard let menu = n.object as? NSMenu, menu === popup.menu else { return }
+                    titles = itemTitles()
+                    DispatchQueue.main.async { menu.cancelTracking() }
                 }
-                RunLoop.main.add(timer, forMode: .common)
                 DispatchQueue.main.async {
-                    popup.performClick(nil)   // returns when the timer closes the menu
+                    while titles.isEmpty && attempts < 4 {
+                        attempts += 1
+                        NSApp.activate()
+                        sw.window.makeKeyAndOrderFront(nil)
+                        // Safety net: never leave the menu open if the notification was missed.
+                        let timer = Timer(timeInterval: 1, repeats: false) { _ in
+                            if titles.isEmpty { titles = itemTitles() }
+                            popup.menu?.cancelTracking()
+                        }
+                        RunLoop.main.add(timer, forMode: .common)
+                        popup.performClick(nil)   // returns when the menu closes (or at once if it did not open)
+                        timer.invalidate()
+                        if titles.isEmpty {
+                            log("selftest-settings: window size popup did not open (attempt \(attempts), app active: \(NSApp.isActive))")
+                            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+                        }
+                    }
+                    nc.removeObserver(began)
                     let path = "\(dir)/settings-display-presets.txt"
                     try? (titles.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
                     let presets = titles.filter { t in LauncherSettings.sizePresets.contains { t.hasPrefix("\($0.width) × \($0.height) (") } }
