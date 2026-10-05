@@ -124,6 +124,8 @@ check_runtime() {
 }
 
 echo "== aarch64 (stock rootfs)"
+check_elf /merged/usr/bin/steamac-dx12-check AArch64 ELF64
+check_deps /merged /usr/bin/steamac-dx12-check /usr/lib
 check_elf /merged/usr/lib/libvulkan_virtio.so AArch64 ELF64
 check_json /merged /usr/share/vulkan/icd.d/virtio_icd.aarch64.json /usr/lib/libvulkan_virtio.so 64
 check_deps /merged /usr/lib/libvulkan_virtio.so /usr/lib

@@ -8,7 +8,7 @@ set -euo pipefail
 . /src/scripts/config.env
 . /src/scripts/steps/lib.sh
 
-IMG=/work/out/steamos.img
+IMG=${STEAMAC_DISK_DIR:-/work/out}/steamos.img
 LAYER=/work/out/steamac-layer.img
 INITRD=/work/out/initramfs.cpio.gz
 LOOPS=(); MNTS=()

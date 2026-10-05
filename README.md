@@ -1,3 +1,5 @@
+> **KiwiSingh fork:** Zweidrive storage, experimental KosmicKrisp / DX12 integration, and controller identity changes. See [fork setup and validation status](docs/fork-setup.md). The upstream documentation below describes the original MoltenVK build.
+
 # steamac — официальный ARM64 SteamOS (образ Steam Frame) в ВМ на Apple Silicon
 
 На macOS 15 (Sequoia) настоящий SteamOS от Valve для Steam Frame запускается в лёгкой ВМ на

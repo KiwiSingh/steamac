@@ -22,20 +22,21 @@ ls "$KRUN_PREFIX"/lib/libkrun*.dylib >/dev/null 2>&1 || { echo "missing $KRUN_PR
 
 # Info.plist embedded into the binary (-sectcreate) and copied into the .app by bundle.sh, plus the
 # build identity crash reports use (CrashReporting): SteamacGitCommit (release name
-# es.fxgam.steamac@<CFBundleShortVersionString>+<commit>) and SteamacMVKPatchRevision (MoltenVK
-# MVK_PATCH_REVISION, from $KRUN_PREFIX/MOLTENVK.txt).
+# es.fxgam.steamac@<CFBundleShortVersionString>+<commit>) and SteamacKosmicKrispRevision
+# (Mesa revision, from $KRUN_PREFIX/KOSMICKRISP.txt).
 PLIST="$HERE/.build/Info.plist"
 mkdir -p "$HERE/.build"
 commit=$(git -C "$ROOT" rev-parse --short=10 HEAD 2>/dev/null || echo unknown)
-mvk_rev=$(sed -n 's/.*MVK_PATCH_REVISION (\([0-9a-f]\{8\}\).*/\1/p' "$KRUN_PREFIX/MOLTENVK.txt" 2>/dev/null | head -1)
+kk_rev=$(awk '/Mesa KosmicKrisp/ {print $3}' "$KRUN_PREFIX/KOSMICKRISP.txt" 2>/dev/null || true)
 cp "$HERE/Info.plist" "$PLIST.new"
 /usr/libexec/PlistBuddy -c "Add :SteamacGitCommit string $commit" "$PLIST.new"
-[[ -z $mvk_rev ]] || /usr/libexec/PlistBuddy -c "Add :SteamacMVKPatchRevision string 0x$mvk_rev" "$PLIST.new"
+[[ -z $kk_rev ]] || /usr/libexec/PlistBuddy -c "Add :SteamacKosmicKrispRevision string $kk_rev" "$PLIST.new"
 
 SWIFT_FLAGS=(
     -c release
     --package-path "$HERE"
     --scratch-path "$HERE/.build"
+    --cache-path "$ROOT/work/cache/swift"
     -Xcc "-I$KRUN_PREFIX/include"
     -Xlinker "-L$KRUN_PREFIX/lib"
     -Xlinker -rpath -Xlinker @executable_path/host/lib
@@ -61,7 +62,7 @@ DSYMS="$OUT/dSYMs"
 rm -rf "$DSYMS.new"
 mkdir -p "$DSYMS.new"
 dsymutil "$BIN" -o "$DSYMS.new/steamac-vm.dSYM"
-for lib in libkrun.1.dylib libvirglrenderer.1.dylib libMoltenVK.dylib; do
+for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libvulkan_kosmickrisp.dylib; do
     [[ -f "$KRUN_PREFIX/lib/$lib" ]] || continue
     dsymutil "$KRUN_PREFIX/lib/$lib" -o "$DSYMS.new/$lib.dSYM" 2>&1 | grep -v 'no debug symbols in executable' >&2 || true
 done

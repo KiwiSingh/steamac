@@ -52,7 +52,7 @@ set -euo pipefail
 . /src/scripts/config.env
 . /src/scripts/steps/lib.sh
 
-OUT=/work/out/steamos.img
+OUT=${STEAMAC_DISK_DIR:-/work/out}/steamos.img
 CACHE=/work/cache/rootfs/$STEAMOS_BUILDID
 ROOTFS=$CACHE/rootfs.img
 
@@ -202,5 +202,5 @@ mv "$TMP" "$OUT"
 {
     echo "# steamac disk $(date -u +%FT%TZ) rootfs $STEAMOS_BUILDID ($STEAMOS_VERSION)"
     for n in "${names[@]}"; do echo "$n ${PARTUUID[$n]}"; done
-} > /work/out/steamos.img.partuuids
+} > "$OUT.partuuids"
 log "$OUT ready (apparent $(du -h --apparent-size "$OUT" | cut -f1), allocated $(du -h "$OUT" | cut -f1))"

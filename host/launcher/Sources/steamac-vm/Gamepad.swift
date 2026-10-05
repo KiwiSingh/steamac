@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import GameController
 
-/// Feeds the fixed virtual Xbox 360 pad from a GameController.framework extended gamepad (Xbox,
+/// Feeds a virtio pad with the selected controller identity from GameController (Xbox,
 /// DualSense, DualShock, MFi, ...): Settings > Controller picks which one (first connected by
 /// default), swaps A/B and X/Y for Nintendo-style layouts and applies a radial stick deadzone,
 /// all while the VM runs.
@@ -40,6 +40,33 @@ final class GamepadBridge {
         return vendor == c.productCategory ? vendor : "\(vendor) (\(c.productCategory))"
     }
 
+    struct Identity: Equatable {
+        let name: String
+        let vendor: UInt16
+        let product: UInt16
+    }
+
+    static func identity(of c: GCController?) -> Identity {
+        if c?.extendedGamepad is GCDualSenseGamepad {
+            let edge = c?.productCategory.localizedCaseInsensitiveContains("Edge") ?? false
+            return Identity(name: edge ? "Sony Interactive Entertainment DualSense Edge Wireless Controller"
+                                      : "Sony Interactive Entertainment DualSense Wireless Controller",
+                            vendor: 0x054c, product: edge ? 0x0df2 : 0x0ce6)
+        }
+        if c?.extendedGamepad is GCDualShockGamepad {
+            return Identity(name: "Sony Interactive Entertainment Wireless Controller",
+                            vendor: 0x054c, product: 0x09cc)
+        }
+        // GameController does not expose hardware VID/PID for arbitrary pads.
+        // Keep their reported name under our virtual ID instead of claiming Xbox 360.
+        return Identity(name: c.map(displayName(of:)) ?? "steamac game controller",
+                        vendor: 0x1af4, product: 0x0010)
+    }
+
+    static func selectedController(settings: LauncherSettings) -> GCController? {
+        connected.first { identifier(of: $0) == settings.controllerID } ?? connected.first
+    }
+
     /// Extended gamepads in connection order.
     static var connected: [GCController] {
         GCController.controllers().filter { $0.extendedGamepad != nil }
@@ -70,14 +97,13 @@ final class GamepadBridge {
     }
 
     private func selectController() {
-        let candidates = GamepadBridge.connected
-        let next: GCController?
-        if !settings.controllerID.isEmpty,
-           let chosen = candidates.first(where: { GamepadBridge.identifier(of: $0) == settings.controllerID }) {
-            next = chosen
-        } else {
-            // First connected (the chosen one is not connected: fall back to it as well).
-            next = candidates.first
+        var next = GamepadBridge.selectedController(settings: settings)
+        if let candidate = next {
+            let identity = GamepadBridge.identity(of: candidate)
+            if identity.vendor != device.ids.vendor || identity.product != device.ids.product || identity.name != device.name {
+                log("gamepad: controller identity changed; restart VM to expose \(identity.name)")
+                next = nil
+            }
         }
         if next === controller { return }
         controller?.extendedGamepad?.valueChangedHandler = nil
@@ -89,7 +115,7 @@ final class GamepadBridge {
             log("gamepad: none connected")
             return
         }
-        log("gamepad active: \(next.map(GamepadBridge.displayName(of:)) ?? "?") -> virtual Xbox 360 pad")
+        log("gamepad active: \(next.map(GamepadBridge.displayName(of:)) ?? "?") -> \(device.name)")
         // Keep the Home/PS button for the guest (Steam button) instead of macOS.
         pad.buttonHome?.preferredSystemGestureState = .disabled
         pad.buttonOptions?.preferredSystemGestureState = .disabled
@@ -126,8 +152,8 @@ final class GamepadBridge {
         let (west, north) = swapABXY ? (p.buttonY, p.buttonX) : (p.buttonX, p.buttonY)
         s.buttons[BTN.SOUTH] = south.isPressed
         s.buttons[BTN.EAST] = east.isPressed
-        s.buttons[BTN.NORTH] = west.isPressed    // xpad: Xbox "X" (west position) is BTN_X
-        s.buttons[BTN.WEST] = north.isPressed    // xpad: Xbox "Y" (north position) is BTN_Y
+        s.buttons[BTN.NORTH] = north.isPressed    // Linux BTN_NORTH: triangle / Y
+        s.buttons[BTN.WEST] = west.isPressed    // Linux BTN_WEST: square / X
         s.buttons[BTN.TL] = p.leftShoulder.isPressed
         s.buttons[BTN.TR] = p.rightShoulder.isPressed
         s.buttons[BTN.SELECT] = p.buttonOptions?.isPressed ?? false

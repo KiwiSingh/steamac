@@ -8,7 +8,7 @@
 #   libkrun        tag v1.19.6 (227b2de6), github.com/libkrun/libkrun
 #   patches/       applied in order (git format-patch series, see each header)
 #   virglrenderer  host/virglrenderer/build.sh output in work/out/host (built first if
-#                  missing); Venus over the steamac MoltenVK (host/moltenvk)
+#                  missing); Venus over KosmicKrisp (host/kosmickrisp)
 #   Rust           $RUST_TOOLCHAIN via rustup (deps need >= 1.87)
 #   Homebrew       dtc, xz, lld (init cross-link), libepoxy
 #
@@ -23,7 +23,7 @@
 #   lib/pkgconfig/libkrun.pc
 #   include/libkrun.h, include/libkrun_display.h, include/libkrun_input.h
 # Binaries using it need an rpath to work/out/host/lib (it also loads
-# @rpath/libvirglrenderer.1.dylib and @rpath/libMoltenVK.dylib from there) and the
+# @rpath/libvirglrenderer.1.dylib and @rpath/libvulkan.1.dylib from there) and the
 # com.apple.security.hypervisor entitlement. The virtio-gpu unit tests run after the build,
 # the smoke test in test/ is built, signed and run at the end. test/resize-test.sh is a
 # separate live check of krun_display_resize on a clone of the guest disk.

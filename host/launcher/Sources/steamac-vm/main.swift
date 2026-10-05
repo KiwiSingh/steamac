@@ -24,9 +24,17 @@ do {
     exit(2)
 }
 
-// MoltenVK (loaded by virglrenderer in this process) logs every instance/device creation at info
-// level, which buries the guest console. Errors only, unless the user asks for more.
-setenv("MVK_CONFIG_LOG_LEVEL", "1", 0)
+// Pin KosmicKrisp before virglrenderer creates a Vulkan instance.
+let vulkanManifest: String
+if let resources = AppBundle.resources {
+    vulkanManifest = resources + "/vulkan/kosmickrisp.json"
+} else {
+    let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+    vulkanManifest = executable.resolvingSymlinksInPath().deletingLastPathComponent().path
+        + "/host/share/vulkan/icd.d/kosmickrisp.json"
+}
+setenv("VK_DRIVER_FILES", vulkanManifest, 1)
+unsetenv("VK_ICD_FILENAMES")
 // Metal Performance HUD (Settings > Display, View menu, Ctrl+Cmd+P): loads libMTLHud for this VM
 // process before Metal is first used; the window's layer then shows or hides it at runtime
 // (developerHUDProperties `mode`, default "off" in WindowController). Without this variable
@@ -208,7 +216,7 @@ do {
     var inputs: VMInputs?
     if !options.headless {
         inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(),
-                          mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.xbox360Pad() : nil)
+                          mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.controllerPad(settings: settings) : nil)
     }
 
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,

@@ -132,7 +132,7 @@ struct Options {
                            tablet: absolute virtio tablet (KDE desktop mode). capture: always click-to-capture.
       --auto-capture on|off  auto mode: capture on click in games, for this run (default: the saved
                            setting, menu Mouse > Auto-Capture Mouse in Games; per-game overrides apply)
-      --no-gamepad         do not create the virtual Xbox 360 pad
+      --no-gamepad         do not create the virtual controller pad
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
 
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):

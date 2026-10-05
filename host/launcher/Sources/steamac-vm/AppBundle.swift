@@ -22,21 +22,19 @@ enum AppBundle {
         NSHomeDirectory() + "/Library/Application Support/" + LauncherSettings.defaultDomain
     }
 
+    static var storageMounted: Bool {
+        let volume = try? URL(fileURLWithPath: "/Volumes/Zweidrive").resourceValues(forKeys: [.volumeURLKey])
+        return volume?.volume?.path == "/Volumes/Zweidrive"
+            && FileManager.default.isWritableFile(atPath: "/Volumes/Zweidrive")
+    }
+
     static var logPath: String {
         NSHomeDirectory() + "/Library/Logs/" + LauncherSettings.defaultDomain + "/steamac-vm.log"
     }
 
-    /// Where a disk is looked for when Settings has none: Application Support, then the repo's
-    /// work/out (next to the bundle, or the build tree recorded in Info.plist at bundle time).
+    /// Zweidrive is the default; a missing drive never falls back to internal storage.
     static func defaultDiskCandidates() -> [String] {
-        var c = [appSupportDir + "/steamos.img"]
-        let sibling = (Bundle.main.bundlePath as NSString).deletingLastPathComponent + "/steamos.img"
-        if resources != nil { c.append(sibling) }
-        if let out = Bundle.main.object(forInfoDictionaryKey: "SteamacBuildOut") as? String {
-            let p = out + "/steamos.img"
-            if !c.contains(p) { c.append(p) }
-        }
-        return c
+        return storageMounted ? ["/Volumes/Zweidrive/steamac/steamos.img"] : []
     }
 
     static func defaultDisk() -> String? {

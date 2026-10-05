@@ -36,7 +36,7 @@ final class LauncherSettings: ObservableObject {
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled,
+                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .controllerID, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network,
                  .diskImage:
                 return true
@@ -336,7 +336,7 @@ final class LauncherSettings: ObservableObject {
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
-            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad,
+            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad, .controllerID: controllerID,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
             .diskImage: diskImage,

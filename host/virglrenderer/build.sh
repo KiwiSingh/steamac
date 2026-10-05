@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the host virglrenderer (Venus over MoltenVK) that libkrun links against.
+# Build the host virglrenderer (Venus over KosmicKrisp) that libkrun links against.
 #
 #   host/virglrenderer/build.sh        build/refresh work/out/host/{lib,include}/virgl...
 #   host/virglrenderer/build.sh clean  drop the source/build tree (next build is from scratch)
@@ -15,11 +15,10 @@
 # VK_EXT_image_drm_format_modifier (LINEAR only) and VK_KHR_external_fence_fd are emulated
 # for the guest; every host-visible or exportable allocation (device-local included) is POSIX
 # shm imported into the driver with VK_EXT_external_memory_host and handed to the VMM as a
-# VIRGL_RESOURCE_FD_SHM fd. Importing into non-host-visible memory types needs MoltenVK
-# PR #2834, which the steamac MoltenVK (host/moltenvk, utmapp/MoltenVK 05604465) carries.
+# VIRGL_RESOURCE_FD_SHM fd. KosmicKrisp must support VK_EXT_external_memory_host;
+# the standalone Venus check below verifies the shared-memory path at build time.
 #
-# Vulkan: the steamac MoltenVK in work/out/host/lib, linked directly (no loader, no ICD lookup
-# at runtime; built by host/moltenvk/build.sh if missing).
+# Vulkan: the bundled Vulkan loader selects the KosmicKrisp ICD via VK_DRIVER_FILES.
 # Venus only runs behind virglrenderer's render server; it is built in "thread" mode
 # (server + workers are threads inside the VMM process, no extra executable).
 # Output install_name: @rpath/libvirglrenderer.1.dylib.
@@ -43,8 +42,8 @@ src=$work/src
 build=$work/build
 stage=$work/stage
 out=$root/work/out/host
-mvk_lib=$out/lib/libMoltenVK.dylib
-mvk_vk_include=$root/work/build/host-moltenvk/src/Package/Release/MoltenVK/include
+vulkan_icd=$out/lib/libvulkan_kosmickrisp.dylib
+vulkan_include=$out/include
 
 if [ "${1:-}" = clean ]; then
 	rm -rf "$work"
@@ -54,8 +53,8 @@ fi
 for dep in $BREW_DEPS; do
 	brew list --versions "$dep" > /dev/null 2>&1 || brew install "$dep"
 done
-if [ ! -f "$mvk_lib" ] || [ ! -f "$mvk_vk_include/vulkan/vulkan_core.h" ]; then
-	"$root/host/moltenvk/build.sh"
+if [ ! -f "$vulkan_icd" ] || [ ! -f "$out/lib/libvulkan.1.dylib" ] || [ ! -f "$vulkan_include/vulkan/vulkan_core.h" ]; then
+	"$root/host/kosmickrisp/build.sh"
 fi
 
 mkdir -p "$work" "$out"
@@ -97,14 +96,14 @@ if [ ! -x "$work/venv/bin/python3" ]; then
 fi
 "$work/venv/bin/pip" -q install "pyyaml==$PYYAML_VERSION" "mako==$MAKO_VERSION"
 
-# --- the steamac MoltenVK as the `vulkan` dependency
+# --- the Vulkan loader as the `vulkan` dependency
 mkdir -p "$work/pkgconfig"
 cat > "$work/pkgconfig/vulkan.pc" << EOF
 Name: vulkan
-Description: steamac MoltenVK (host/moltenvk), linked directly as the Vulkan implementation
+Description: steamac Vulkan loader (KosmicKrisp ICD)
 Version: 1.4.0
-Libs: -L$out/lib -lMoltenVK
-Cflags: -I$mvk_vk_include
+Libs: -L$out/lib -lvulkan
+Cflags: -I$vulkan_include
 EOF
 
 rm -rf "$build" "$stage"
@@ -127,14 +126,14 @@ fi
 codesign --force -s - "$lib"
 
 # The installed .pc lists the private `vulkan` package, which only exists in the
-# build-time pkgconfig dir above; consumers of the shared library get MoltenVK
+# build-time pkgconfig dir above; consumers of the shared library get the Vulkan loader
 # as a private link flag instead.
 pc=$staged/lib/pkgconfig/virglrenderer.pc
 sed -i '' \
 	-e 's/^\(Requires.private:.*\), vulkan$/\1/' \
-	-e "s|^Libs.private: |Libs.private: -L$out/lib -lMoltenVK |" \
+	-e "s|^Libs.private: |Libs.private: -L$out/lib -lvulkan |" \
 	"$pc"
-if grep -q 'vulkan' "$pc"; then
+if grep -q '^Requires.*vulkan' "$pc"; then
 	echo "unexpected virglrenderer.pc layout:" >&2
 	cat "$pc" >&2
 	exit 1
@@ -155,4 +154,4 @@ otool -L "$out/lib/libvirglrenderer.1.dylib"
 check=$work/venus_check
 clang -std=c11 -Wall -Werror -o "$check" "$here/test/venus_check.c" \
 	-I"$out/include" -L"$out/lib" -lvirglrenderer -Wl,-rpath,"$out/lib"
-"$check"
+VK_DRIVER_FILES="$out/share/vulkan/icd.d/kosmickrisp.json" "$check"

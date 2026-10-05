@@ -180,7 +180,7 @@ struct ReportView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 check($model.choices.launcherLogs, "Include launcher logs",
-                      "This session's launcher, libkrun, virglrenderer and MoltenVK messages and perf/stall lines (last ~2 MB; "
+                      "This session's launcher, libkrun, virglrenderer and KosmicKrisp messages and perf/stall lines (last ~2 MB; "
                       + "home folder paths shortened to ~, your user and computer names removed).")
                 check($model.choices.guestLogs, "Include SteamOS logs (system journal, Steam/Proton logs)",
                       model.context.guest != nil

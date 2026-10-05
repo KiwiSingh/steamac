@@ -25,13 +25,15 @@ WORK=$REPO/work
 steps=("$@")
 [[ ${#steps[@]} -gt 0 ]] || steps=(builder rootfs initramfs layer disk check)
 
-mkdir -p "$WORK/out" "$WORK/cache"
+DISK_DIR=${STEAMAC_DISK_DIR:-/Volumes/Zweidrive/steamac}
+[[ -d /Volumes/Zweidrive && -w /Volumes/Zweidrive && $(df -P /Volumes/Zweidrive | awk 'NR == 2 {print $NF}') == /Volumes/Zweidrive ]] || { echo "Mount writable Zweidrive before building." >&2; exit 1; }
+mkdir -p "$WORK/out" "$WORK/cache" "$DISK_DIR"
 
 run_in_builder() {
     # /src: repo (read-only), /work: work dir. --privileged for loop devices.
     docker run --rm --privileged --platform linux/arm64 \
         -e HOME_SIZE_GIB -e STEAMOS_PASSWORD -e FORCE_DISK -e ALLOW_NO_VENUS \
-        -v "$REPO:/src:ro" -v "$WORK:/work" \
+        -e STEAMAC_DISK_DIR=/disk -v "$DISK_DIR:/disk" -v "$REPO:/src:ro" -v "$WORK:/work" \
         "$BUILDER_IMAGE" "$@"
 }
 

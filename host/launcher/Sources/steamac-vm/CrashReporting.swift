@@ -11,10 +11,10 @@ import Sentry
 /// `STEAMAC_SENTRY=0` turn it off for one run. Off = the SDK is never started (no network).
 ///
 /// Both processes report: the supervisor (launcher role) and every VM process (vm role; native
-/// crashes there come from Metal/MoltenVK asserts, libkrun/virglrenderer aborts and panics that
+/// crashes there come from Metal/KosmicKrisp asserts, libkrun/virglrenderer aborts and panics that
 /// cross libkrun's C API). Each role has its own SDK cache, so a VM-process crash is uploaded
 /// when the next VM process starts. The supervisor routes stderr through a pipe (StderrTap): every
-/// line of both processes (launcher log, MoltenVK, libkrun/virglrenderer) reaches the terminal or
+/// line of both processes (launcher log, KosmicKrisp, libkrun/virglrenderer) reaches the terminal or
 /// log file unchanged and also becomes a scrubbed breadcrumb, and the few error patterns worth a
 /// report (guest GPU context fatal, pipeline compile failures, Rust panics) are recognised there.
 /// Volume is kept low: one event per fingerprint per process, a small per-kind and total budget,
@@ -32,9 +32,9 @@ enum CrashReporting {
         "Crash reports of the launcher and the VM process: crash reason, stack traces, loaded libraries.",
         "A few errors: guest GPU context lost, shader pipeline compile failures, libkrun panics, failed disk "
             + "creation or first-start setup, VM stopped unexpectedly, SteamOS not responding.",
-        "The launcher's last ~200 log lines (launcher, MoltenVK, libkrun and virglrenderer messages; home "
+        "The launcher's last ~200 log lines (launcher, KosmicKrisp, libkrun and virglrenderer messages; home "
             + "folder paths shortened to ~) and the boot stages.",
-        "Versions and setup: app, macOS, libkrun/virglrenderer/MoltenVK builds, kernel, SteamOS build, Mac "
+        "Versions and setup: app, macOS, libkrun/virglrenderer/KosmicKrisp builds, kernel, SteamOS build, Mac "
             + "model, GPU, VM CPUs/RAM/display mode, game App IDs.",
         "A random install ID (not linked to you) to count affected Macs.",
         "Never: your name, user or computer name, IP address, Steam account, game titles, files, or the SteamOS console.",
@@ -284,9 +284,9 @@ enum CrashReporting {
             "vm_cpus": String(options.cpus),
             "vm_mem_mib": String(options.memMiB),
         ]
-        if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacMVKPatchRevision") as? String { t["mvk_patch"] = rev }
+        if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacKosmicKrispRevision") as? String { t["kosmickrisp_revision"] = rev }
         for (tag, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"),
-                           ("moltenvk", "libMoltenVK.dylib")] {
+                           ("kosmickrisp", "libvulkan_kosmickrisp.dylib")] {
             if let uuid = loadedImageUUID(suffix: "/" + lib) { t[tag] = uuid }
         }
         if let run = ProcessInfo.processInfo.environment[runIdEnv] { t["run"] = run }
@@ -686,7 +686,7 @@ enum CrashReporting {
 }
 
 /// Error patterns in the supervisor's stderr stream (both processes). Multi-line messages
-/// (MoltenVK compile errors, Rust panics) collect their continuation lines first.
+/// (KosmicKrisp compile errors, Rust panics) collect their continuation lines first.
 private struct LineScanner {
     private var pending: (kind: CrashReporting.Kind, header: String, lines: [String])?
     /// Last launcher error line (`[steamac-vm] error: …`), for VM exit reports.

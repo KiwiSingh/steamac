@@ -1,6 +1,7 @@
 import CKrun
 import Darwin
 import Foundation
+import GameController
 import os
 
 struct AbsAxis {
@@ -241,21 +242,19 @@ enum InputDevices {
                     capabilities: [EV.KEY: mouseButtons, EV.REL: [REL.X, REL.Y] + wheels])
     }
 
-    /// Mirrors what drivers/input/joystick/xpad.c exposes for an Xbox 360 pad (XTYPE_XBOX360,
-    /// dpad as hat, triggers as axes) so SDL's GUID-based mapping and Steam pick it up.
-    static func xbox360Pad() -> InputDevice {
+    /// Expose the selected controller identity through evdev; no raw HID features.
+    static func controllerPad(settings: LauncherSettings) -> InputDevice? {
+        guard let controller = GamepadBridge.selectedController(settings: settings) else { return nil }
+        let identity = GamepadBridge.identity(of: controller)
         let stick = AbsAxis(min: -32768, max: 32767, fuzz: 16, flat: 128)
         let trigger = AbsAxis(min: 0, max: 255)
         let hat = AbsAxis(min: -1, max: 1)
-        return InputDevice(
-            name: "Microsoft X-Box 360 pad", serial: "",
-            ids: krun_input_device_ids(bustype: BUS.USB, vendor: 0x045e, product: 0x028e, version: 0x0114),
-            capabilities: [
-                EV.KEY: [BTN.SOUTH, BTN.EAST, BTN.NORTH, BTN.WEST, BTN.TL, BTN.TR,
-                         BTN.SELECT, BTN.START, BTN.MODE, BTN.THUMBL, BTN.THUMBR],
-                EV.ABS: [ABS.X, ABS.Y, ABS.Z, ABS.RX, ABS.RY, ABS.RZ, ABS.HAT0X, ABS.HAT0Y],
-            ],
+        return InputDevice(name: identity.name, serial: "steamac-gamepad",
+            ids: krun_input_device_ids(bustype: identity.vendor == 0x1af4 ? BUS.VIRTUAL : BUS.USB,
+                                      vendor: identity.vendor, product: identity.product, version: 1),
+            capabilities: [EV.KEY: GamepadBridge.buttonCodes, EV.ABS: GamepadBridge.axisCodes],
             absInfo: [ABS.X: stick, ABS.Y: stick, ABS.RX: stick, ABS.RY: stick,
                       ABS.Z: trigger, ABS.RZ: trigger, ABS.HAT0X: hat, ABS.HAT0Y: hat])
     }
+
 }

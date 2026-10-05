@@ -511,8 +511,8 @@ private struct ControllerTab: View {
         Form {
             Section {
                 Toggle(isOn: $settings.virtualPad) {
-                    Label2(title: "Virtual Xbox 360 controller",
-                           detail: "The guest's gamepad (virtio-input devices are fixed at boot).",
+                    Label2(title: "Controller bridge",
+                           detail: "Connect before boot. Restart after changing models. Buttons and sticks; no raw HID features.",
                            now: false, key: .virtualPad)
                 }
                 Picker(selection: $settings.controllerID) {
@@ -526,7 +526,7 @@ private struct ControllerTab: View {
                             .tag(settings.controllerID)
                     }
                 } label: {
-                    Label2(title: "Controller that drives it", now: true)
+                    Label2(title: "Controller that drives it", detail: "Identity applies on next start.", now: false, key: .controllerID)
                 }
                 Toggle(isOn: $settings.swapABXY) {
                     Label2(title: "Swap A/B and X/Y", detail: "For Nintendo-style button layouts.", now: true)

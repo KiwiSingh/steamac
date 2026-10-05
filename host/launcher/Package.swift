@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "steamac-vm",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v26)],
     dependencies: [
         // Crash/error reporting (CrashReporting.swift). Static Sentry.xcframework (binary target).
         .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.30.0"),

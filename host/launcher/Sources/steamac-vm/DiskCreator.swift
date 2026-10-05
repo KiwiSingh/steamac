@@ -7,7 +7,7 @@ import Foundation
 ///  2. download the signed RAUC bundle, verify its CMS signature against the pinned Valve CA
 ///     (RaucBundle), read manifest.raucm + rootfs.img.caibx from its squashfs (Squashfs);
 ///  3. rebuild rootfs.img with the bundled desync from Valve's chunk stores (chunk cache in
-///     ~/Library/Caches/es.fxgam.steamac/desync: cancel + resume re-extracts from the cache);
+///     /Volumes/Zweidrive/steamac/cache/desync: cancel + resume re-extracts from the cache);
 ///  4. sparse disk file with protective MBR + GPT of scripts/steps/40-disk.sh (GPT/DiskLayout),
 ///     rootfs.img copied into rootfs-A and rootfs-B (non-zero 16 KiB blocks only) while its
 ///     sha256 is checked against the signed manifest; everything else stays zero;
@@ -53,10 +53,10 @@ final class DiskCreator {
     static let branches = ["stable", "rc", "beta", "preview", "main"]
     static let metaURL = "https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/"
     static let imagesURL = "https://steamdeck-images.steamos.cloud/"
-    static var cacheRoot: String { NSHomeDirectory() + "/Library/Caches/" + LauncherSettings.defaultDomain }
+    static var cacheRoot: String { "/Volumes/Zweidrive/steamac/cache" }
     static var chunkCache: String { cacheRoot + "/desync" }
     static var bundleCache: String { cacheRoot + "/bundles" }
-    static var defaultPath: String { AppBundle.appSupportDir + "/steamos.img" }
+    static var defaultPath: String { "/Volumes/Zweidrive/steamac/steamos.img" }
     /// Temporary rootfs.img (sparse desync output) and the disk while it is written.
     static func rootfsTemp(_ path: String) -> String { path + ".rootfs-tmp" }
     static func diskTemp(_ path: String) -> String { path + ".partial" }
@@ -112,6 +112,9 @@ final class DiskCreator {
 
     func run(_ r: Request) throws -> Result {
         let fm = FileManager.default
+        guard AppBundle.storageMounted else {
+            throw OptionError("Mount writable Zweidrive before creating a SteamOS disk.")
+        }
         guard let desync = DiskCreator.desyncPath else { throw OptionError("desync not found (bundle Contents/Resources/desync or work/out/host/bin/desync: host/launcher/fetch-desync.sh)") }
         guard let caPath = DiskCreator.caPath else { throw OptionError("Valve RAUC CA steamdeck-images.pem not found") }
         guard DiskCreator.branches.contains(r.branch) else { throw OptionError("unknown branch \(r.branch) (\(DiskCreator.branches.joined(separator: ", ")))") }
@@ -157,7 +160,7 @@ final class DiskCreator {
         try checkCancel()
 
         // Disk space: rootfs data ~3x on the disk's volume (temp + rootfs-A + rootfs-B), the chunk
-        // cache (compressed chunks in small files, ~1.2x the data on APFS) in ~/Library/Caches.
+        // cache (compressed chunks in small files, ~1.2x the data on APFS) on Zweidrive.
         let dataBytes = try desyncDataSize(desync, caibxPath)
         try checkSpace(disk: dir, need: 3 * dataBytes, cache: DiskCreator.cacheRoot, cacheNeed: dataBytes * 13 / 10)
 

@@ -22,3 +22,6 @@ gcc -O2 -Wall -o /work/bin/vkprobe-aarch64 /scripts/vkprobe.c -ldl
 pacman -Q glibc gcc-libs libdrm wayland libxcb libxshmfence libdisplay-info systemd-libs zstd expat zlib \
     meson python-mako vulkan-headers > /work/packages-aarch64.txt
 gcc --version | head -1 > /work/toolchain-aarch64.txt
+
+gcc -O2 -Wall -Wextra -Werror -o /work/bin/steamac-dx12-check /scripts/dx12-check.c -ldl
+install -D -m 0755 /work/bin/steamac-dx12-check /out/usr/bin/steamac-dx12-check

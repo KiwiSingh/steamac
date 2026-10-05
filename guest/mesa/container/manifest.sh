@@ -22,7 +22,7 @@ EOF
 cd /out
 find usr -type f | sort | while read -r f; do
     case $f in
-        *.so) arch=$(readelf -h "$f" | sed -n 's/^ *Machine: *//p')
+        *.so|usr/bin/*) arch=$(readelf -h "$f" | sed -n 's/^ *Machine: *//p')
               cls=$(readelf -h "$f" | sed -n 's/^ *Class: *//p')
               desc="$arch/$cls" ;;
         *) desc="ICD manifest -> $(sed -n 's/.*"library_path": *"\([^"]*\)".*/\1/p' "$f"), library_arch $(sed -n 's/.*"library_arch": *"\([^"]*\)".*/\1/p' "$f")" ;;

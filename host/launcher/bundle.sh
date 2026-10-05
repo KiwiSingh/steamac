@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assemble work/out/FX Steam Launcher.app (called by build.sh with the freshly built binary):
 #   Contents/MacOS/steamac-vm           launcher, rpath @executable_path/../Frameworks only
-#   Contents/Frameworks/*.dylib         libkrun, libvirglrenderer, libMoltenVK + their non-system
+#   Contents/Frameworks/*.dylib         libkrun, libvirglrenderer, libvulkan, KosmicKrisp + their non-system
 #                                       dependencies (libepoxy), install names @rpath/<name>
 #   Contents/Resources/                 gvproxy, Image, initramfs.cpio.gz, steamac-layer.img,
 #                                       desync + steamdeck-images.pem (Valve RAUC CA) for
@@ -77,9 +77,12 @@ copy_lib() {
     otool -l "$FW/$name" | grep -q '@loader_path$' || install_name_tool -add_rpath @loader_path "$FW/$name" 2>/dev/null
 }
 
-for lib in libkrun.1.dylib libvirglrenderer.1.dylib libMoltenVK.dylib; do
+for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libvulkan_kosmickrisp.dylib; do
     copy_lib "$KRUN_PREFIX/lib/$lib"
 done
+
+mkdir -p "$TMP/Contents/Resources/vulkan"
+python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); p["ICD"]["library_path"]="../../Frameworks/libvulkan_kosmickrisp.dylib"; json.dump(p,open(sys.argv[2],"w"),indent=2)' "$KRUN_PREFIX/share/vulkan/icd.d/kosmickrisp.json" "$TMP/Contents/Resources/vulkan/kosmickrisp.json"
 
 # The executable: only the bundle's Frameworks on its rpath.
 while read -r rp; do
@@ -108,7 +111,7 @@ cp "$ZSTD_LICENSE" "$TMP/Contents/Resources/licenses/zstd-LICENSE"
 # (layered Liquid Glass icon for macOS 26, pre-rendered squircle renditions for macOS 15) and an
 # AppIcon.icns fallback; Info.plist names them (CFBundleIconName / CFBundleIconFile = AppIcon).
 if ! log=$(xcrun actool "$HERE/AppIcon.icon" --compile "$TMP/Contents/Resources" --platform macosx \
-        --minimum-deployment-target 15.0 --app-icon AppIcon \
+        --minimum-deployment-target 26.0 --app-icon AppIcon \
         --output-partial-info-plist "$STAGE/icon-info.plist" 2>&1) \
         || [[ ! -f "$TMP/Contents/Resources/Assets.car" || ! -f "$TMP/Contents/Resources/AppIcon.icns" ]]; then
     echo "$log" >&2

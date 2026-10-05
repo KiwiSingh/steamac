@@ -16,7 +16,7 @@ import Sentry
 
 /// Per-session logs in the supervisor's run dir (/tmp/steamac-<pid>, removed when the launcher
 /// exits): `launcher.log` = every stderr line of both processes (the supervisor's stderr tap:
-/// launcher, libkrun, virglrenderer, MoltenVK), `console.log` = the hvc0 console (VM process).
+/// launcher, libkrun, virglrenderer, KosmicKrisp), `console.log` = the hvc0 console (VM process).
 /// Lines get the local time in front; a file over `limit` becomes `<name>.1`.
 final class RollingLog: @unchecked Sendable {
     static let launcher = RollingLog(name: "launcher.log")
@@ -353,10 +353,10 @@ final class ReportBundle: @unchecked Sendable {
         add("mac", "\(ReportBundle.sysctl("hw.model") ?? "?"), \(ReportBundle.sysctl("machdep.cpu.brand_string") ?? "?"), "
             + "\(ProcessInfo.processInfo.activeProcessorCount) cores, \(ProcessInfo.processInfo.physicalMemory >> 30) GB")
         add("gpu", MTLCreateSystemDefaultDevice()?.name ?? "none")
-        for (label, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"), ("MoltenVK", "libMoltenVK.dylib")] {
+        for (label, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"), ("KosmicKrisp", "libvulkan_kosmickrisp.dylib")] {
             add(label, ReportBundle.libraryIdentity(lib))
         }
-        add("MoltenVK patch", info["SteamacMVKPatchRevision"] as? String)
+        add("KosmicKrisp revision", info["SteamacKosmicKrispRevision"] as? String)
         let tags = CrashReporting.tagSnapshot(runDir: context.runDir)
         if let o = context.options {
             add("kernel", (CrashReporting.kernelVersion(image: o.kernel) ?? "?") + " (\(o.kernel))")
