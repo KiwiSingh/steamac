@@ -110,7 +110,7 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
-| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk… |
+| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk…, клиент Steam (`--steam-client`, см. «Клиент Steam») |
 
 Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
 --selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
@@ -236,12 +236,32 @@ work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64
 диска из Docker-сборки (`work/out/steamos.img` открывается только на чтение; `--reference-disk IMG`),
 CMS/squashfs против кеша `work/cache/rootfs`, cpio, SHA-512 crypt.
 
+## Клиент Steam (Steam client)
+
+Какой клиент Steam запускает SteamOS, выбирается в лаунчере: окно первого запуска, окно
+**Create SteamOS Disk** и **Settings → Advanced → Steam client** (applies on next start, «Restart VM
+to apply»), для одного запуска — `--steam-client frame|deck|deckbeta`. Лаунчер передаёт выбор при
+каждой загрузке в cmdline ядра `steamac.steam_client=…`, `RUNSTEAM.sh` из слоя читает его при
+каждом старте Steam.
+
+| Вариант | Что это | Плюсы и минусы |
+|---|---|---|
+| **Steam Frame client** (`frame`, по умолчанию) | бета-клиент Valve для Steam Frame (`linux_arm64_beta_<hash>`, флаги `-deckard -vrgamepadui`) — как в образе | игры проверены на нём; это внутренняя бета ещё не вышедшего устройства; вход — через режим входа (ниже) |
+| **Steam Deck client** (`deck`) | публичный ARM64-клиент Steam Deck, ветка `steamdeck_stable` (та же сборка, что публичный `steam_client_linuxarm64`; официально для ARM не объявлен) | обычный вход с QR-кодом на экране; игры на нём пока не проверялись |
+| **Steam Deck client (beta)** (`deckbeta`) | ветка `steamdeck_publicbeta` | как `deck`, но бета; игры не проверялись |
+
+Смена варианта при следующем старте Steam скачивает другой клиент (до ~1 ГБ, прогресс в оверлее
+загрузки); обратно на Frame загрузчик Steam переключается сам по флагу `-deckard`. Ручной
+`/etc/steamac/steam-client-branch` внутри SteamOS (любая ветка клиента) по-прежнему работает, когда
+выбран `frame` (или лаунчер не передаёт параметр — старые версии, свой `--cmdline`); выбор `deck` /
+`deckbeta` в лаунчере важнее файла.
+
 ## Вход в Steam (Signing in)
 
 Экран входа клиента Steam Frame рассчитан на шлем: «Tap to confirm» связывается с телефоном по
 Bluetooth LE, «Scan QR code» открывает VR-окно — в ВМ оба не работают (остаётся только пароль).
-Поэтому, пока в `config/loginusers.vdf` нет запомненного аккаунта (новый диск, выход из аккаунта,
-вход без «Remember me»), `RUNSTEAM.sh` запускает Steam без `-deckard`/`-vrgamepadui`: загрузчик сам
+Поэтому с клиентом Steam Frame, пока в `config/loginusers.vdf` нет запомненного аккаунта (новый
+диск, выход из аккаунта, вход без «Remember me»), `RUNSTEAM.sh` запускает Steam без `-deckard`/`-vrgamepadui`: загрузчик сам
 переключается на публичный ARM64-клиент Steam Deck (`steamdeck_stable`), и вход показывает
 QR-код на экране (Steam Mobile App → Steam Guard → сканировать) рядом с формой пароля. После входа
 с «Remember me» Steam один раз перезапускается и возвращается к клиенту Steam Frame (каждая смена

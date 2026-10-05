@@ -893,8 +893,12 @@ private struct AdvancedTab: View {
                         Button("Use Default") { settings.diskImage = "" }.disabled(settings.diskImage.isEmpty)
                     }
                 }
-                LabeledContent("Steam client branch") {
-                    Text("set inside SteamOS (/etc/steamac/steam-client-branch)").foregroundStyle(.secondary)
+                Picker(selection: $settings.steamClient) {
+                    ForEach(LauncherSettings.SteamClient.allCases) { Text(SteamClientPicker.itemTitle($0)).tag($0) }
+                } label: {
+                    Label2(title: "Steam client",
+                           detail: settings.steamClient.detail + " " + LauncherSettings.SteamClient.switchNote,
+                           now: false, key: .steamClient)
                 }
             }
             Section {

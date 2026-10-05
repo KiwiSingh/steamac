@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// "Create SteamOS Disk" window (first-run sheet and Settings > Advanced "Create New Disk…"):
-/// branch, home size, location and password, then DiskCreator with progress, cancel and resume
-/// (a cancelled or failed run keeps the downloaded chunks; Create again continues from there).
+/// branch, home size, location, password and the Steam client (a launcher setting, applies to
+/// every start), then DiskCreator with progress, cancel and resume (a cancelled or failed run
+/// keeps the downloaded chunks; Create again continues from there).
 final class CreateDiskModel: ObservableObject {
     @Published var path: String
     @Published var branch: String
@@ -128,6 +129,10 @@ private struct CreateDiskView: View {
                 }
                 .disabled(model.running)
                 Section {
+                    SteamClientPicker(settings: model.settings)
+                }
+                .disabled(model.running)
+                Section {
                     CrashReportsToggle(settings: model.settings, checkbox: true)
                 }
                 if model.running || model.status != nil || model.error != nil {
@@ -158,7 +163,7 @@ private struct CreateDiskView: View {
             }
             .padding([.horizontal, .bottom], 20)
         }
-        .frame(width: 560, height: 560)
+        .frame(width: 560, height: 660)
     }
 
     private func choose() {

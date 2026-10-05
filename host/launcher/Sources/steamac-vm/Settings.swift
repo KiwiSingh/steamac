@@ -32,14 +32,14 @@ final class LauncherSettings: ObservableObject {
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
-        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch
+        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch, steamClient
 
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
                  .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network,
-                 .diskImage:
+                 .diskImage, .steamClient:
                 return true
             default:
                 return false
@@ -72,6 +72,44 @@ final class LauncherSettings: ObservableObject {
         /// Suspend the VM in memory (SuspendController); the app keeps running.
         case suspend
         var id: String { rawValue }
+    }
+
+    /// Steam client SteamOS starts (kernel cmdline `steamac.steam_client=`, read by the layer's
+    /// RUNSTEAM.sh on every Steam start).
+    enum SteamClient: String, CaseIterable, Identifiable {
+        /// Valve's Steam Frame client beta with -deckard -vrgamepadui (stock); the Steam Deck
+        /// client is used for sign-in until an account is remembered (sign-in mode).
+        case frame
+        /// Public ARM64 Steam Deck client (branch steamdeck_stable).
+        case deck
+        /// Steam Deck client beta (branch steamdeck_publicbeta).
+        case deckbeta
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .frame: return "Steam Frame client"
+            case .deck: return "Steam Deck client"
+            case .deckbeta: return "Steam Deck client (beta)"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .frame:
+                return "Valve's ARM64 client for Steam Frame (a beta for a headset not yet released). Games are tested with it. "
+                    + "Until an account is signed in with Remember me, the Steam Deck client shows the sign-in QR code."
+            case .deck:
+                return "The public ARM64 Steam Deck client (steamdeck_stable). Standard sign-in with an on-screen QR code. "
+                    + "Games are not tested with it yet."
+            case .deckbeta:
+                return "The Steam Deck client beta (steamdeck_publicbeta). Standard sign-in with an on-screen QR code. "
+                    + "Games are not tested with it yet."
+            }
+        }
+
+        /// Switching re-downloads the client (about 1 GB) on the next start.
+        static let switchNote = "Switching downloads the other client (about 1 GB) when Steam starts."
     }
 
     /// Default window size choices (window points = guest pixels).
@@ -174,6 +212,8 @@ final class LauncherSettings: ObservableObject {
     @Published var diskImage = "" { didSet { save(.diskImage, diskImage) } }
     /// SteamOS update branch "Create New Disk…" installs (atomupd vr/<branch>.json).
     @Published var steamosBranch = "stable" { didSet { save(.steamosBranch, steamosBranch) } }
+    /// Steam client of the next start (`steamac.steam_client=`).
+    @Published var steamClient = SteamClient.frame { didSet { save(.steamClient, steamClient.rawValue) } }
 
     init() {
         let domain = LauncherSettings.domain
@@ -240,6 +280,7 @@ final class LauncherSettings: ObservableObject {
         string(.diskImage, &diskImage)
         string(.steamosBranch, &steamosBranch)
         if !DiskCreator.branches.contains(steamosBranch) { steamosBranch = "stable" }
+        if let s = d.string(forKey: Key.steamClient.rawValue).flatMap(SteamClient.init(rawValue:)) { steamClient = s }
         reloadGames()
     }
 
@@ -295,6 +336,7 @@ final class LauncherSettings: ObservableObject {
         case .network: guard let b else { return false }; network = b
         case .diskImage: diskImage = text == "default" ? "" : text
         case .steamosBranch: guard DiskCreator.branches.contains(text) else { return false }; steamosBranch = text
+        case .steamClient: guard let v = SteamClient(rawValue: text) else { return false }; steamClient = v
         }
         return true
     }
@@ -320,7 +362,7 @@ final class LauncherSettings: ObservableObject {
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
         cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network
-        diskImage = fresh.diskImage; steamosBranch = fresh.steamosBranch
+        diskImage = fresh.diskImage; steamosBranch = fresh.steamosBranch; steamClient = fresh.steamClient
         loading = false
         reloadGames()
         log("settings: reset to defaults")
@@ -353,7 +395,7 @@ final class LauncherSettings: ObservableObject {
             .windowSizePreset: windowSizePreset, .virtualPad: virtualPad,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
-            .diskImage: diskImage,
+            .diskImage: diskImage, .steamClient: steamClient.rawValue,
         ]
         var s: [Key: String] = [:]
         for (k, v) in values where k.nextStart && overrides[k] == nil { s[k] = "\(v)" }

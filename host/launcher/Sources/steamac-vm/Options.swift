@@ -35,6 +35,8 @@ struct Options {
     var network = true
     var sound = true
     var sshPort = 2222
+    /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
+    var steamClient = LauncherSettings.SteamClient.frame
     var shmMiB = 8192
     var gpuFlags: UInt32? = nil
     var gvproxyPath: String?
@@ -82,7 +84,7 @@ struct Options {
                       [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT | --no-ssh] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
                       [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
-                      [--no-crash-reports]
+                      [--no-crash-reports] [--steam-client frame|deck|deckbeta]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-stall [--selftest-out DIR] [--display WxH]
@@ -94,8 +96,8 @@ struct Options {
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
     vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
-    fullscreen, perf stats. Inside FX Steam Launcher.app, --kernel/--initrd/--disk default to the
-    bundled Image, initramfs and layer plus the disk image chosen in Settings > Advanced.
+    fullscreen, perf stats, Steam client. Inside FX Steam Launcher.app, --kernel/--initrd/--disk
+    default to the bundled Image, initramfs and layer plus the disk image chosen in Settings > Advanced.
 
       --kernel PATH        raw arm64 Image (KRUN_KERNEL_FORMAT_RAW)
       --initrd PATH        initramfs
@@ -134,6 +136,13 @@ struct Options {
                            setting, menu Mouse > Auto-Capture Mouse in Games; per-game overrides apply)
       --no-gamepad         do not create the virtual Xbox 360 pad
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
+      --steam-client C     Steam client SteamOS starts (kernel cmdline steamac.steam_client=C, added on
+                           every boot; default: Settings > Advanced "Steam client"):
+                           frame: Valve's Steam Frame client beta (stock; until an account is remembered
+                           the Steam Deck client is used for its on-screen sign-in QR code);
+                           deck: public ARM64 Steam Deck client (steamdeck_stable);
+                           deckbeta: Steam Deck client beta (steamdeck_publicbeta).
+                           Switching downloads the other client (~1 GB) when Steam starts.
 
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
       --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
@@ -239,6 +248,12 @@ struct Options {
             case "--no-sound": o.sound = false
             case "--ssh-port": o.sshPort = try int(a)
             case "--no-ssh": o.sshPort = 0
+            case "--steam-client":
+                let v = try value(a)
+                guard let c = LauncherSettings.SteamClient(rawValue: v) else {
+                    throw OptionError("--steam-client: frame, deck or deckbeta")
+                }
+                o.steamClient = c
             case "--shm-mib": o.shmMiB = try int(a)
             case "--gpu-flags":
                 let v = try value(a)
@@ -324,6 +339,9 @@ struct Options {
             if !o.cmdline.split(separator: " ").contains(where: { $0.hasPrefix("steamac.ssh=") }) {
                 o.cmdline += " steamac.ssh=\(o.sshPort == 0 ? 0 : 1)"
             }
+            if !o.cmdline.split(separator: " ").contains(where: { $0.hasPrefix("steamac.steam_client=") }) {
+                o.cmdline += " steamac.steam_client=\(o.steamClient.rawValue)"
+            }
         }
         try o.validate()
         return (o, overrides)
@@ -345,6 +363,7 @@ struct Options {
             sshPort = !s.sshEnabled || s.sshPort == 0 ? 0 : (1024...65535).contains(s.sshPort) ? s.sshPort : 2222
         }
         if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
+        if given("--steam-client") { ov[.steamClient] = "--steam-client \(steamClient.rawValue)" } else { steamClient = s.steamClient }
         if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
         if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" } else { gamepad = s.virtualPad }
         if given("--refresh") { ov[.refreshRate] = "--refresh \(refreshRate)" } else { refreshRate = min(240, max(24, s.refreshRate)) }

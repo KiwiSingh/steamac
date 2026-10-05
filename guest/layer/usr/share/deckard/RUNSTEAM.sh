@@ -3,21 +3,27 @@
 # steam.service copies this file over ~/.local/share/Steam/RUNSTEAM.sh on every
 # start (cp -f, so it also replaces the copy unpacked from steam.tar.zst).
 #
-# Default (once a Steam account is remembered): byte-for-byte stock behaviour —
-# stock flags (-deckard, -vrgamepadui) and the stock client branch from
-# package/beta (the Frame tarball ships linux_arm64_beta_<hash>, the Steam
-# Frame client beta; running Proton games works with it in the VM). Before
-# that: sign-in mode (below).
-#
-# Opt-in: /etc/steamac/steam-client-branch (first word, e.g. steamdeck_stable
-# or steamdeck_publicbeta; lives on the /etc overlay of var-X) switches the
-# client to that public arm64 Steam Deck channel
-# (client-update.steamstatic.com/steam_client_<branch>_linuxarm64). The branch
-# is then written to package/beta before every launch (the bootstrapper
-# downloads/installs that client, shown by the FX boot overlay) and the
-# Frame-only flags -deckard (Steam Frame client personality) and -vrgamepadui
-# (VR gamepad UI) are dropped. Remove the file and package/beta to go back.
-# Same flags as the hashtagbasit/SteamOS-ARM-Handhelds handheld RUNSTEAM.sh.
+# Client choice (FX Steam Launcher: Settings > Advanced "Steam client", the
+# Create SteamOS Disk sheet, the first-run alert, `--steam-client`), passed on
+# every boot as kernel cmdline steamac.steam_client=frame|deck|deckbeta:
+# - frame (and absent: older launchers, a custom --cmdline): the stock Frame
+#   client. Once a Steam account is remembered this is byte-for-byte stock
+#   behaviour — stock flags (-deckard, -vrgamepadui) and the stock client branch
+#   from package/beta (the Frame tarball ships linux_arm64_beta_<hash>, the
+#   Steam Frame client beta; running Proton games works with it in the VM).
+#   Before that: sign-in mode (below).
+# - deck / deckbeta: the public arm64 Steam Deck client, branch steamdeck_stable
+#   / steamdeck_publicbeta (client-update.steamstatic.com/
+#   steam_client_<branch>_linuxarm64). The branch is written to package/beta
+#   before every launch (the bootstrapper downloads/installs that client, shown
+#   by the FX boot overlay) and the Frame-only flags -deckard (Steam Frame client
+#   personality) and -vrgamepadui (VR gamepad UI) are dropped. Same flags as the
+#   hashtagbasit/SteamOS-ARM-Handhelds handheld RUNSTEAM.sh. No sign-in mode.
+# Manual opt-in: /etc/steamac/steam-client-branch (first word, any client
+# branch; lives on the /etc overlay of var-X) acts like deck with that branch
+# when the cmdline says frame or nothing; cmdline deck/deckbeta win over it.
+# Back to the Frame client: frame (and no file); with -deckard the bootstrapper
+# switches package/beta back to the Frame client beta itself.
 #
 # Sign-in mode: while no Steam account is remembered (config/loginusers.vdf has
 # no user with "AutoLogin"/"AllowAutoLogin" "1": fresh disk, signed out, or
@@ -40,13 +46,26 @@
 set -euo pipefail
 STEAMROOT="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
-# steamac: optional public client channel (see header).
-STEAMAC_BRANCH_CONF=/etc/steamac/steam-client-branch
+# steamac: Steam client choice (see header).
+STEAMAC_CLIENT=""
+read -r -a _cmdline < /proc/cmdline || true
+for _w in "${_cmdline[@]}"; do
+  case "${_w}" in steamac.steam_client=*) STEAMAC_CLIENT="${_w#steamac.steam_client=}" ;; esac
+done
 STEAMAC_BRANCH=""
-if [[ -r "${STEAMAC_BRANCH_CONF}" ]]; then
+STEAMAC_BRANCH_SOURCE="steamac.steam_client=${STEAMAC_CLIENT}"
+case "${STEAMAC_CLIENT}" in
+  deck) STEAMAC_BRANCH=steamdeck_stable ;;
+  deckbeta) STEAMAC_BRANCH=steamdeck_publicbeta ;;
+  frame|"") ;;
+  *) echo "steamac: ignoring unknown steamac.steam_client='${STEAMAC_CLIENT}'" >&2 ;;
+esac
+STEAMAC_BRANCH_CONF=/etc/steamac/steam-client-branch
+if [[ -z "${STEAMAC_BRANCH}" && -r "${STEAMAC_BRANCH_CONF}" ]]; then
   read -r _branch _ < "${STEAMAC_BRANCH_CONF}" || true
   if [[ "${_branch:-}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     STEAMAC_BRANCH="${_branch}"
+    STEAMAC_BRANCH_SOURCE="${STEAMAC_BRANCH_CONF}"
   else
     echo "steamac: ignoring invalid branch '${_branch:-}' in ${STEAMAC_BRANCH_CONF}" >&2
   fi
@@ -177,12 +196,12 @@ fi
 cd ${STEAMROOT}
 mkdir -p "${HOME}/.local/share/Steam/logs"
 
-# steamac: optional public client channel (see header).
+# steamac: Steam Deck client branch (see header).
 if [[ "${IS_SIDELOAD}" == "0" && -n "${STEAMAC_BRANCH}" ]]; then
   _beta_file="${STEAMROOT}/package/beta"
   _current="$(head -n1 "${_beta_file}" 2>/dev/null || true)"
   if [[ "${_current}" != "${STEAMAC_BRANCH}" ]]; then
-    echo "steamac: Steam client branch '${_current:-<none>}' -> '${STEAMAC_BRANCH}' (${STEAMAC_BRANCH_CONF})"
+    echo "steamac: Steam client branch '${_current:-<none>}' -> '${STEAMAC_BRANCH}' (${STEAMAC_BRANCH_SOURCE})"
     mkdir -p "${STEAMROOT}/package"
     printf '%s\n' "${STEAMAC_BRANCH}" > "${_beta_file}"
   fi

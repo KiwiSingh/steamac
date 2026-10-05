@@ -157,7 +157,7 @@ enum FirstRun {
         info += "Create a new one: the official SteamOS image is downloaded from Valve and verified (about 4.5 GB; the disk "
         info += "uses ~10 GB on your Mac at first). Or choose an existing image, which is used in place and never copied."
         alert.informativeText = info
-        alert.accessoryView = CrashReportsToggle.accessoryView(settings: settings)
+        alert.accessoryView = SteamClientPicker.alertAccessoryView(settings: settings)
         alert.addButton(withTitle: "Create New Disk…")
         alert.addButton(withTitle: "Use Existing Disk…")
         alert.addButton(withTitle: "Quit")

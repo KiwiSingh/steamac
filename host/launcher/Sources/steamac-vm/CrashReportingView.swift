@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 /// "Send crash reports and diagnostics" (CrashReporting): Settings > General, the first-run
-/// alert and the Create SteamOS Disk sheet. Bound to `sendCrashReports`; the VM process applies
-/// a change right away, the supervisor before the next boot or report.
+/// alert (SteamClientPicker.alertAccessoryView) and the Create SteamOS Disk sheet. Bound to
+/// `sendCrashReports`; the VM process applies a change right away, the supervisor before the
+/// next boot or report.
 struct CrashReportsToggle: View {
     @ObservedObject var settings: LauncherSettings
     /// Settings window: the "applies now" / command-line override captions.
@@ -31,14 +32,6 @@ struct CrashReportsToggle: View {
             }
         }
         if checkbox { toggle.toggleStyle(.checkbox) } else { toggle }
-    }
-
-    /// NSAlert accessory view (first-run alert).
-    static func accessoryView(settings: LauncherSettings, width: CGFloat = 320) -> NSView {
-        let host = NSHostingView(rootView: CrashReportsToggle(settings: settings, checkbox: true)
-            .frame(width: width, alignment: .leading))
-        host.frame.size = host.fittingSize
-        return host
     }
 }
 
