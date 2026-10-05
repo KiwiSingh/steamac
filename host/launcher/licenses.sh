@@ -9,8 +9,6 @@ ROOT=$(cd "$HERE/../.." && pwd)
 export STEAMAC_ROOT="$ROOT"
 python3 - <<'PY'
 import atexit
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import threading
 import json
 import os
 from pathlib import Path
@@ -37,9 +35,17 @@ def require(path):
     if not path.is_file():
         raise RuntimeError(f'missing license input: {path}')
     return path
+def pinned_text(filename, url):
+    path = root / 'work/cache/licenses' / filename
+    if not path.is_file():
+        path.write_bytes(subprocess.check_output(['curl', '-fsSL', '--retry', '3', url]))
+    return require(path).read_bytes()
+
 
 def spdx(text):
     lower = text.lower()
+    if 'cc0 1.0 universal' in lower:
+        return 'CC0-1.0'
     if 'gnu general public license' in lower:
         return 'GPL-3.0-or-later' if 'version 3' in lower else 'GPL-2.0-only'
     if 'apache license' in lower or 'apache software license' in lower:
@@ -91,9 +97,13 @@ def archive(name, version, license_id, location, url, filename, prefixes):
 
 host = 'Contents/Frameworks'
 res = 'Contents/Resources'
+launcher = 'Contents/MacOS/steamac-vm'
 krun = root / 'work/build/host-libkrun/src'
 source('libkrun', '1.19.6', 'Apache-2.0', host + '/libkrun.1.dylib',
        'https://github.com/libkrun/libkrun/tree/v1.19.6', krun)
+source('libkrun-rutabaga-gfx', '1.19.6', 'BSD-3-Clause', host + '/libkrun.1.dylib',
+       'https://github.com/google/crosvm/tree/main/rutabaga_gfx',
+       krun / 'src/rutabaga_gfx', ('ffi/LICENSE',))
 source('virglrenderer', '5d26f605+aafa9bd2', 'MIT', host + '/libvirglrenderer.1.dylib',
        'https://github.com/utmapp/virglrenderer', root / 'work/build/host-virglrenderer/src')
 mvk = root / 'work/build/host-moltenvk/src'
@@ -119,10 +129,12 @@ epoxy = Path(run('brew', '--prefix', 'libepoxy'))
 source('libepoxy', run('brew', 'list', '--versions', 'libepoxy').split()[-1], 'MIT',
        host + '/libepoxy.0.dylib', 'https://github.com/anholt/libepoxy', epoxy)
 sentry = root / 'host/launcher/.build/checkouts/sentry-cocoa'
-source('sentry-cocoa', '9.30.0', None, res + '/../MacOS/steamac-vm',
+source('sentry-cocoa', '9.30.0', None, launcher,
        'https://github.com/getsentry/sentry-cocoa/tree/9.30.0', sentry)
-source('zstd', 'bundled CZstd source', 'BSD-3-Clause', res + '/../MacOS/steamac-vm',
-       'https://github.com/facebook/zstd', root / 'host/launcher/Sources/CZstd/zstd')
+zstd = root / 'host/launcher/Sources/CZstd/zstd'
+zstd_version = require(zstd / 'VERSION').read_text().split()[0]
+source('zstd', zstd_version, 'BSD-3-Clause', launcher,
+       'https://github.com/facebook/zstd/tree/v' + zstd_version, zstd)
 
 # Only resolved target-specific packages count; build dependencies and proc macros are
 # included since their license conditions may apply to generated/embedded code.
@@ -147,28 +159,16 @@ rust_graph(root / 'guest/progress-agent/Cargo.toml', '', 'aarch64-unknown-linux-
 # go version -m describes the exact binary (including versions other than the current
 # module graph). Download each module to an isolated, persistent cache, never a guess.
 goenv = dict(os.environ, GOMODCACHE=str(cache), GOWORK='off')
-# On hosts with broken DNS but working HTTPS, the optional address routes Go
-# proxy requests through curl's TLS-safe --resolve; normal builds use GOPROXY.
-if address := os.environ.get('GO_PROXY_RESOLVE'):
-    class Proxy(BaseHTTPRequestHandler):
-        def do_GET(self):
-            response = subprocess.run(['curl', '-fsSL', '--retry', '3', '--resolve',
-                                       'proxy.golang.org:443:' + address,
-                                       'https://proxy.golang.org' + self.path], capture_output=True)
-            self.send_response(200 if response.returncode == 0 else 404)
-            self.end_headers()
-            self.wfile.write(response.stdout if response.returncode == 0 else response.stderr)
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    atexit.register(server.shutdown)
-    goenv.update(GOPROXY=f'http://127.0.0.1:{server.server_port}', GOSUMDB='off')
 for binary in ('gvproxy', 'desync'):
     location = res + '/' + binary
     lines = run('go', 'version', '-m', str(root / 'work/out/host/bin' / binary)).splitlines()
+    go_version = lines[0].split()[-1]
+    if not re.fullmatch(r'go[0-9]+\.[0-9]+(?:\.[0-9]+)?', go_version):
+        raise RuntimeError(f'{binary}: unknown embedded Go toolchain version: {go_version}')
+    add('go-runtime-' + binary, go_version, 'BSD-3-Clause', location,
+        'https://github.com/golang/go/tree/' + go_version,
+        [('LICENSE', pinned_text('go-' + go_version + '-LICENSE',
+          'https://raw.githubusercontent.com/golang/go/' + go_version + '/LICENSE'))])
     modules = [line.strip().split() for line in lines if line.strip().startswith(('mod\t', 'dep\t'))]
     for kind, module, version, *remainder in modules:
         info = json.loads(run('go', 'mod', 'download', '-json', module + '@' + version, env=goenv, cwd=root))
@@ -195,6 +195,20 @@ for line in (root / 'scripts/config.env').read_text().splitlines():
     match = re.match(r'^([A-Z][A-Z0-9_]*)=(.*)$', line)
     if match:
         config[match[1]] = match[2]
+host_rust = re.search(r'^RUST_TOOLCHAIN=\$\{RUST_TOOLCHAIN:-([0-9.]+)\}',
+                      (root / 'host/libkrun/build.sh').read_text(), re.M)
+if not host_rust:
+    raise RuntimeError('missing pinned host libkrun Rust toolchain')
+guest_rust = run('docker', 'run', '--rm', '--platform', 'linux/arm64',
+                 config['RUST_IMAGE'], 'rustc', '--version').split()[1]
+for kind, version, location in (
+    ('host', host_rust.group(1), host + '/libkrun.1.dylib'),
+    ('guest', guest_rust, res + '/steamac-layer.img:/usr/bin/fx-progress-agent')):
+    url = 'https://github.com/rust-lang/rust/tree/' + version
+    add('rust-runtime-' + kind, version, 'Apache-2.0 OR MIT', location, url,
+        [(license, pinned_text('rust-' + version + '-' + license,
+          'https://raw.githubusercontent.com/rust-lang/rust/' + version + '/' + license))
+         for license in ('LICENSE-APACHE', 'LICENSE-MIT')])
 image = res + '/Image'
 init = res + '/initramfs.cpio.gz'
 layer = res + '/steamac-layer.img'
@@ -204,14 +218,20 @@ archive('linux-kernel', kernel_version, 'GPL-2.0-only WITH Linux-syscall-note', 
         root / f'work/cache/kernel/linux-{kernel_version}.tar.xz', ('COPYING', 'LICENSES/exceptions/Linux-syscall-note', 'LICENSES/preferred/GPL-2.0'))
 # busybox is the Debian snapshot's busybox-static; retrieve the matching installed
 # package copyright instead of pretending a GPL text from another release is sufficient.
-busybox_copyright = root / 'work/cache/licenses/busybox-copyright'
+builder = config['BUILDER_IMAGE']
+builder_hash = run('docker', 'image', 'inspect', '-f', '{{.Id}}', builder).split(':')[-1][:16]
+busybox_version = run('docker', 'run', '--rm', '--platform', 'linux/arm64', builder,
+                      'dpkg-query', '-W', '-f=${Version}', 'busybox-static')
+busybox_copyright = root / 'work/cache/licenses' / ('busybox-' + builder_hash + '-copyright')
 if not busybox_copyright.is_file():
     data = subprocess.check_output(['docker', 'run', '--rm', '--platform', 'linux/arm64',
-                                    'steamac-image-builder:4', 'cat', '/usr/share/doc/busybox-static/copyright'])
+                                    builder, 'cat', '/usr/share/doc/busybox-static/copyright'])
     busybox_copyright.parent.mkdir(parents=True, exist_ok=True)
     busybox_copyright.write_bytes(data)
-add('busybox-static', 'Debian trixie snapshot ' + config['DEBIAN_SNAPSHOT'], 'GPL-2.0-only', init + ':/bin/busybox',
-    'https://sources.debian.org/src/busybox/', [('copyright', require(busybox_copyright).read_bytes())])
+add('busybox-static', busybox_version, 'GPL-2.0-only', init + ':/bin/busybox',
+    'https://sources.debian.org/src/busybox/',
+    [('copyright', require(busybox_copyright).read_bytes()),
+     ('GPL-2.0', require(stage / 'linux-kernel/LICENSES/preferred/GPL-2.0').read_bytes())])
 archive('dosfstools', config['DOSFSTOOLS_VERSION'], 'GPL-3.0-or-later', init + ':/bin/{fsck.fat,mkfs.fat}',
         config['DOSFSTOOLS_URL'], root / f"work/cache/dosfstools/{config['DOSFSTOOLS_VERSION']}/dosfstools-{config['DOSFSTOOLS_VERSION']}.tar.gz",
         ('COPYING', 'LICENSE'))
@@ -227,26 +247,23 @@ for line in (root / 'guest/mesa/versions.env').read_text().splitlines():
     match = re.match(r'^([A-Z][A-Z0-9_]*)=(.*)$', line)
     if match:
         versions[match[1]] = match[2]
-mesa_cache = root / 'work/cache/licenses' / ('mesa-' + versions['MESA_COMMIT'] + '-license.rst')
-if not mesa_cache.is_file():
-    url = 'https://gitlab.freedesktop.org/mesa/mesa/-/raw/' + versions['MESA_COMMIT'] + '/docs/license.rst'
-    args = ['curl', '-fsSL', '--retry', '3']
-    if os.environ.get('GO_PROXY_RESOLVE'):
-        args += ['--doh-url', 'https://cloudflare-dns.com/dns-query',
-                 '--resolve', 'cloudflare-dns.com:443:1.1.1.1']
-    mesa_cache.write_bytes(subprocess.check_output(args + [url]))
 add('Mesa', versions['MESA_COMMIT'], 'MIT', layer + ':/usr/lib and /usr/share/guestos/fex-mesa',
-    versions['MESA_URL'], [('license.rst', require(mesa_cache).read_bytes())])
+    versions['MESA_URL'], [('license.rst', pinned_text(
+        'mesa-' + versions['MESA_COMMIT'] + '-license.rst',
+        'https://gitlab.freedesktop.org/mesa/mesa/-/raw/' + versions['MESA_COMMIT'] + '/docs/license.rst'))])
+own_docs = []
 for filename in ('LICENSE', 'NOTICE'):
     path = root / filename
     if path.is_file():
-        add('steamac-' + filename.lower(), '2026', 'Apache-2.0', res + '/licenses',
-            'https://github.com/fxgames/steamac', [(filename, path.read_bytes())])
+        own_docs.append((filename, path.read_bytes()))
     else:
         print(f'warning: {path} not yet present; skipping', file=sys.stderr)
+if own_docs:
+    add('steamac', '2026', 'Apache-2.0', res + '/licenses',
+        'https://github.com/fxgl/steamac', own_docs)
 
 index = ['Third-party license notices for FX Steam Launcher',
-         'Each listed directory contains the complete upstream license, copyright and notice files available for this component.',
+         'Each listed directory contains the upstream license, copyright and notice files for this component.',
          'The SteamOS root filesystem acquired by the launcher is distributed separately by Valve.', '']
 for name, version, license_id, location, url in sorted(entries):
     index += [f'{name} | {version} | {license_id}', f'  In bundle: {location}', f'  Source: {url}', f'  License texts: {name}/', '']

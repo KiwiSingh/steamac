@@ -266,8 +266,12 @@ CMS/squashfs против кеша `work/cache/rootfs`, cpio, SHA-512 crypt.
 Какой клиент Steam запускает SteamOS, выбирается в лаунчере: окно первого запуска, окно
 **Create SteamOS Disk** и **Settings → Advanced → Steam client** (applies on next start, «Restart VM
 to apply»), для одного запуска — `--steam-client frame|deck|deckbeta`. Лаунчер передаёт выбор при
-каждой загрузке в cmdline ядра `steamac.steam_client=…`, `RUNSTEAM.sh` из слоя читает его при
-каждом старте Steam.
+каждой загрузке в cmdline ядра `steamac.steam_client=…`; его читает `/usr/lib/steamac/steam-client`
+из слоя при каждом старте Steam. Сервис Steam остаётся стоковым из SteamOS (`steam.service`), слой
+добавляет к нему только drop-in `steam.service.d/50-steamac.conf`; `steam-client` перед стартом
+копирует стоковый `/usr/share/deckard/RUNSTEAM.sh` в `~/.local/share/Steam/` — без изменений для
+клиента Frame с запомненным аккаунтом, а в режимах `deck`/ветки/входа удаляет из копии только строки
+аргументов `-deckard` и `-vrgamepadui`. Файлы Valve в слой не входят.
 
 | Вариант | Что это | Плюсы и минусы |
 |---|---|---|
@@ -286,7 +290,7 @@ to apply»), для одного запуска — `--steam-client frame|deck|d
 Экран входа клиента Steam Frame рассчитан на шлем: «Tap to confirm» связывается с телефоном по
 Bluetooth LE, «Scan QR code» открывает VR-окно — в ВМ оба не работают (остаётся только пароль).
 Поэтому с клиентом Steam Frame, пока в `config/loginusers.vdf` нет запомненного аккаунта (новый
-диск, выход из аккаунта, вход без «Remember me»), `RUNSTEAM.sh` запускает Steam без `-deckard`/`-vrgamepadui`: загрузчик сам
+диск, выход из аккаунта, вход без «Remember me»), `steam-client` запускает Steam без `-deckard`/`-vrgamepadui`: загрузчик сам
 переключается на публичный ARM64-клиент Steam Deck (`steamdeck_stable`), и вход показывает
 QR-код на экране (Steam Mobile App → Steam Guard → сканировать) рядом с формой пароля. После входа
 с «Remember me» Steam один раз перезапускается и возвращается к клиенту Steam Frame (каждая смена
@@ -318,6 +322,16 @@ host/launcher/dist.sh       # подпись, нотаризация, DMG
 --password <app-specific password>`. Переменные: `STEAMAC_SIGN_IDENTITY` (по умолчанию
 единственная «Developer ID Application» в связке), `NOTARY_PROFILE` (по умолчанию `steamac-notary`);
 `--no-notarize` — только подпись, для локальной проверки (скачанную копию Gatekeeper не пустит).
+
+Лицензии: `bundle.sh` кладёт в `Contents/Resources/licenses` все тексты лицензий сторонних
+компонентов бандла и индекс `THIRD-PARTY-NOTICES.txt` (компонент, версия, SPDX, где лежит в бандле,
+исходники; собирает `host/launcher/licenses.sh` в `work/out/licenses`, в том числе крейты libkrun и
+модули Go из gvproxy/desync), плюс `LICENSE` и `NOTICE` проекта в `licenses/steamac/`. `dist.sh`
+вызывает `scripts/gpl-sources.sh` и рядом с DMG кладёт
+`work/out/dist/FX-Steam-Launcher-<версия>-gpl-sources.tar` — полный исходный код GPL-компонентов
+(ядро с патчами и конфигом, busybox из Debian-снапшота, dosfstools, e2fsprogs, btrfs-progs, скрипты
+сборки, `README.txt`); его прикладывают к релизу на GitHub вместе с DMG. Для старого релиза:
+`scripts/gpl-sources.sh v1.2`.
 
 ## Отчёты о сбоях (Sentry)
 
