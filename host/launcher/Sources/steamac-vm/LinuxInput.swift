@@ -43,6 +43,8 @@ enum BTN {
     static let WEST: UInt16 = 0x134    // BTN_Y
     static let TL: UInt16 = 0x136
     static let TR: UInt16 = 0x137
+    static let TL2: UInt16 = 0x138
+    static let TR2: UInt16 = 0x139
     static let SELECT: UInt16 = 0x13a
     static let START: UInt16 = 0x13b
     static let MODE: UInt16 = 0x13c

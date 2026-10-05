@@ -14,6 +14,13 @@ final class GamepadBridge {
     private var observers: [NSObjectProtocol] = []
     private var subscriptions: [AnyCancellable] = []
 
+    enum Layout { case standard, playstation }
+    private var layout: Layout { device.ids.vendor == 0x054c ? .playstation : .standard }
+    private var deviceButtons: [UInt16] { Self.buttons(for: layout) }
+    static func buttons(for layout: Layout) -> [UInt16] {
+        layout == .playstation ? buttonCodes + [BTN.TL2, BTN.TR2] : buttonCodes
+    }
+
     struct PadState: Equatable {
         var buttons: [UInt16: Bool] = [:]
         var axes: [UInt16: Int32] = [:]
@@ -26,7 +33,7 @@ final class GamepadBridge {
     init(device: InputDevice, settings: LauncherSettings) {
         self.device = device
         self.settings = settings
-        for c in GamepadBridge.buttonCodes { state.buttons[c] = false }
+        for c in deviceButtons { state.buttons[c] = false }
         for a in GamepadBridge.axisCodes { state.axes[a] = 0 }
     }
 
@@ -121,7 +128,7 @@ final class GamepadBridge {
         controller?.extendedGamepad?.valueChangedHandler = nil
         controller = next
         // Release everything the previous controller held.
-        apply(PadState(buttons: Dictionary(uniqueKeysWithValues: GamepadBridge.buttonCodes.map { ($0, false) }),
+        apply(PadState(buttons: Dictionary(uniqueKeysWithValues: deviceButtons.map { ($0, false) }),
                        axes: Dictionary(uniqueKeysWithValues: GamepadBridge.axisCodes.map { ($0, 0) })))
         guard let pad = next?.extendedGamepad else {
             log("gamepad: none connected")
@@ -142,7 +149,7 @@ final class GamepadBridge {
     }
 
     private func update(from pad: GCExtendedGamepad) {
-        apply(GamepadBridge.read(pad, swapABXY: settings.swapABXY, deadzone: Float(settings.stickDeadzone) / 100))
+        apply(GamepadBridge.read(pad, swapABXY: settings.swapABXY, deadzone: Float(settings.stickDeadzone) / 100, layout: layout))
     }
 
     private static func axis(_ v: Float) -> Int32 {
@@ -158,30 +165,59 @@ final class GamepadBridge {
         return (x * scale, y * scale)
     }
 
-    static func read(_ p: GCExtendedGamepad, swapABXY: Bool, deadzone: Float) -> PadState {
+    static func read(_ p: GCExtendedGamepad, swapABXY: Bool, deadzone: Float, layout: Layout = .standard) -> PadState {
         var s = PadState()
         let (south, east) = swapABXY ? (p.buttonB, p.buttonA) : (p.buttonA, p.buttonB)
         let (west, north) = swapABXY ? (p.buttonY, p.buttonX) : (p.buttonX, p.buttonY)
-        s.buttons[BTN.SOUTH] = south.isPressed
-        s.buttons[BTN.EAST] = east.isPressed
-        s.buttons[BTN.NORTH] = north.isPressed    // Linux BTN_NORTH: triangle / Y
-        s.buttons[BTN.WEST] = west.isPressed    // Linux BTN_WEST: square / X
+        // Steam's VID/PID-specific PS5 mapping expects joystick button order
+        // square, cross, circle, triangle, followed by shoulders and triggers.
+        // Keep the standard semantic evdev layout for generic virtual pads.
+        if layout == .playstation {
+            s.buttons[BTN.SOUTH] = west.isPressed
+            s.buttons[BTN.EAST] = south.isPressed
+            s.buttons[BTN.NORTH] = east.isPressed
+            s.buttons[BTN.WEST] = north.isPressed
+            s.buttons[BTN.TL2] = p.leftTrigger.isPressed
+            s.buttons[BTN.TR2] = p.rightTrigger.isPressed
+        } else {
+            s.buttons[BTN.SOUTH] = south.isPressed
+            s.buttons[BTN.EAST] = east.isPressed
+            s.buttons[BTN.NORTH] = north.isPressed
+            s.buttons[BTN.WEST] = west.isPressed
+        }
         s.buttons[BTN.TL] = p.leftShoulder.isPressed
         s.buttons[BTN.TR] = p.rightShoulder.isPressed
         s.buttons[BTN.SELECT] = p.buttonOptions?.isPressed ?? false
         s.buttons[BTN.START] = p.buttonMenu.isPressed
-        s.buttons[BTN.MODE] = p.buttonHome?.isPressed ?? false
-        s.buttons[BTN.THUMBL] = p.leftThumbstickButton?.isPressed ?? false
-        s.buttons[BTN.THUMBR] = p.rightThumbstickButton?.isPressed ?? false
+        if layout == .playstation {
+            // PS5 joystick buttons: L3 b10, R3 b11, PS b12.
+            s.buttons[BTN.MODE] = p.leftThumbstickButton?.isPressed ?? false
+            s.buttons[BTN.THUMBL] = p.rightThumbstickButton?.isPressed ?? false
+            s.buttons[BTN.THUMBR] = p.buttonHome?.isPressed ?? false
+        } else {
+            s.buttons[BTN.MODE] = p.buttonHome?.isPressed ?? false
+            s.buttons[BTN.THUMBL] = p.leftThumbstickButton?.isPressed ?? false
+            s.buttons[BTN.THUMBR] = p.rightThumbstickButton?.isPressed ?? false
+        }
         // xpad reports Y axes inverted relative to GameController (up = negative).
         let l = deadzoned(p.leftThumbstick.xAxis.value, p.leftThumbstick.yAxis.value, deadzone)
         let r = deadzoned(p.rightThumbstick.xAxis.value, p.rightThumbstick.yAxis.value, deadzone)
         s.axes[ABS.X] = axis(l.0)
         s.axes[ABS.Y] = -axis(l.1)
-        s.axes[ABS.RX] = axis(r.0)
-        s.axes[ABS.RY] = -axis(r.1)
-        s.axes[ABS.Z] = Int32((max(0, min(1, p.leftTrigger.value)) * 255).rounded())
-        s.axes[ABS.RZ] = Int32((max(0, min(1, p.rightTrigger.value)) * 255).rounded())
+        let leftTrigger = Int32((max(0, min(1, p.leftTrigger.value)) * 255).rounded())
+        let rightTrigger = Int32((max(0, min(1, p.rightTrigger.value)) * 255).rounded())
+        if layout == .playstation {
+            // PS5 SDL mapping: right stick a2/a5, triggers a3/a4.
+            s.axes[ABS.Z] = axis(r.0)
+            s.axes[ABS.RZ] = -axis(r.1)
+            s.axes[ABS.RX] = leftTrigger
+            s.axes[ABS.RY] = rightTrigger
+        } else {
+            s.axes[ABS.RX] = axis(r.0)
+            s.axes[ABS.RY] = -axis(r.1)
+            s.axes[ABS.Z] = leftTrigger
+            s.axes[ABS.RZ] = rightTrigger
+        }
         let d = p.dpad
         s.axes[ABS.HAT0X] = d.left.isPressed ? -1 : (d.right.isPressed ? 1 : 0)
         s.axes[ABS.HAT0Y] = d.up.isPressed ? -1 : (d.down.isPressed ? 1 : 0)
@@ -190,7 +226,7 @@ final class GamepadBridge {
 
     private func apply(_ next: PadState) {
         var events: [(UInt16, UInt16, Int32)] = []
-        for c in GamepadBridge.buttonCodes where next.buttons[c] != state.buttons[c] {
+        for c in deviceButtons where next.buttons[c] != state.buttons[c] {
             events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))
         }
         for a in GamepadBridge.axisCodes where next.axes[a] != state.axes[a] {
@@ -203,10 +239,11 @@ final class GamepadBridge {
     /// --input-selftest: press/release A and push the left stick right, then return to rest.
     func injectTestSequence() {
         var s = state
-        s.buttons[BTN.SOUTH] = true
+        let confirm = layout == .playstation ? BTN.EAST : BTN.SOUTH
+        s.buttons[confirm] = true
         s.axes[ABS.X] = 32767
         apply(s)
-        s.buttons[BTN.SOUTH] = false
+        s.buttons[confirm] = false
         s.axes[ABS.X] = 0
         apply(s)
     }

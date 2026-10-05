@@ -246,15 +246,20 @@ enum InputDevices {
     static func controllerPad(settings: LauncherSettings) -> InputDevice? {
         guard let controller = GamepadBridge.selectedController(settings: settings) else { return nil }
         let identity = GamepadBridge.identity(of: controller)
+        let layout: GamepadBridge.Layout = identity.vendor == 0x054c ? .playstation : .standard
         let stick = AbsAxis(min: -32768, max: 32767, fuzz: 16, flat: 128)
         let trigger = AbsAxis(min: 0, max: 255)
         let hat = AbsAxis(min: -1, max: 1)
         return InputDevice(name: identity.name, serial: "steamac-gamepad",
             ids: krun_input_device_ids(bustype: identity.vendor == 0x1af4 ? BUS.VIRTUAL : BUS.USB,
                                       vendor: identity.vendor, product: identity.product, version: 1),
-            capabilities: [EV.KEY: GamepadBridge.buttonCodes, EV.ABS: GamepadBridge.axisCodes],
-            absInfo: [ABS.X: stick, ABS.Y: stick, ABS.RX: stick, ABS.RY: stick,
-                      ABS.Z: trigger, ABS.RZ: trigger, ABS.HAT0X: hat, ABS.HAT0Y: hat])
+            capabilities: [EV.KEY: GamepadBridge.buttons(for: layout), EV.ABS: GamepadBridge.axisCodes],
+            absInfo: [ABS.X: stick, ABS.Y: stick,
+                      ABS.RX: layout == .playstation ? trigger : stick,
+                      ABS.RY: layout == .playstation ? trigger : stick,
+                      ABS.Z: layout == .playstation ? stick : trigger,
+                      ABS.RZ: layout == .playstation ? stick : trigger,
+                      ABS.HAT0X: hat, ABS.HAT0Y: hat])
     }
 
 }
