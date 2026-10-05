@@ -36,7 +36,8 @@ ditto "$SRC" "$APP"
 /usr/libexec/PlistBuddy -c 'Delete :SteamacBuildOut' "$APP/Contents/Info.plist" 2>/dev/null || true
 cp "$WORK/steamac-layer.img" "$APP/Contents/Resources/steamac-layer.img"
 cp README.md "$STAGE/README.md"
-cp docs/fork-setup.md "$STAGE/FORK-SETUP.md"
+mkdir -p "$STAGE/docs"
+cp docs/fork-setup.md "$STAGE/docs/fork-setup.md"
 # Fork builds are not represented as Developer-ID signed or notarized.
 codesign --force --sign - --timestamp=none --entitlements host/launcher/steamac-vm.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
