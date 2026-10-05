@@ -1,0 +1,11 @@
+#version 450
+// A small storage buffer bound with a push descriptor, robustBufferAccess2 (bench.c push_ssbo): each dispatch
+// adds 1 to 64 words. Before MoltenVK 0030 the buffer was replaced by a 64 KiB copy at every bind.
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) buffer data_t { uint v[]; };
+
+void main()
+{
+	v[gl_LocalInvocationIndex] += 1u;
+}

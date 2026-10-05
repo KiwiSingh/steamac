@@ -18,6 +18,13 @@
  *   occl_copy_all          the 4096 occlusion queries in one packed 64-bit copy (blit path), 64 times
  *   xfb_copy_each          the same per-query copies for 4096 transform feedback queries (0028)
  *   occl_get / xfb_get     vkGetQueryPoolResults of the 4096 queries, 64-bit with availability
+ *   texel_load_aligned     1M invocations x 256 gathered texelFetch from a 4 MiB R32_UINT texel buffer view at byte 0 /
+ *   texel_load_unalign     byte 4, argument buffer set (MoltenVK 0029: shaders add the view's texel offset; byte 4
+ *                          needs single texel alignment)
+ *   texel_update           vkUpdateDescriptorSets of 4096 texel buffer descriptors, one write each (host time; 0029
+ *                          also writes the texel offset of each)
+ *   push_ssbo              256 dispatches, each with a push descriptor for a 256-byte storage buffer, robustBufferAccess2
+ *                          (MoltenVK 0030: the buffer was replaced by a 64 KiB copy at every bind)
  *
  *   bench <spv dir> <repro spv dir>
  */
@@ -367,6 +374,168 @@ static void bench_queries(const char *prefix, VkQueryType type, uint32_t element
 	printf("BENCH %-18s %10.3f %10.3f %10.3f\n", name, t[REPS / 2], t[0], 0.0);
 }
 
+/* texel_load_aligned, texel_load_unalign: texel_load.comp over a 4 MiB R32_UINT view at byte 0 / byte 4 (16-byte
+ * aligned offsets need no emulation; 4 is not representable without it). */
+static void bench_texel_load(const char *name, const char *dir, VkDeviceSize offset)
+{
+	VkPhysicalDeviceVulkan13Properties p13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES };
+	VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13 };
+	vkGetPhysicalDeviceProperties2(pd, &p2);
+	if (offset % p13.uniformTexelBufferOffsetAlignmentBytes && !p13.uniformTexelBufferOffsetSingleTexelAlignment) {
+		na(name, "no single texel alignment", VK_ERROR_FEATURE_NOT_PRESENT);
+		return;
+	}
+	const uint32_t texels = 1u << 20;
+	VkBuffer src = buffer((VkDeviceSize)texels * 4 + 16, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, NULL);
+	VkBuffer out = buffer((VkDeviceSize)texels * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, NULL);
+	VkBufferViewCreateInfo vci = { VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = src, .format = VK_FORMAT_R32_UINT,
+		.offset = offset, .range = (VkDeviceSize)texels * 4 };
+	VkBufferView view;
+	VkResult r = vkCreateBufferView(dev, &vci, NULL, &view);
+	if (r) { na(name, "buffer view creation failed", r); return; }
+	VkDescriptorSetLayoutBinding b[2] = {
+		{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+		{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+	};
+	VkDescriptorSetLayoutCreateInfo dslci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b };
+	VkDescriptorSetLayout dsl;
+	CK(vkCreateDescriptorSetLayout(dev, &dslci, NULL, &dsl));
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 };
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+		.pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
+	VkPipelineLayout layout;
+	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		           .module = module(dir, "texel_load.comp.spv"), .pName = "main" }, .layout = layout };
+	VkPipeline p;
+	r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
+	if (r) { na(name, "pipeline creation failed", r); return; }
+	VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 } };
+	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps };
+	VkDescriptorPool dp;
+	CK(vkCreateDescriptorPool(dev, &dpci, NULL, &dp));
+	VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp,
+		.descriptorSetCount = 1, .pSetLayouts = &dsl };
+	VkDescriptorSet set;
+	CK(vkAllocateDescriptorSets(dev, &dsai, &set));
+	VkDescriptorBufferInfo obi = { out, 0, VK_WHOLE_SIZE };
+	VkWriteDescriptorSet w[2] = {
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+		  .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = &view },
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+		  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi },
+	};
+	vkUpdateDescriptorSets(dev, 2, w, 0, NULL);
+	VkCommandBuffer fill = new_cmd();
+	vkCmdFillBuffer(fill, src, 0, VK_WHOLE_SIZE, 1);
+	CK(vkEndCommandBuffer(fill));
+	submit_wait(fill);
+	uint32_t mask = texels - 1;
+	VkCommandBuffer cmd = new_cmd();
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
+	vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &mask);
+	vkCmdDispatch(cmd, texels / 64, 1, 1);
+	CK(vkEndCommandBuffer(cmd));
+	time_submits(name, VK_NULL_HANDLE, cmd);
+}
+
+/* texel_update: vkUpdateDescriptorSets of 4096 texel buffer descriptors (one write each) in an argument buffer set,
+ * CPU time per 4096 writes (the emulation also writes the texel offset of each). */
+static void bench_texel_update(const char *name)
+{
+	enum { N = 4096 };
+	VkBuffer src = buffer(N * 16 + 16, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT, NULL);
+	static VkBufferView views[N];
+	for (uint32_t i = 0; i < N; i++) {
+		VkBufferViewCreateInfo vci = { VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = src, .format = VK_FORMAT_R32_UINT,
+			.offset = 16 * i, .range = 16 };
+		CK(vkCreateBufferView(dev, &vci, NULL, &views[i]));
+	}
+	VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, N, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+	VkDescriptorSetLayoutCreateInfo dslci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b };
+	VkDescriptorSetLayout dsl;
+	CK(vkCreateDescriptorSetLayout(dev, &dslci, NULL, &dsl));
+	VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, N };
+	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps };
+	VkDescriptorPool dp;
+	CK(vkCreateDescriptorPool(dev, &dpci, NULL, &dp));
+	VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp,
+		.descriptorSetCount = 1, .pSetLayouts = &dsl };
+	VkDescriptorSet set;
+	CK(vkAllocateDescriptorSets(dev, &dsai, &set));
+	static VkWriteDescriptorSet w[N];
+	for (uint32_t i = 0; i < N; i++)
+		w[i] = (VkWriteDescriptorSet){ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .dstArrayElement = i,
+			.descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = &views[i] };
+	double t[REPS];
+	for (int i = -3; i < REPS; i++) {
+		double t0 = now_ms();
+		vkUpdateDescriptorSets(dev, N, w, 0, NULL);
+		if (i >= 0)
+			t[i] = now_ms() - t0;
+	}
+	qsort(t, REPS, sizeof(double), cmp_double);
+	printf("BENCH %-18s %10.3f %10.3f %10.3f\n", name, t[REPS / 2], t[0], 0.0);
+}
+
+/* push_ssbo: 256 dispatches of push_ssbo.comp, each with a push descriptor for a 256-byte storage buffer, on a
+ * device with robustBufferAccess2 (MoltenVK 0030: the buffer was replaced by a 64 KiB copy at every bind). */
+static void bench_push_ssbo(const char *name, const char *dir)
+{
+	VkDevice main_dev = dev;
+	VkQueue main_queue = queue;
+	VkCommandPool main_pool = cmd_pool;
+	VkPhysicalDeviceRobustness2FeaturesEXT rb2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+		.robustBufferAccess2 = VK_TRUE };
+	VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &rb2, .features = { .robustBufferAccess = VK_TRUE } };
+	const char *exts[] = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
+	float prio = 1;
+	VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio };
+	VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
+		.enabledExtensionCount = 2, .ppEnabledExtensionNames = exts };
+	CK(vkCreateDevice(pd, &dci, NULL, &dev));
+	vkGetDeviceQueue(dev, 0, 0, &queue);
+	VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	CK(vkCreateCommandPool(dev, &cpci, NULL, &cmd_pool));
+
+	VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+	VkDescriptorSetLayoutCreateInfo dslci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT, .bindingCount = 1, .pBindings = &b };
+	VkDescriptorSetLayout dsl;
+	CK(vkCreateDescriptorSetLayout(dev, &dslci, NULL, &dsl));
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl };
+	VkPipelineLayout layout;
+	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		           .module = module(dir, "push_ssbo.comp.spv"), .pName = "main" }, .layout = layout };
+	VkPipeline p;
+	CK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p));
+	enum { DISPATCHES = 256 };
+	static VkBuffer bufs[DISPATCHES];
+	for (int i = 0; i < DISPATCHES; i++)
+		bufs[i] = buffer(256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, NULL);
+	PFN_vkCmdPushDescriptorSetKHR push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(dev, "vkCmdPushDescriptorSetKHR");
+	VkCommandBuffer cmd = new_cmd();
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+	for (int i = 0; i < DISPATCHES; i++) {
+		VkDescriptorBufferInfo bi = { bufs[i], 0, VK_WHOLE_SIZE };
+		VkWriteDescriptorSet w = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi };
+		push(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &w);
+		vkCmdDispatch(cmd, 1, 1, 1);
+	}
+	CK(vkEndCommandBuffer(cmd));
+	time_submits(name, VK_NULL_HANDLE, cmd);
+
+	vkDeviceWaitIdle(dev);
+	dev = main_dev;
+	queue = main_queue;
+	cmd_pool = main_pool;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 3) { fprintf(stderr, "usage: %s <spv dir> <repro spv dir>\n", argv[0]); return 2; }
@@ -405,5 +574,9 @@ int main(int argc, char **argv)
 	bench_xfb("xfb_draws_query", argv[2], view, 1);
 	bench_queries("occl", VK_QUERY_TYPE_OCCLUSION, 1, view);
 	bench_queries("xfb", VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT, 2, view);
+	bench_texel_load("texel_load_aligned", argv[1], 0);
+	bench_texel_load("texel_load_unalign", argv[1], 4);
+	bench_texel_update("texel_update");
+	bench_push_ssbo("push_ssbo", argv[1]);
 	return 0;
 }

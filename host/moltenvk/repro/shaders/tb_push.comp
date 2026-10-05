@@ -1,0 +1,14 @@
+#version 450
+// Texel buffer at an unaligned offset in a push descriptor set (bound without argument buffers, texel_buffer.c).
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0) uniform utextureBuffer t;
+layout(set = 0, binding = 1) buffer out_t { uint o[]; };
+
+void main()
+{
+	o[0] = texelFetch(t, 0).x;
+	o[1] = texelFetch(t, 2).x;
+	o[2] = uint(textureSize(t));
+}

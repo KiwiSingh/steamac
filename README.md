@@ -500,7 +500,7 @@ Report ID (первые 8 знаков ID события). Не удалось �
 
 | Каталог | Что внутри |
 |---|---|
-| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal; `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками |
+| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), texel-буферы со смещением на любой тексель (vkd3d-proton), запись в маленькие буферы push-дескрипторов с robustness2, распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal; `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров, пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков |
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, виртуальный Xbox 360 pad из GameController.framework, сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
@@ -538,8 +538,8 @@ Report ID (первые 8 знаков ID события). Не удалось �
 
 ## Ограничения
 
-- DirectX 12 (vkd3d-proton) не работает: `D3D12CreateDevice` отказывает, потому что MoltenVK не даёт
-  выравнивания texel-буферов на один тексель (Metal требует 16 байт).
+- DirectX 12 (vkd3d-proton): MoltenVK на хосте проходит все проверки `D3D12CreateDevice` в vkd3d-proton
+  (feature level 11_0, SM 6.0), но в госте на играх это ещё не проверено.
 - Звук: virtio-snd → CoreAudio (устройство по умолчанию или выбранное в настройках), задержка ≈65 мс на встроенных
   динамиках; микрофон заявлен, но не проверен.
 - Античиты, которые блокируют ВМ, не пройдут.

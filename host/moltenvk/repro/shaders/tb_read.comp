@@ -1,0 +1,37 @@
+#version 450
+// Texel buffer views at offsets that are not 16-byte aligned (single texel alignment, required by vkd3d-proton),
+// in an argument buffer descriptor set (texel_buffer.c). Output words in order, see texel_buffer.c.
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0) uniform utextureBuffer u32;
+layout(set = 0, binding = 1) uniform utextureBuffer u8;
+layout(set = 0, binding = 2) uniform utextureBuffer rgba8;
+layout(set = 0, binding = 3, r32ui) uniform uimageBuffer s32;
+layout(set = 0, binding = 4) uniform utextureBuffer arr[4];
+layout(set = 0, binding = 5) buffer sb_t { uint data[]; } sb[4];
+layout(set = 0, binding = 6) buffer out_t { uint o[]; };
+
+void main()
+{
+	uint n = 0u;
+	for (int k = 0; k < 8; k++)
+		o[n++] = texelFetch(u32, k).x;
+	o[n++] = uint(textureSize(u32));
+	for (int k = 0; k < 10; k++)
+		o[n++] = texelFetch(u8, k).x;
+	o[n++] = uint(textureSize(u8));
+	uvec4 c = texelFetch(rgba8, 1);
+	o[n++] = c.x | (c.y << 8) | (c.z << 16) | (c.w << 24);
+	o[n++] = uint(textureSize(rgba8));
+	o[n++] = imageLoad(s32, 2).x;
+	imageStore(s32, 3, uvec4(0xabcd0003u));
+	o[n++] = imageAtomicAdd(s32, 4, 0x100u);
+	o[n++] = uint(imageSize(s32));
+	for (int i = 1; i < 4; i++)
+		o[n++] = texelFetch(arr[i], 0).x;
+	for (int i = 0; i < 4; i++)
+		o[n++] = uint(sb[i].data.length());
+	o[n++] = texelFetch(u32, 8).x;
+	o[n++] = texelFetch(rgba8, 4).w;
+}

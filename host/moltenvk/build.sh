@@ -246,6 +246,13 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0028 = steamac: transform feedback queries (primitives written/needed of stream 0, added by the"
 	echo "         capture's slot pass; other streams count 0), vkCmdBegin/EndQueryIndexedEXT, query results"
 	echo "         with several values; transformFeedbackQueries (required by vkd3d-proton)"
+	echo "  0029 = steamac: single texel alignment emulation (texel buffer views at any texel offset, required by"
+	echo "         vkd3d-proton) also with Metal argument buffers: the view's texel offset is kept in the set's aux"
+	echo "         buffer (discrete sets: implicit texture offset buffer, indexed by texture), SPIRV-Cross adds it;"
+	echo "         buffer sizes of array updates starting past element 0 were written at the wrong elements"
+	echo "  0030 = steamac: small buffers (< 64 KiB) bound without argument buffers (push descriptors) with"
+	echo "         robustBufferAccess2 are bound themselves, not replaced by a 64 KiB copy of their CPU contents"
+	echo "         (shader writes were lost, GPU-written data not seen; vkd3d-proton root descriptors)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -286,6 +293,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         pointer, like SSBO components (they took the address of a vector element: vkd3d-proton's"
 	echo "         device-creation pipeline cs_emit_nv_memory_decompression_regions failed to compile); other"
 	echo "         component accesses keep the vector form (the cast made gathered loads 5% slower)"
+	echo "  0020 = steamac: texture buffer offsets of argument buffers read from the buffer size array at the"
+	echo "         texture's index (MoltenVK's aux buffer); robustImageAccess2 bounds of texture buffers with an"
+	echo "         offset use the view's width"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

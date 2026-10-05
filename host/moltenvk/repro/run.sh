@@ -39,6 +39,9 @@
 #    scalar-layout uvec3 counter, std430 uvec4 with a dynamic component, ivec2), values read back.
 # 12. queries.c: occlusion query results copied from a later command buffer, one copy per query with
 #    availability and wait (Venus' query feedback): availability of queries other than 0.
+# 13. texel_buffer.c: texel buffer views at offsets that are not 16-byte aligned (single texel alignment, required by
+#    vkd3d-proton): uniform/storage texel buffers, arrays, variable-count arrays, copies and push descriptors, values
+#    read back; storage buffer array sizes written one element per update.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -148,3 +151,7 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/queries.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/queries"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/queries" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/texel_buffer.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/texel_buffer"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/texel_buffer" "$gspv"

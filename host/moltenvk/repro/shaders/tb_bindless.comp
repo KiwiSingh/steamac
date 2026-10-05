@@ -1,0 +1,17 @@
+#version 450
+// Texel buffers at unaligned offsets in a variable-count, update-after-bind descriptor array (vkd3d-proton's
+// descriptor heaps) and copied with VkCopyDescriptorSet (texel_buffer.c).
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0) buffer out_t { uint o[]; };
+layout(set = 1, binding = 0) uniform utextureBuffer heap[];
+
+void main()
+{
+	o[0] = texelFetch(heap[5], 0).x;
+	o[1] = uint(textureSize(heap[5]));
+	o[2] = texelFetch(heap[6], 1).x;
+	o[3] = uint(textureSize(heap[6]));
+}
