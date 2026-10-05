@@ -33,7 +33,8 @@ final class OverlayView: NSView {
     static var gpuFooter: String {
         let gpu = MTLCreateSystemDefaultDevice()?.name ?? "Apple GPU"
         let short = gpu.hasPrefix("Apple ") ? String(gpu.dropFirst(6)) : gpu
-        return "SteamOS · Venus → KosmicKrisp · \(short)"
+        let driverName = vulkanDriver == "kosmickrisp" ? "KosmicKrisp (experimental)" : "MoltenVK"
+        return "SteamOS · Venus → \(driverName) · \(short)"
     }
 
     override init(frame: NSRect) {
