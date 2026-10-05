@@ -7,9 +7,11 @@ import Foundation
 /// no-picture guard, wired like a VM boot (WindowController.attach(progress:/stall:/noPicture:)),
 /// with real (inactive) virtio input devices so clicks and keys take the real input path. Guest
 /// lines go through the real fx.progress pipe; frames, scanout resizes and scanout disables go
-/// through the real display vtable. Steps: a download in the full overlay, a click collapses it
-/// into the pill (live MB/s, window title), clicking the pill / a key / the menu expand and
-/// collapse it, `ready` fades it; then the no-picture guard (display off 2 s / 3.5 s, black
+/// through the real display vtable. Steps: a click during the update check collapses the overlay
+/// into the pill (window title), the download re-expands it, clicks / keys during the download
+/// keep it up (live MB/s), a menu collapse during the download is respected, clicking the pill /
+/// the menu expand and collapse it, a click while Steam starts collapses it, `ready` fades it;
+/// then the no-picture guard (display off 2 s / 3.5 s, black
 /// frames 4 s / 5.5 s, non-black frame, game focus, sleep, a resize without a frame) and the
 /// shutdown overlay collapsing into the pill. Each step writes the composite at 2x and the
 /// window as the window server shows it (title bar included) and checks state + pixels.
@@ -120,47 +122,62 @@ enum PillSelfTest {
         nonisolated(unsafe) var disable = false
 
         let steps: [Step] = [
-            Step(name: "01-download-overlay", action: {
+            Step(name: "01-check-overlay", action: {
                 guest("stage session 100 Starting Steam session")
-                guest("stage steam-check 100 Checking for Steam updates")
+                guest("stage steam-check -1 Checking for Steam updates")
+            }, wait: 0.8) {
+                expectOverlay() ?? expectNoPill("overlay up") ?? expectTitle("Checking for Steam updates…")
+            },
+            Step(name: "02-click-during-check-collapses", action: { click(windowPoint(unit: 0.5, 0.4)) }, wait: 0.9) {
+                expectPill("Checking for Steam updates", detail: "", percent: false) ?? expectTitle("Checking for Steam updates…")
+            },
+            Step(name: "03-download-re-expands", action: {
                 guest("stage steam-download 0 Downloading Steam update")
                 guest("log 129 / 564 MB · 7.3 MB/s")
             }, wait: 0.8) {
-                expectOverlay() ?? expectNoPill("overlay up")
-                    ?? expectTitle("Downloading Steam update \(overallPercent())%")
+                expectOverlay() ?? expectTitle("Downloading Steam update \(overallPercent())%")
             },
-            Step(name: "02-click-collapses", action: { click(windowPoint(unit: 0.5, 0.4)) }, wait: 0.9) {
-                expectPill("Downloading Steam update", detail: "129 / 564 MB · 7.3 MB/s", percent: true)
-                    ?? expectTitle("Downloading Steam update \(overallPercent())%")
+            Step(name: "04a-click-during-download-keeps-overlay", action: { click(windowPoint(unit: 0.5, 0.4)) }, wait: 0.9) {
+                expectOverlay() ?? expectTitle("Downloading Steam update \(overallPercent())%")
             },
-            Step(name: "03-live-update", action: {
+            Step(name: "04b-key-during-download-keeps-overlay", action: { key(kVK_ANSI_A) }, wait: 0.7) {
+                expectOverlay()
+            },
+            Step(name: "05-live-update-in-overlay", action: {
                 guest("stage steam-download 67 Downloading Steam update")
                 guest("log 378 / 564 MB · 1.9 MB/s")
             }, wait: 0.7) {
+                expectOverlay() ?? expectTitle("Downloading Steam update \(overallPercent())%")
+                    ?? (progress.state.detail == "378 / 564 MB · 1.9 MB/s" ? nil : "detail \(progress.state.detail)")
+            },
+            Step(name: "06a-menu-collapses-during-download", action: { wc.toggleOverlay() }, wait: 0.7) {
                 expectPill("Downloading Steam update", detail: "378 / 564 MB · 1.9 MB/s", percent: true)
+            },
+            Step(name: "06b-menu-collapse-respected", action: {
+                guest("stage steam-download 89 Downloading Steam update")
+                guest("log 501 / 564 MB · 3.8 MB/s")
+            }, wait: 0.7) {
+                expectPill("Downloading Steam update", detail: "501 / 564 MB · 3.8 MB/s", percent: true)
                     ?? expectTitle("Downloading Steam update \(overallPercent())%")
             },
-            Step(name: "04-click-in-picture-keeps-pill", action: { click(windowPoint(unit: 0.3, 0.3)) }, wait: 0.5) {
-                expectPill("Downloading Steam update", detail: "378 / 564 MB", percent: true)
-            },
-            Step(name: "05-pill-click-expands", action: { click(pillCenter()) }, wait: 0.7) {
-                expectOverlay()
-            },
-            Step(name: "06-key-collapses", action: { key(kVK_ANSI_A) }, wait: 0.7) {
-                expectPill("Downloading Steam update", detail: "378 / 564 MB", percent: true)
-            },
-            Step(name: "07-menu-expands", action: { wc.toggleOverlay() }, wait: 0.7) {
+            Step(name: "07-pill-click-expands", action: { click(pillCenter()) }, wait: 0.7) {
                 expectOverlay()
             },
             Step(name: "08-menu-collapses", action: { wc.toggleOverlay() }, wait: 0.7) {
-                expectPill("Downloading Steam update", detail: "378 / 564 MB", percent: true)
+                expectPill("Downloading Steam update", detail: "501 / 564 MB", percent: true)
             },
-            Step(name: "09-starting-steam", action: {
+            Step(name: "09a-starting-steam", action: {
                 guest("stage steam-install 100 Installing Steam update")
                 guest("stage steam-start -1 Starting Steam")
             }, wait: 0.7) {
                 expectPill("Starting Steam", detail: "", percent: false) ?? expectTitle("Starting Steam…")
                     ?? (pill.content.indeterminate ? nil : "pill should be indeterminate")
+            },
+            Step(name: "09b-menu-expands-at-start", action: { wc.toggleOverlay() }, wait: 0.7) {
+                expectOverlay()
+            },
+            Step(name: "09c-click-during-start-collapses", action: { click(windowPoint(unit: 0.5, 0.4)) }, wait: 0.9) {
+                expectPill("Starting Steam", detail: "", percent: false) ?? expectTitle("Starting Steam…")
             },
             Step(name: "10-ready-fades", action: { guest("ready") }, wait: 1.0) {
                 progress.state.phase == .running && pill.isIdle && !wc.overlay.shown

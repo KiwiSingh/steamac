@@ -8,6 +8,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 export STEAMAC_ROOT="$ROOT"
 python3 - <<'PY'
+import atexit
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 import json
 import os
 from pathlib import Path
@@ -23,6 +26,7 @@ out = root / 'work/out/licenses'
 cache = root / 'work/cache/licenses/go-modcache'
 cache.mkdir(parents=True, exist_ok=True)
 stage = Path(tempfile.mkdtemp(prefix='.licenses.', dir=out.parent))
+atexit.register(lambda: shutil.rmtree(stage) if stage.exists() else None)
 entries = []
 counts = {}
 
@@ -69,7 +73,7 @@ def top_docs(path):
 def source(name, version, license_id, location, url, path, extra=()):
     docs = top_docs(path)
     docs += [(str(p), require(path / p).read_bytes()) for p in extra]
-    add(name, version, license_id, location, url, docs)
+    add(name, version, license_id or spdx(b'\n'.join(data for _, data in docs).decode('utf-8', 'replace')), location, url, docs)
 
 def archive(name, version, license_id, location, url, filename, prefixes):
     docs = []
@@ -100,13 +104,16 @@ external = mvk / 'External'
 for name in ('SPIRV-Cross', 'Vulkan-Headers', 'SPIRV-Tools', 'cereal', 'Volk'):
     path = root / 'work/build/host-moltenvk/SPIRV-Cross' if name == 'SPIRV-Cross' else external / name
     version = require(revisions / (name + '_repo_revision')).read_text().strip()
-    source('MoltenVK-' + name, version, None, host + '/libMoltenVK.dylib',
+    extras = [str(p.relative_to(path)) for p in (path / 'LICENSES').rglob('*') if p.is_file()]
+    source('MoltenVK-' + name, version, 'Apache-2.0 OR MIT' if name == 'Vulkan-Headers' else None,
+           host + '/libMoltenVK.dylib',
            'https://github.com/' + ('utmapp' if name == 'SPIRV-Cross' else 'KhronosGroup' if name != 'cereal' else 'USCiLab') + '/' + name,
-           path)
+           path, extras)
 # SPIRV-Headers is checked out within SPIRV-Tools rather than External's top level.
 spv_headers = external / 'SPIRV-Tools/external/spirv-headers'
 source('MoltenVK-SPIRV-Headers', require(revisions / 'SPIRV-Headers_repo_revision').read_text().strip(),
-       None, host + '/libMoltenVK.dylib', 'https://github.com/KhronosGroup/SPIRV-Headers', spv_headers)
+       'Apache-2.0', host + '/libMoltenVK.dylib', 'https://github.com/KhronosGroup/SPIRV-Headers', spv_headers,
+       [str(p.relative_to(spv_headers)) for p in (spv_headers / 'LICENSES').rglob('*') if p.is_file()])
 # Vulkan-Tools is fetched by MoltenVK for SDK tooling, not linked into the dylib.
 epoxy = Path(run('brew', '--prefix', 'libepoxy'))
 source('libepoxy', run('brew', 'list', '--versions', 'libepoxy').split()[-1], 'MIT',
@@ -140,6 +147,25 @@ rust_graph(root / 'guest/progress-agent/Cargo.toml', '', 'aarch64-unknown-linux-
 # go version -m describes the exact binary (including versions other than the current
 # module graph). Download each module to an isolated, persistent cache, never a guess.
 goenv = dict(os.environ, GOMODCACHE=str(cache), GOWORK='off')
+# On hosts with broken DNS but working HTTPS, the optional address routes Go
+# proxy requests through curl's TLS-safe --resolve; normal builds use GOPROXY.
+if address := os.environ.get('GO_PROXY_RESOLVE'):
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            response = subprocess.run(['curl', '-fsSL', '--retry', '3', '--resolve',
+                                       'proxy.golang.org:443:' + address,
+                                       'https://proxy.golang.org' + self.path], capture_output=True)
+            self.send_response(200 if response.returncode == 0 else 404)
+            self.end_headers()
+            self.wfile.write(response.stdout if response.returncode == 0 else response.stderr)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    atexit.register(server.shutdown)
+    goenv.update(GOPROXY=f'http://127.0.0.1:{server.server_port}', GOSUMDB='off')
 for binary in ('gvproxy', 'desync'):
     location = res + '/' + binary
     lines = run('go', 'version', '-m', str(root / 'work/out/host/bin' / binary)).splitlines()
@@ -159,7 +185,8 @@ for binary in ('gvproxy', 'desync'):
                 docs = [('LICENSE', candidate.read_bytes())]
         add('go-' + binary + '-' + module.replace('/', '__') + '-' + version,
             version, spdx(b'\n'.join(data for _, data in docs).decode('utf-8', 'replace')),
-            location, 'https://' + module + '/tree/' + version, docs)
+            location, (info.get('Origin') or {}).get('URL', 'https://' + module) +
+            '/tree/' + (info.get('Origin') or {}).get('Hash', version), docs)
     counts[binary] = len(modules)
     print(f'{binary}: {len(modules)} modules / {len(modules)} go version -m modules')
 
@@ -195,16 +222,21 @@ archive('e2fsprogs', config['E2FSPROGS_VERSION'], 'GPL-2.0-only AND LGPL-2.0-onl
 archive('btrfs-progs', config['BTRFSPROGS_VERSION'], 'GPL-2.0-only', init + ':/bin/btrfstune',
         config['BTRFSPROGS_URL'], root / f"work/cache/btrfs-progs/{config['BTRFSPROGS_VERSION']}/btrfs-progs-v{config['BTRFSPROGS_VERSION']}.tar.xz",
         ('COPYING', 'LICENSE'))
-mesa_license = subprocess.check_output(['docker', 'run', '--rm', '--platform', 'linux/arm64',
-                                         '-v', 'steamac-mesa-src:/src:ro', 'steamac-image-builder:4',
-                                         'cat', '/src/mesa/docs/license.rst'])
 versions = {}
 for line in (root / 'guest/mesa/versions.env').read_text().splitlines():
     match = re.match(r'^([A-Z][A-Z0-9_]*)=(.*)$', line)
     if match:
         versions[match[1]] = match[2]
+mesa_cache = root / 'work/cache/licenses' / ('mesa-' + versions['MESA_COMMIT'] + '-license.rst')
+if not mesa_cache.is_file():
+    url = 'https://gitlab.freedesktop.org/mesa/mesa/-/raw/' + versions['MESA_COMMIT'] + '/docs/license.rst'
+    args = ['curl', '-fsSL', '--retry', '3']
+    if os.environ.get('GO_PROXY_RESOLVE'):
+        args += ['--doh-url', 'https://cloudflare-dns.com/dns-query',
+                 '--resolve', 'cloudflare-dns.com:443:1.1.1.1']
+    mesa_cache.write_bytes(subprocess.check_output(args + [url]))
 add('Mesa', versions['MESA_COMMIT'], 'MIT', layer + ':/usr/lib and /usr/share/guestos/fex-mesa',
-    versions['MESA_URL'], [('license.rst', mesa_license)])
+    versions['MESA_URL'], [('license.rst', require(mesa_cache).read_bytes())])
 for filename in ('LICENSE', 'NOTICE'):
     path = root / filename
     if path.is_file():

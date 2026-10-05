@@ -28,7 +28,6 @@ done
 "$HERE/licenses.sh"  # fail before modifying the existing app if a notice is unavailable
 [[ -f "$OUT/licenses/THIRD-PARTY-NOTICES.txt" ]] || { echo 'bundle.sh: missing notices index' >&2; exit 1; }
 
-
 rm -rf "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Frameworks" "$TMP/Contents/Resources"

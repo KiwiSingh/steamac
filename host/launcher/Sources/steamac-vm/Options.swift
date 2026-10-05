@@ -182,9 +182,9 @@ struct Options {
                            input and write window captures at several progress points
       --selftest-stall     drive the GPU-idle indicator with synthetic GPU counters and heartbeats
                            and write window captures (indicator shown / hidden / not responding)
-      --selftest-pill      collapse the boot overlay into the progress pill by a click (live download
-                           progress, window title, expand / collapse, fade at ready), then drive the
-                           no-picture guard with synthetic scanout states; window captures + checks
+      --selftest-pill      boot overlay vs progress pill (click / key / menu collapse, download stages keep
+                           or re-expand the overlay, live download progress, window title, fade at
+                           ready), then the no-picture guard with synthetic scanout states; captures + checks
       --selftest-settings  open the Settings window and write a PNG of every tab to --selftest-out
       --selftest-provision unit tests of the disk creator: GPT writer vs the layout of --reference-disk
                            (default work/out/steamos.img, opened read-only), squashfs + CMS verification of

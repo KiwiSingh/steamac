@@ -44,6 +44,9 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 полноэкранный оверлей в плашку внизу по центру (этап, процент, полоска, строка деталей вроде
 `378 / 564 MB · 1.9 MB/s`; ввод проходит в гостя). Клик по плашке или View → Show Boot Progress
 разворачивает его обратно; с выключенным оверлеем (Settings > General) сразу показывается плашка.
+Пока идёт подготовка нового диска или загрузка / установка клиента Steam, клик и клавиши оверлей не
+сворачивают, а свёрнутый кликом раньше оверлей разворачивается сам (`overlay: expanded for
+steam-download`); свёрнутый через View → Show Boot Progress остаётся плашкой до `ready`.
 Заголовок окна до `ready` повторяет этап: «FX Steam Launcher — Downloading Steam update 70%»,
 «— Starting Steam…», «— Shutting down…». В лог: `overlay: collapsed to pill (click)` /
 `expanded from pill`. После `ready`, если в окне ≥ 3 с нет картинки (scanout выключен или после его

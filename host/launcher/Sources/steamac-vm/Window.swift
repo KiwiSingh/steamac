@@ -57,9 +57,12 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// Same for keys (macOS key codes) that woke the guest.
     private var swallowedKeys = Set<UInt16>()
     private var progress: BootProgress?
-    /// The user collapsed the boot / shutdown overlay into the pill (first click / key, menu);
-    /// a new shutdown or the menu expands it again.
+    /// The boot / shutdown overlay is collapsed into the pill (click / key, menu, 15 min); a new
+    /// shutdown, the pill or the menu expands it again.
     private var overlayCollapsed = false
+    /// Collapsed by View → Show Boot Progress or the 15-minute timeout: download-type stages do
+    /// not re-expand it (a click / key collapse is undone when one starts).
+    private var collapseIsSticky = false
 
     private var pressedKeys = Set<UInt16>()
     private var tabletButtons = Set<UInt16>()
@@ -322,7 +325,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// Boot / shutdown progress always stays on screen until `ready`: the full overlay, or the
     /// compact pill once the user clicked / pressed a key in the window (or after 15 minutes, or
     /// with Settings > General's overlay off). Clicking the pill or View > Show Boot Progress
-    /// expands it again; a shutdown / reboot starts with the full overlay again.
+    /// expands it again; a shutdown / reboot starts with the full overlay again. Provisioning and
+    /// the Steam client download / install keep the full overlay up (`keepOverlayStages`).
     func attach(progress: BootProgress) {
         self.progress = progress
         overlay.update(progress.state)
@@ -337,12 +341,13 @@ final class WindowController: NSObject, NSWindowDelegate {
             previousShutdown?(reboot)
             guard let self else { return }
             self.overlayCollapsed = false
+            self.collapseIsSticky = false
             if self.settings.showOverlay { self.overlay.show() }
             self.pauseView.hide(animated: false)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in
             guard let self, let p = self.progress, p.state.phase == .boot, self.overlay.shown else { return }
-            self.collapseOverlay("still booting after 15 min")
+            self.collapseOverlay("still booting after 15 min", sticky: true)
         }
         updatePill()
         updateTitle()
@@ -350,6 +355,13 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func progressChanged(_ s: ProgressState) {
         overlay.update(s)
+        // Entering a download-type stage after a click / key collapsed the overlay: full overlay again.
+        if s.phase == .boot, Self.keepOverlayStages.contains(s.stageId), overlayCollapsed, !collapseIsSticky,
+           settings.showOverlay, !overlay.shown {
+            overlayCollapsed = false
+            log("overlay: expanded for \(s.stageId)")
+            overlay.show()
+        }
         updatePill()
         updateTitle()
         updateNoPictureGate()
@@ -379,11 +391,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Full overlay → pill (the progress stays on screen; input goes through).
-    private func collapseOverlay(_ why: String) {
+    /// Full overlay → pill (the progress stays on screen; input goes through). `sticky`: the menu
+    /// or the timeout, which download-type stages respect until `ready`.
+    private func collapseOverlay(_ why: String, sticky: Bool = false) {
         guard overlay.shown else { return }
         if bootOrShutdown {
             overlayCollapsed = true
+            collapseIsSticky = sticky
             log("overlay: collapsed to pill (\(why))")
         }
         overlay.hide()
@@ -393,6 +407,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private func expandPill() {
         guard bootOrShutdown, !overlay.shown else { return }
         overlayCollapsed = false
+        collapseIsSticky = false
         log("overlay: expanded from pill (click)")
         overlay.show()
     }
@@ -401,10 +416,11 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// the overlay).
     func toggleOverlay() {
         if overlay.shown {
-            collapseOverlay("menu")
+            collapseOverlay("menu", sticky: true)
         } else {
             if bootOrShutdown { log("overlay: expanded from pill (menu)") }
             overlayCollapsed = false
+            collapseIsSticky = false
             overlay.show()
         }
     }
@@ -473,11 +489,17 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     /// The user interacted with the guest: a visible overlay gets out of the way (input still goes
-    /// through); before `ready` the progress stays on screen as the pill.
+    /// through); before `ready` the progress stays on screen as the pill. While the guest downloads
+    /// or installs the Steam client or provisions a new disk the overlay stays up: the guest shows
+    /// nothing to interact with then (View → Show Boot Progress still collapses it).
     private func userInput(_ what: String) {
         guard overlay.shown else { return }
+        if let p = progress?.state, p.phase == .boot, Self.keepOverlayStages.contains(p.stageId) { return }
         collapseOverlay(what)
     }
+
+    /// Boot stages during which input does not collapse the overlay.
+    private static let keepOverlayStages: Set<String> = ["provision", "steam-download", "steam-install"]
 
     /// Read back the next presented drawable; `composite` = drawable with the overlay, the
     /// GPU-idle indicator, the progress pill, the "Game paused" / "SteamOS is sleeping" cards and
