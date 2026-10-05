@@ -28,14 +28,16 @@ python3 -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" install mako==1.3.10 pyyaml==6.0.3 packaging==25.0
 export PATH="$WORK/venv/bin:$(brew --prefix llvm)/bin:$(brew --prefix spirv-llvm-translator)/bin:$PATH"
 export PKG_CONFIG_PATH="$(brew --prefix spirv-tools)/lib/pkgconfig:$(brew --prefix spirv-llvm-translator)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+# Homebrew's SPIR-V translator links shared LLVM. The CLC tools must use the same
+# LLVM instance; static LLVM here duplicates analysis keys and crashes shader compilation.
 if [[ -f "$WORK/build/build.ninja" ]]; then
     meson setup --reconfigure "$WORK/build" "$WORK/src" --prefix="$OUT" --libdir=lib \
         --buildtype=release -Dplatforms=macos -Dvulkan-drivers=kosmickrisp \
-        -Dgallium-drivers= -Dopengl=false -Dzstd=disabled -Dshared-llvm=disabled -Dvulkan-loader-rpath=@loader_path --prefer-static
+        -Dgallium-drivers= -Dopengl=false -Dzstd=disabled -Dshared-llvm=enabled -Dvulkan-loader-rpath=@loader_path --prefer-static
 else
     meson setup "$WORK/build" "$WORK/src" --prefix="$OUT" --libdir=lib \
         --buildtype=release -Dplatforms=macos -Dvulkan-drivers=kosmickrisp \
-        -Dgallium-drivers= -Dopengl=false -Dzstd=disabled -Dshared-llvm=disabled -Dvulkan-loader-rpath=@loader_path --prefer-static
+        -Dgallium-drivers= -Dopengl=false -Dzstd=disabled -Dshared-llvm=enabled -Dvulkan-loader-rpath=@loader_path --prefer-static
 fi
 ninja -C "$WORK/build"
 DESTDIR="$WORK/stage" ninja -C "$WORK/build" install

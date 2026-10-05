@@ -74,7 +74,9 @@ copy_lib() {
         fi
     done < <(otool -L "$FW/$name" | awk 'NR > 1 {print $1}')
     # Dependencies resolve next to each other.
-    otool -l "$FW/$name" | grep -q '@loader_path$' || install_name_tool -add_rpath @loader_path "$FW/$name" 2>/dev/null
+    if ! otool -l "$FW/$name" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' | grep -Fxq '@loader_path'; then
+        install_name_tool -add_rpath @loader_path "$FW/$name"
+    fi
 }
 
 for lib in libkrun.1.dylib libvirglrenderer.1.dylib libvulkan.1.dylib libvulkan_kosmickrisp.dylib; do

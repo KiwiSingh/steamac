@@ -6,7 +6,7 @@ This fork changes the default storage and Vulkan implementation. The remaining u
 
 The default VM disk is `/Volumes/Zweidrive/steamac/steamos.img`. It is a sparse GPT image **file**, not a write to the physical drive. Existing files are preserved unless the existing explicit `FORCE_DISK=1` rebuild option is used.
 
-The GUI creates its temporary rootfs, partial image and provisioning payload beside the image. Download caches are in `/Volumes/Zweidrive/steamac/cache`. Missing Zweidrive never falls back to an internal default. Scripts verify that the path is a mounted volume, not a leftover directory on the internal SSD.
+The GUI creates its temporary rootfs, partial image and provisioning payload beside the image. Download caches are in `/Volumes/Zweidrive/steamac/cache`. Missing Zweidrive never falls back to an internal default. Scripts verify that the path is a mounted volume, not a leftover directory on the internal SSD. Disk creation takes a process-wide file lock on the shared external cache so GUI and CLI creators cannot overwrite the same temporary image or delete one another's chunks.
 
 `./run.sh` uses the external image; `STEAMAC_DISK_PATH` is an explicit override. Docker builds mount `/Volumes/Zweidrive/steamac` as `/disk` for both creation and verification; `STEAMAC_DISK_DIR` is an explicit directory override. GUI Settings can still select an existing image explicitly.
 
@@ -25,7 +25,7 @@ Build prerequisites (the new driver script checks them and does not install them
 `meson ninja pkgconf llvm libclc spirv-llvm-translator spirv-tools vulkan-loader vulkan-headers`.
 The remaining host builds also need `dtc xz lld libepoxy`, rustup and their existing prerequisites. Guest builds require a running Docker/OrbStack engine with privileged arm64 containers.
 
-Build with `./build.sh`; individual host driver builds use `host/kosmickrisp/build.sh`.
+Build with `./build.sh`; individual host driver builds use `host/kosmickrisp/build.sh`. The Homebrew build uses shared LLVM, matching the SPIR-V translator. Mixing statically linked LLVM in `mesa_clc` with the translator's shared LLVM duplicates analysis state and crashes shader generation. Shared LLVM is a build-tool dependency, not a runtime dependency of the KosmicKrisp ICD.
 
 Steam's ARM-compatible Proton supplies vkd3d-proton and DXVK's shared DXGI. Select the compatible Proton version for the game in Steam. No macOS Wine DLLs, fake Vulkan feature overrides or global guest ICD overrides are installed.
 
@@ -50,9 +50,16 @@ The bridge covers buttons, sticks, triggers and D-pad with standard Linux button
 
 - `python3 scripts/test/fork-check.py`: shell syntax, external image defaults and explicit overrides, Docker mount arguments including paths with spaces, missing-volume refusal. No image is created.
 - `scripts/test/controller-check.sh`: compiles the production Gamepad bridge with lightweight device/settings stubs and checks real GameController input objects for west/north orientation, generic identity and deadzone behavior.
+- `python3 scripts/test/creation-lock-check.py`: after building the launcher, holds the real creation lock and confirms another creator fails before downloading or writing any image.
 - Controller bridge and input device type-checked against libkrun v1.19.6 headers.
 - All launcher Swift sources passed syntax parsing.
 - DX12 diagnostic compiled against Vulkan SDK 1.4.328.1 headers with warnings treated as errors.
-- Full host/guest build, Venus shared-memory runtime test, disk creation, guest DualSense recognition and DX12 gameplay remain unverified. On the development machine the internal SSD is full, Meson and other host dependencies are missing, and Docker is not running.
+- KosmicKrisp host build completed on Apple M3 / macOS 27.2 with Homebrew LLVM 23.1.2. Both `mesa_clc` shader-generation jobs passed after switching to shared LLVM.
+- Rebuilt virglrenderer passed renderer initialization, Venus context/capset creation and host-blob shared-memory export. This smoke test does not exercise a guest Vulkan allocation or rendering.
+- The DX12 diagnostic can also be compiled on macOS; run it with this fork's `VK_DRIVER_FILES` manifest. The host Apple M3 driver passed its baseline (Vulkan 1.4.363). Guest-visible capabilities and real game compatibility still require runtime testing.
+- Launcher release build, signed app assembly and all eight display formats (CPU PNG and Metal offscreen rendering) passed.
+- A direct host Vulkan check passed device creation, external host-memory import, GPU transfer and CPU readback.
+- For this launch, the unchanged guest kernel, initramfs, guest layer and libkrun were reused from the official upstream v1.1 DMG; the launcher, virglrenderer and KosmicKrisp were rebuilt. The reused guest layer does not yet include this fork's `steamac-dx12-check` binary.
+- Disk creation verified Valve's signed SteamOS stable bundle and began downloading to `/Volumes/Zweidrive/steamac/steamos.img` with its cache on Zweidrive. Final disk writing, full guest rebuild, guest DualSense recognition and DX12 gameplay remain unverified.
 
 Sources: [Mesa KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html), [vkd3d-proton driver requirements](https://github.com/HansKristian-Work/vkd3d-proton#drivers), [Linux PlayStation driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c).

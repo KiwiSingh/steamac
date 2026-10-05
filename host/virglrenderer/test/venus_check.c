@@ -1,5 +1,5 @@
 // Standalone check of work/out/host/lib/libvirglrenderer.1.dylib with the flags libkrun
-// uses on macOS: Venus renderer init (render server thread, MoltenVK), the Venus capset,
+// uses on macOS: Venus renderer init (render server thread, selected Vulkan ICD), the Venus capset,
 // a Venus context, and a mappable host blob exported as a shared-memory fd (what libkrun
 // hv_vm_maps into the guest). Exits non-zero on any failure.
 #include <stdint.h>

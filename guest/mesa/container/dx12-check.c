@@ -76,7 +76,11 @@ static int check(VkPhysicalDevice d, PFN_vkGetInstanceProcAddr get, VkInstance i
     return missing != 0;
 }
 int main(void) {
+#ifdef __APPLE__
+    void *lib = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+#else
     void *lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
     if (!lib) { fprintf(stderr, "Vulkan loader: %s\n", dlerror()); return 1; }
     PFN_vkGetInstanceProcAddr get = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
     if (!get) return 1;

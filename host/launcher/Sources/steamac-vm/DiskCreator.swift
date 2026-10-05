@@ -115,6 +115,20 @@ final class DiskCreator {
         guard AppBundle.storageMounted else {
             throw OptionError("Mount writable Zweidrive before creating a SteamOS disk.")
         }
+        // Bundle/chunk caches and temporary images are shared by GUI and CLI creators.
+        // Keep the lock file: unlinking it would allow another process to lock a new inode.
+        try fm.createDirectory(atPath: DiskCreator.cacheRoot, withIntermediateDirectories: true)
+        let creationLock = open(DiskCreator.cacheRoot + "/creation.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard creationLock >= 0 else { throw OptionError("Cannot open the SteamOS creation lock: \(String(cString: strerror(errno)))") }
+        guard flock(creationLock, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            close(creationLock)
+            if code == EWOULDBLOCK {
+                throw OptionError("Another Steamac disk creation is already running. Wait for it to finish or cancel it before starting another.")
+            }
+            throw OptionError("Cannot lock SteamOS disk creation: \(String(cString: strerror(code)))")
+        }
+        defer { flock(creationLock, LOCK_UN); close(creationLock) }
         guard let desync = DiskCreator.desyncPath else { throw OptionError("desync not found (bundle Contents/Resources/desync or work/out/host/bin/desync: host/launcher/fetch-desync.sh)") }
         guard let caPath = DiskCreator.caPath else { throw OptionError("Valve RAUC CA steamdeck-images.pem not found") }
         guard DiskCreator.branches.contains(r.branch) else { throw OptionError("unknown branch \(r.branch) (\(DiskCreator.branches.joined(separator: ", ")))") }
