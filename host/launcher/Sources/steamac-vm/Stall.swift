@@ -489,14 +489,17 @@ final class StallIndicatorView: NSView {
 
 extension NSView {
     /// This layer-backed view (if shown) over `background` at `scale` pixels per point: window
-    /// dumps of the cards over the guest frame.
+    /// dumps of the cards over the guest frame. A hidden view returns a `background` of that size
+    /// as is (no copy on the main thread).
     func renderLayerImage(scale: CGFloat, under background: CGImage?) -> CGImage? {
         let w = Int(bounds.width * scale), h = Int(bounds.height * scale)
+        let visible = !isHidden && alphaValue > 0
+        if !visible, let background, background.width == w, background.height == h { return background }
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         if let background { ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h)) }
-        if !isHidden && alphaValue > 0, let layer {
+        if visible, let layer {
             ctx.saveGState()
             ctx.setAlpha(alphaValue)
             ctx.scaleBy(x: scale, y: scale)

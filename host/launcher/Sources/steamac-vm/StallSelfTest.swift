@@ -126,10 +126,12 @@ enum StallSelfTest {
             Step(name: "09-focus-steam-hides", action: { guest("focus steam\n") }, wait: 0.5) {
                 view.isIdle ? expectHidden("focus back to Steam") : "indicator view not hidden + idle after focus steam"
             },
-            Step(name: "10-steam-ui-heartbeat-lost-4s", action: { heartbeats.store(false, ordering: .relaxed) }, wait: 4.0) {
+            // The last heartbeat may be up to ~1.1 s (generator period) plus the previous step's
+            // capture older than this action: 3 s keeps the check clear of the 5 s timeout.
+            Step(name: "10-steam-ui-heartbeat-lost-3s", action: { heartbeats.store(false, ordering: .relaxed) }, wait: 3.0) {
                 expectHidden("Steam UI, heartbeat lost < 5 s")
             },
-            Step(name: "11-steam-ui-not-responding", action: {}, wait: 2.5) {
+            Step(name: "11-steam-ui-not-responding", action: {}, wait: 3.0) {
                 expectShown(title: "SteamOS is not responding…", detail: "waiting (")
                     ?? (view.cardFrame.contains(view.reportLinkFrame) && !view.reportLinkFrame.isEmpty
                         ? nil : "Report… link missing on the not-responding card: \(view.reportLinkFrame) in \(view.cardFrame)")
