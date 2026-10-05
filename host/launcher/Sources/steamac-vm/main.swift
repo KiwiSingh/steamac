@@ -13,14 +13,7 @@ do {
     (options, settingsOverrides) = try Options.resolve(CommandLine.arguments, settings: settings)
 } catch {
     FileHandle.standardError.write("steamac-vm: \(error)\n\n\(Options.usage)\n".data(using: .utf8)!)
-    if AppBundle.resources != nil && getppid() == 1 {   // Finder launch (the log is not on screen)
-        let alert = NSAlert()
-        alert.messageText = "FX Steam Launcher cannot start"
-        alert.informativeText = "\(error)"
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApp.activate()
-        alert.runModal()
-    }
+    MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("FX Steam Launcher cannot start", "\(error)") }
     exit(2)
 }
 

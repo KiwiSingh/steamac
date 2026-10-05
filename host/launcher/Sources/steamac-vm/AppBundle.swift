@@ -100,6 +100,19 @@ enum AppBundle {
         let stamp = ISO8601DateFormatter().string(from: Date())
         log("---- \(stamp) FX Steam Launcher started (pid \(getpid()), \(Bundle.main.bundlePath))")
     }
+
+    /// A launch error the user must see: an alert when launched from Finder / `open` (the log is not
+    /// on screen; a shell launch has the message on stderr).
+    @MainActor
+    static func alertIfLaunchedFromFinder(_ title: String, _ message: String) {
+        guard resources != nil && getppid() == 1 else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApp.activate()
+        alert.runModal()
+    }
 }
 
 /// First start of the app without a usable disk image: explain, then create a new disk

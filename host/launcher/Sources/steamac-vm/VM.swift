@@ -68,6 +68,7 @@ final class VM {
 
         for (i, d) in o.disks.enumerated() {
             let id = "vd" + String(UnicodeScalar(UInt8(97 + i)))
+            if !d.readOnly { try DiskLock.hold(d.path) }
             try krun("krun_add_disk2(\(d.path))", krun_add_disk2(ctx, id, d.path, STEAMAC_DISK_FORMAT_RAW, d.readOnly))
             log("disk \(id): \(d.path)\(d.readOnly ? " (ro)" : "")")
         }

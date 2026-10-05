@@ -242,6 +242,13 @@ Launcher хочет получить доступ к файлам на съём�
 work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache] [--accept-eula]
 ```
 
+Один образ диска одновременно использует только одна ВМ: процесс ВМ держит эксклюзивную блокировку
+(`flock`) на записываемом диске до выхода, и второй лаунчер (другая копия приложения, например сборка
+из исходников рядом с `/Applications`, или `steamac-vm`) не запускается, а показывает «SteamOS is
+already running», вместо того чтобы смонтировать те же файловые системы второй раз (это портит
+`/home` и `/var`). Блокировка держится и после убитого лаунчера, пока гость ещё выключается.
+Лаунчеры, собранные до блокировки, её не проверяют.
+
 Ничего не скачивается, пока пользователь не принял условия Valve: «End User License Agreement for
 SteamOS and Steam Client Back-Up Image» (тот же текст, что на странице образа Steam Frame,
 `https://store.steampowered.com/steamos/download/?ver=steamframe`: только личное использование, без

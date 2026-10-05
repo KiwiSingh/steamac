@@ -253,6 +253,13 @@ without a window:
 ```sh
 work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache] [--accept-eula]
 ```
+One disk image can only be used by one VM at a time: the VM process holds an exclusive lock
+(`flock`) on the writable disk until it exits, and a second launcher (another copy of the app, e.g.
+a source build next to `/Applications`, or `steamac-vm`) refuses to start with “SteamOS is already
+running” instead of mounting the same file systems twice (that corrupts `/home` and `/var`). The lock
+outlives a killed launcher while the guest is still shutting down. Launchers built before the lock do
+not check it.
+
 
 Nothing is downloaded until the user accepts Valve's terms: “End User License Agreement for
 SteamOS and Steam Client Back-Up Image” (the same text as on the Steam Frame image page,

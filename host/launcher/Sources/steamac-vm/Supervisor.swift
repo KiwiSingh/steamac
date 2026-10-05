@@ -100,6 +100,15 @@ enum Supervisor {
                 cleanup()
                 exit(2)
             }
+            // Another launcher's VM writing this disk: refuse before anything starts (the VM process
+            // holds the lock; see DiskLock).
+            if let busy = o.disks.first(where: { !$0.readOnly && DiskLock.inUse($0.path) }) {
+                let error = DiskLock.InUse(path: busy.path)
+                log("error: \(error)")
+                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS is already running", "\(error)") }
+                cleanup()
+                exit(1)
+            }
             // No disk yet (app bundle first run): the VM process shows the first-run sheet instead.
             gvproxy = nil
             if o.network && !o.needsDisk {
