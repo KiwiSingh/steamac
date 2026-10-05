@@ -138,7 +138,7 @@ struct Options {
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
       --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
                            else stable), verify it against Valve's CA, rebuild the rootfs with desync
-                           (cache: /Volumes/Zweidrive/steamac/cache/desync, resumable), write a sparse
+                           (cache: <selected drive>/steamac/cache/desync, resumable), write a sparse
                            GPT disk to PATH (never overwritten) plus PATH's .provision.img payload, which
                            the first boot uses to format and fill the remaining partitions
       --home-gib N         size of the home partition (default 64; sparse)

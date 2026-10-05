@@ -25,8 +25,15 @@ WORK=$REPO/work
 steps=("$@")
 [[ ${#steps[@]} -gt 0 ]] || steps=(builder rootfs initramfs layer disk check)
 
-DISK_DIR=${STEAMAC_DISK_DIR:-/Volumes/Zweidrive/steamac}
-[[ -d /Volumes/Zweidrive && -w /Volumes/Zweidrive && $(df -P /Volumes/Zweidrive | awk 'NR == 2 {print $NF}') == /Volumes/Zweidrive ]] || { echo "Mount writable Zweidrive before building." >&2; exit 1; }
+if [[ -n ${STEAMAC_DISK_DIR:-} ]]; then
+    DISK_DIR=$STEAMAC_DISK_DIR
+elif [[ -n ${STEAMAC_STORAGE_VOLUME:-} ]]; then
+    DISK_DIR="$STEAMAC_STORAGE_VOLUME/steamac"
+else
+    echo 'Set STEAMAC_STORAGE_VOLUME to your external drive, or STEAMAC_DISK_DIR to its image folder.' >&2
+    exit 1
+fi
+python3 "$REPO/scripts/external-storage.py" "$DISK_DIR" >/dev/null
 mkdir -p "$WORK/out" "$WORK/cache" "$DISK_DIR"
 
 run_in_builder() {

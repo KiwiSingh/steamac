@@ -1,16 +1,23 @@
-# Zweidrive / KosmicKrisp fork
+# External SSD / KosmicKrisp fork
 
 This fork changes the default storage and Vulkan implementation. The remaining upstream README describes the original MoltenVK release; its game compatibility results do not validate this fork.
 
 ## Storage
 
-The default VM disk is `/Volumes/Zweidrive/steamac/steamos.img`. It is a sparse GPT image **file**, not a write to the physical drive. Existing files are preserved unless the existing explicit `FORCE_DISK=1` rebuild option is used.
+In **Create SteamOS Disk**, click **Choose SSD…** and select any mounted writable external drive (or a folder on it). **Location…** selects a custom image filename. When exactly one external drive is mounted, it is suggested automatically; when several are mounted, choose explicitly. An existing disk saved in Settings keeps its location.
 
-The GUI creates its temporary rootfs, partial image and provisioning payload beside the image. Download caches are in `/Volumes/Zweidrive/steamac/cache`. Missing Zweidrive never falls back to an internal default. Scripts verify that the path is a mounted volume, not a leftover directory on the internal SSD. Disk creation takes a process-wide file lock on the shared external cache so GUI and CLI creators cannot overwrite the same temporary image or delete one another's chunks.
+The disk is a sparse GPT image **file**, not a write to the physical SSD. Existing files are preserved unless the Docker builder's explicit `FORCE_DISK=1` option is used. Temporary rootfs, partial image and provisioning payload stay beside the chosen image. Download caches and the creation lock live at `<selected drive>/steamac/cache`. No named drive is required and missing drives never fall back to internal storage. Symlinked paths are checked against their actual mounted volume.
 
-`./run.sh` uses the external image; `STEAMAC_DISK_PATH` is an explicit override. Docker builds mount `/Volumes/Zweidrive/steamac` as `/disk` for both creation and verification; `STEAMAC_DISK_DIR` is an explicit directory override. GUI Settings can still select an existing image explicitly.
+For scripts, specify your drive explicitly (quotes preserve spaces):
 
-Keep the checkout and its work directory on Zweidrive too. The top-level build places temporary files, Python caches, Rust toolchains and Cargo downloads beside the checkout. The Swift package cache also lives there. Homebrew and Docker manage their own storage separately: verify their available space before installing packages or starting Docker.
+```sh
+STEAMAC_STORAGE_VOLUME="/Volumes/My External SSD" ./run.sh
+STEAMAC_STORAGE_VOLUME="/Volumes/My External SSD" ./build.sh
+```
+
+Alternatively, `STEAMAC_DISK_PATH` selects the image for `run.sh` and `STEAMAC_DISK_DIR` selects the image directory for Docker builds. Overrides are validated on their own drive, without requiring any other SSD. Docker mounts the selected image directory at `/disk` for creation and verification. Cache locking prevents GUI and CLI creators on the same drive from overwriting temporary images or removing one another's chunks.
+
+Keep the checkout and its work directory on an external drive too. Build scratch and Python, Swift and Rust caches live beside the checkout. Homebrew and Docker manage their own storage separately.
 
 ## Vulkan / DirectX 12
 
@@ -48,9 +55,10 @@ The bridge covers buttons, sticks, triggers and D-pad with standard Linux button
 
 ## Validation
 
+- `scripts/test/external-storage-check.sh "/Volumes/YourSSD"`: checks real mounted-volume resolution, destination/cache placement, symlinks with spaces, and refusal of internal or disconnected destinations.
 - `python3 scripts/test/fork-check.py`: shell syntax, external image defaults and explicit overrides, Docker mount arguments including paths with spaces, missing-volume refusal. No image is created.
 - `scripts/test/controller-check.sh`: compiles the production Gamepad bridge with lightweight device/settings stubs and checks real GameController input objects for west/north orientation, generic identity and deadzone behavior.
-- `python3 scripts/test/creation-lock-check.py`: after building the launcher, holds the real creation lock and confirms another creator fails before downloading or writing any image.
+- `python3 scripts/test/creation-lock-check.py "/Volumes/YourSSD"`: after building the launcher, holds the real creation lock and confirms another creator fails before downloading or writing any image.
 - Controller bridge and input device type-checked against libkrun v1.19.6 headers.
 - All launcher Swift sources passed syntax parsing.
 - DX12 diagnostic compiled against Vulkan SDK 1.4.328.1 headers with warnings treated as errors.

@@ -7,7 +7,7 @@ import Foundation
 ///  2. download the signed RAUC bundle, verify its CMS signature against the pinned Valve CA
 ///     (RaucBundle), read manifest.raucm + rootfs.img.caibx from its squashfs (Squashfs);
 ///  3. rebuild rootfs.img with the bundled desync from Valve's chunk stores (chunk cache in
-///     /Volumes/Zweidrive/steamac/cache/desync: cancel + resume re-extracts from the cache);
+///     <selected external drive>/steamac/cache/desync: cancel + resume re-extracts from the cache);
 ///  4. sparse disk file with protective MBR + GPT of scripts/steps/40-disk.sh (GPT/DiskLayout),
 ///     rootfs.img copied into rootfs-A and rootfs-B (non-zero 16 KiB blocks only) while its
 ///     sha256 is checked against the signed manifest; everything else stays zero;
@@ -53,10 +53,13 @@ final class DiskCreator {
     static let branches = ["stable", "rc", "beta", "preview", "main"]
     static let metaURL = "https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/"
     static let imagesURL = "https://steamdeck-images.steamos.cloud/"
-    static var cacheRoot: String { "/Volumes/Zweidrive/steamac/cache" }
-    static var chunkCache: String { cacheRoot + "/desync" }
-    static var bundleCache: String { cacheRoot + "/bundles" }
-    static var defaultPath: String { "/Volumes/Zweidrive/steamac/steamos.img" }
+    private var cacheRoot = ""
+    private var chunkCache: String { cacheRoot + "/desync" }
+    private var bundleCache: String { cacheRoot + "/bundles" }
+    static var defaultPath: String {
+        let volumes = ExternalStorage.volumes
+        return volumes.count == 1 ? volumes[0].appendingPathComponent("steamac/steamos.img").path : ""
+    }
     /// Temporary rootfs.img (sparse desync output) and the disk while it is written.
     static func rootfsTemp(_ path: String) -> String { path + ".rootfs-tmp" }
     static func diskTemp(_ path: String) -> String { path + ".partial" }
@@ -112,13 +115,17 @@ final class DiskCreator {
 
     func run(_ r: Request) throws -> Result {
         let fm = FileManager.default
-        guard AppBundle.storageMounted else {
-            throw OptionError("Mount writable Zweidrive before creating a SteamOS disk.")
+        guard let selectedCache = ExternalStorage.cacheRoot(forDisk: r.path) else {
+            throw OptionError("Choose a location on a mounted, writable external drive before creating a SteamOS disk.")
         }
+        guard ExternalStorage.volume(forPath: selectedCache) == ExternalStorage.volume(forPath: r.path) else {
+            throw OptionError("The download cache must stay on the selected external drive. Remove or relocate its symlink before creating the disk.")
+        }
+        cacheRoot = selectedCache
         // Bundle/chunk caches and temporary images are shared by GUI and CLI creators.
         // Keep the lock file: unlinking it would allow another process to lock a new inode.
-        try fm.createDirectory(atPath: DiskCreator.cacheRoot, withIntermediateDirectories: true)
-        let creationLock = open(DiskCreator.cacheRoot + "/creation.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        try fm.createDirectory(atPath: cacheRoot, withIntermediateDirectories: true)
+        let creationLock = open(cacheRoot + "/creation.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard creationLock >= 0 else { throw OptionError("Cannot open the SteamOS creation lock: \(String(cString: strerror(errno)))") }
         guard flock(creationLock, LOCK_EX | LOCK_NB) == 0 else {
             let code = errno
@@ -146,7 +153,7 @@ final class DiskCreator {
         try checkCancel()
 
         // 2. bundle
-        let work = DiskCreator.bundleCache + "/" + c.buildID
+        let work = bundleCache + "/" + c.buildID
         try fm.createDirectory(atPath: work, withIntermediateDirectories: true)
         let bundlePath = work + "/" + (c.updatePath as NSString).lastPathComponent
         var bundle: RaucBundle
@@ -174,16 +181,16 @@ final class DiskCreator {
         try checkCancel()
 
         // Disk space: rootfs data ~3x on the disk's volume (temp + rootfs-A + rootfs-B), the chunk
-        // cache (compressed chunks in small files, ~1.2x the data on APFS) on Zweidrive.
+        // cache (compressed chunks in small files, ~1.2x the data on APFS) on the selected external drive.
         let dataBytes = try desyncDataSize(desync, caibxPath)
-        try checkSpace(disk: dir, need: 3 * dataBytes, cache: DiskCreator.cacheRoot, cacheNeed: dataBytes * 13 / 10)
+        try checkSpace(disk: dir, need: 3 * dataBytes, cache: cacheRoot, cacheNeed: dataBytes * 13 / 10)
 
         // 3. reconstruct
         let tmp = DiskCreator.rootfsTemp(path)
-        try fm.createDirectory(atPath: DiskCreator.chunkCache, withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: chunkCache, withIntermediateDirectories: true)
         let stores = [DiskCreator.imagesURL + (c.updatePath as NSString).deletingPathExtension + ".castr/",
                       DiskCreator.imagesURL + c.chunksStorePath + "/"]
-        log("create-disk: desync extract -> \(tmp) (stores: \(stores.joined(separator: ", ")); cache \(DiskCreator.chunkCache))")
+        log("create-disk: desync extract -> \(tmp) (stores: \(stores.joined(separator: ", ")); cache \(chunkCache))")
         try reconstruct(desync, caibxPath, tmp, stores: stores, dataBytes: dataBytes)
         try checkCancel()
 
@@ -225,7 +232,7 @@ final class DiskCreator {
         keep = true
         try? fm.removeItem(atPath: tmp)
         if !r.keepCache {
-            try? fm.removeItem(atPath: DiskCreator.chunkCache)
+            try? fm.removeItem(atPath: chunkCache)
             try? fm.removeItem(atPath: work)
         }
         let check = try GPT.read(path: path)
@@ -327,7 +334,7 @@ final class DiskCreator {
     private func reconstruct(_ desync: String, _ caibx: String, _ out: String, stores: [String], dataBytes: UInt64) throws {
         status("reconstruct", "Downloading SteamOS…", "starting desync")
         // No --in-place: that preallocates all 10 GiB; a fresh extract keeps the null chunks as holes.
-        var args = ["extract", "--concurrency", "16", "--error-retry", "10", "--cache", DiskCreator.chunkCache]
+        var args = ["extract", "--concurrency", "16", "--error-retry", "10", "--cache", chunkCache]
         for s in stores { args += ["--store", s] }
         args += [caibx, out]
         // desync draws its progress bar only on a terminal: give it a pty and parse "NN.NN%".

@@ -22,7 +22,7 @@ final class CreateDiskModel: ObservableObject {
     init(settings: LauncherSettings) {
         self.settings = settings
         branch = settings.steamosBranch
-        path = CreateDiskModel.freePath(DiskCreator.defaultPath)
+        path = CreateDiskModel.freePath(settings.diskImage.isEmpty ? DiskCreator.defaultPath : settings.diskImage)
     }
 
     /// `steamos.img`, else `steamos-2.img`, … (an existing disk is never overwritten).
@@ -33,6 +33,8 @@ final class CreateDiskModel: ObservableObject {
         for i in 2... where !fm.fileExists(atPath: "\(base)-\(i).\(ext)") { return "\(base)-\(i).\(ext)" }
         return p
     }
+
+    var storageValid: Bool { ExternalStorage.volume(forPath: path) != nil }
 
     var pathExists: Bool { FileManager.default.fileExists(atPath: path) }
 
@@ -112,12 +114,13 @@ private struct CreateDiskView: View {
                         HStack {
                             Text("Location")
                             Spacer()
-                            Text((model.path as NSString).abbreviatingWithTildeInPath)
+                            Text(model.path.isEmpty ? "Choose an external drive" : (model.path as NSString).abbreviatingWithTildeInPath)
                                 .lineLimit(1).truncationMode(.middle).foregroundStyle(model.pathExists ? Color.red : Color.secondary)
-                            Button("Choose…") { choose() }
+                            Button("Choose SSD…") { chooseDrive() }
+                            Button("Location…") { choose() }
                         }
                         Text(model.pathExists ? "A file with this name exists; it is never overwritten. Choose another name."
-                             : model.freeSpace)
+                             : !model.storageValid ? "Choose a mounted, writable external drive. Downloads stay on that drive." : model.freeSpace)
                             .font(.caption).foregroundStyle(model.pathExists ? Color.red : Color.secondary)
                     }
                     HStack {
@@ -153,7 +156,7 @@ private struct CreateDiskView: View {
                     Button("Cancel") { close() }.keyboardShortcut(.cancelAction)
                     Button(model.interrupted ? "Resume" : "Create") { model.start() }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(model.pathExists || model.result != nil)
+                        .disabled(model.pathExists || !model.storageValid || model.result != nil)
                 }
             }
             .padding([.horizontal, .bottom], 20)
@@ -161,11 +164,24 @@ private struct CreateDiskView: View {
         .frame(width: 560, height: 560)
     }
 
+    private func chooseDrive() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose an external SSD"
+        panel.message = "Select your external drive or a folder on it. SteamOS and its download cache stay on that drive."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes")
+        if panel.runModal() == .OK, let url = panel.url {
+            model.path = CreateDiskModel.freePath(url.appendingPathComponent("steamac/steamos.img").path)
+        }
+    }
+
     private func choose() {
         let panel = NSSavePanel()
         panel.title = "Location of the new SteamOS disk"
-        panel.nameFieldStringValue = (model.path as NSString).lastPathComponent
-        panel.directoryURL = URL(fileURLWithPath: (model.path as NSString).deletingLastPathComponent)
+        panel.nameFieldStringValue = model.path.isEmpty ? "steamos.img" : (model.path as NSString).lastPathComponent
+        panel.directoryURL = URL(fileURLWithPath: model.path.isEmpty ? "/Volumes" : (model.path as NSString).deletingLastPathComponent)
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let url = panel.url {
             // NSSavePanel asked about replacing; DiskCreator never replaces: pick a free name instead.

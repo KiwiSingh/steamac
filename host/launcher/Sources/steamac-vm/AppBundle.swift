@@ -22,23 +22,18 @@ enum AppBundle {
         NSHomeDirectory() + "/Library/Application Support/" + LauncherSettings.defaultDomain
     }
 
-    static var storageMounted: Bool {
-        let volume = try? URL(fileURLWithPath: "/Volumes/Zweidrive").resourceValues(forKeys: [.volumeURLKey])
-        return volume?.volume?.path == "/Volumes/Zweidrive"
-            && FileManager.default.isWritableFile(atPath: "/Volumes/Zweidrive")
-    }
-
     static var logPath: String {
         NSHomeDirectory() + "/Library/Logs/" + LauncherSettings.defaultDomain + "/steamac-vm.log"
     }
 
-    /// Zweidrive is the default; a missing drive never falls back to internal storage.
+    /// Discover images on mounted external drives; never fall back to internal storage.
     static func defaultDiskCandidates() -> [String] {
-        return storageMounted ? ["/Volumes/Zweidrive/steamac/steamos.img"] : []
+        return ExternalStorage.volumes.map { $0.appendingPathComponent("steamac/steamos.img").path }
     }
 
     static func defaultDisk() -> String? {
-        defaultDiskCandidates().first { FileManager.default.isReadableFile(atPath: $0) }
+        let disks = defaultDiskCandidates().filter { FileManager.default.isReadableFile(atPath: $0) && ExternalStorage.volume(forPath: $0) != nil }
+        return disks.count == 1 ? disks[0] : nil
     }
 
     /// The disk the next start uses (Settings value or default), nil if none is usable.

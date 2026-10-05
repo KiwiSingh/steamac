@@ -1,4 +1,4 @@
-> **KiwiSingh fork:** Zweidrive storage, experimental KosmicKrisp / DX12 integration, and controller identity changes. See [fork setup and validation status](docs/fork-setup.md). The upstream documentation below describes the original MoltenVK build.
+> **KiwiSingh fork:** selectable external SSD storage, experimental KosmicKrisp / DX12 integration, and controller identity changes. See [fork setup and validation status](docs/fork-setup.md). The upstream documentation below describes the original MoltenVK build.
 
 # steamac — официальный ARM64 SteamOS (образ Steam Frame) в ВМ на Apple Silicon
 

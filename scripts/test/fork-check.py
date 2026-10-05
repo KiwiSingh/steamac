@@ -25,13 +25,15 @@ with tempfile.TemporaryDirectory(dir=root / "work", prefix="fork-check-") as tmp
     for p in (t / "work/out/steamac-vm", t / "bin/docker"):
         p.write_text(printer)
         p.chmod(0o755)
-    df = t / "bin/df"
-    df.write_text('#!/bin/bash\nprintf "Filesystem Blocks Used Available Capacity Mounted\\n/dev/mock 100 1 99 1%% /Volumes/Zweidrive\\n"\n')
-    df.chmod(0o755)
+    mount = t / "External SSD with spaces"
+    mount.mkdir()
+    (t / "scripts/external-storage.py").write_text('import os,sys\nif os.environ.get("TEST_MISSING"):sys.exit(1)\nprint(sys.argv[1])\n')
+    env["STEAMAC_STORAGE_VOLUME"] = str(mount)
     env["PATH"] = str(t / "bin") + ":" + env["PATH"]
     args = subprocess.check_output(["bash", str(t / "run.sh")], env=env, text=True).splitlines()
-    assert "/Volumes/Zweidrive/steamac/steamos.img" in args
+    assert str(mount / "steamac/steamos.img") in args
     custom = str(t / "custom disk.img")
+    env.pop("STEAMAC_STORAGE_VOLUME")
     env["STEAMAC_DISK_PATH"] = custom
     args = subprocess.check_output(["bash", str(t / "run.sh")], env=env, text=True).splitlines()
     assert custom in args
@@ -39,7 +41,7 @@ with tempfile.TemporaryDirectory(dir=root / "work", prefix="fork-check-") as tmp
     args = subprocess.check_output(["bash", str(t / "scripts/build-image.sh"), "disk", "check"], env=env, text=True).splitlines()
     assert args.count(env["STEAMAC_DISK_DIR"] + ":/disk") == 2
     assert args.count("STEAMAC_DISK_DIR=/disk") == 2
-    df.write_text('#!/bin/bash\nprintf "Filesystem Blocks Used Available Capacity Mounted\\n/dev/mock 100 1 99 1%% /\\n"\n')
+    env["TEST_MISSING"] = "1"
     assert subprocess.run(["bash", str(t / "run.sh")], env=env, capture_output=True).returncode != 0
     assert subprocess.run(["bash", str(t / "scripts/build-image.sh"), "disk"], env=env, capture_output=True).returncode != 0
-print("PASS shell syntax, external image defaults/overrides, container mounts, missing-volume refusal")
+print("PASS shell syntax, selected external drive and independent overrides, container mounts, missing-volume refusal")
