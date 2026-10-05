@@ -13,6 +13,9 @@ final class GamepadBridge {
     private var state = PadState()
     private var observers: [NSObjectProtocol] = []
     private var subscriptions: [AnyCancellable] = []
+    /// While the VM is paused (suspended, guest asleep): called before anything is sent, with
+    /// whether a button went down; true = keep it from the guest (a press may wake it).
+    var intercept: ((_ buttonPressed: Bool) -> Bool)?
 
     struct PadState: Equatable {
         var buttons: [UInt16: Bool] = [:]
@@ -151,6 +154,12 @@ final class GamepadBridge {
     }
 
     private func apply(_ next: PadState) {
+        let pressed = GamepadBridge.buttonCodes.contains { next.buttons[$0]! && !state.buttons[$0]! }
+        if let intercept, intercept(pressed) {
+            // Nothing is queued for the paused guest; `state` stays what the guest last got, so
+            // the first change after the wake sends the difference (a tapped wake button: none).
+            return
+        }
         var events: [(UInt16, UInt16, Int32)] = []
         for c in GamepadBridge.buttonCodes where next.buttons[c] != state.buttons[c] {
             events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))

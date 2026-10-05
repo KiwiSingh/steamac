@@ -104,16 +104,20 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         }
         if force { forceQuit() }
         requestedAt = Date()
-        // A suspended guest cannot see the power key: let it run (window back, shutdown overlay).
+        // A paused guest cannot see the power key: let it run (window back, shutdown overlay). One
+        // that slept finishes its sleep job first (logind ignores the key while that runs).
         suspender?.resume(origin: "shutdown")
-        guard let vm, vm.requestShutdown() else {
-            log("no guest power key available; exiting")
-            exit(0)
+        let pressPowerKey = { [weak self] in
+            guard let vm = self?.vm, vm.requestShutdown() else {
+                log("no guest power key available; exiting")
+                exit(0)
+            }
+            log("power key sent to guest; repeat the request to force quit")
         }
         progress?.hostRequestedShutdown()
-        log("power key sent to guest; repeat the request to force quit")
         window?.setStatus("shutting down… (close again to force quit)")
         startGraceTimer()
+        if let suspender { suspender.whenAwake(pressPowerKey) } else { pressPowerKey() }
     }
 
     /// "Restart VM" (menu / Settings): power the guest off cleanly, then the supervisor boots it
@@ -124,14 +128,17 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         requestedAt = Date()
         suspender?.resume(origin: "restart")
         progress.hostRequestedRestart()   // onRebootIntent writes the supervisor's reboot marker
-        guard vm.requestShutdown() else {
-            log("no guest power key available; restarting the VM process")
-            exit(0)
-        }
         settingsContext?.restartRequested = true
-        log("restart: power key sent to guest; the VM starts again once it is off")
         window?.setStatus("restarting… (close to force quit)")
         startGraceTimer()
+        let pressPowerKey = {
+            guard vm.requestShutdown() else {
+                log("no guest power key available; restarting the VM process")
+                exit(0)
+            }
+            log("restart: power key sent to guest; the VM starts again once it is off")
+        }
+        if let suspender { suspender.whenAwake(pressPowerKey) } else { pressPowerKey() }
     }
 
     private func startGraceTimer() {
@@ -141,26 +148,33 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Window close button / Cmd+W: Settings > General "When closing the window". Closing again
+    /// Window close button / Cmd+W: Settings > General "When closing the window" (also while
+    /// SteamOS sleeps: Suspend hides the window, Shut Down wakes it to power off). Closing again
     /// while SteamOS shuts down force-quits (requestShutdown).
     func windowCloseRequested() {
         if requestedAt == nil, LauncherSettings.shared.closeAction == .suspend, suspend(origin: "window close") { return }
         requestShutdown()
     }
 
-    /// Not while SteamOS shuts down or restarts (it must run to finish).
+    /// The VM may be paused (suspend, guest sleep): not while SteamOS shuts down or restarts (it
+    /// must run to finish).
+    var canPause: Bool {
+        requestedAt == nil && (progress.map { if case .shutdown = $0.state.phase { return false } else { return true } } ?? true)
+    }
+
     @discardableResult
     func suspend(origin: String) -> Bool {
-        guard requestedAt == nil, progress.map({ if case .shutdown = $0.state.phase { return false } else { return true } }) ?? true,
-              let suspender else { return false }
+        guard canPause, let suspender else { return false }
         return suspender.suspend(origin: origin)
     }
 
-    /// Dock icon click / opening the app again: resume a suspended VM.
+    /// Dock icon click / opening the app again: resume a suspended VM (its window comes back
+    /// with it), wake a sleeping one (AppKit's default then brings a minimized window back).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard let suspender, suspender.suspended else { return true }
+        guard let suspender, suspender.paused else { return true }
+        let hidden = suspender.suspended
         suspender.resume(origin: "reopen: Dock icon or opening the app")
-        return false
+        return !hidden
     }
 
     /// Dock "Quit" / Cmd+Q / logout: shut the guest down instead of killing it. While suspended
@@ -249,6 +263,8 @@ do {
         log("guest is rebooting: the VM will be restarted")
     }
     progress.onGameName = { id, name in settings.setGameName(name, for: id) }
+    // `appid` tag of crash/error reports (the window and GamePause chain their handlers after this).
+    progress.onFocus = { CrashReporting.focusedGame($0) }
     progress.onProvision = { ok, reason in Provision.finished(ok: ok, reason: reason, payload: options.provisionPayload) }
     if let p = options.provisionPayload { log("provision: first boot of this disk: payload \(p) attached read-only, \(Provision.cmdlineFlag)") }
     progress.onConfig = { ok, reason in Provision.configFinished(ok: ok, reason: reason, payload: options.configPayload) }
@@ -261,8 +277,10 @@ do {
     }
 
     let clockPort = try ClockPort()
+    // Guest sleep needs the window (overlay, wake input): headless, the guest's sleep fails instead.
+    let sleepPort = options.headless ? nil : try SleepPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    clockPort: clockPort, inputs: inputs, netSocket: Supervisor.netSocket)
+                    clockPort: clockPort, sleepPort: sleepPort, inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
     let sound = SoundControl()
     if vm.hasSound {
@@ -365,11 +383,12 @@ do {
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
     gamePause.onConfirmedChange = { [weak wc] in wc?.gamePaused($0) }
-    let suspender = SuspendController(ctx: vm.ctx, clock: clockPort, window: wc, presenter: presenter, stall: stall,
-                                      gamePause: gamePause, gpuCounters: gpuCounters)
+    let suspender = SuspendController(ctx: vm.ctx, clock: clockPort, sleepPort: sleepPort, window: wc, presenter: presenter,
+                                      stall: stall, gamePause: gamePause, gpuCounters: gpuCounters)
     suspender.onShutdown = { lifecycle.requestShutdown() }
-    suspender.onSuspendedChange = { suspended in
-        if suspended {
+    // Suspended or asleep: the Mac may sleep.
+    suspender.onPausedChange = { paused in
+        if paused {
             activity.map(ProcessInfo.processInfo.endActivity)
             activity = nil
         } else if activity == nil {
@@ -377,6 +396,8 @@ do {
         }
     }
     lifecycle.suspender = suspender
+    sleepPort?.start { line in suspender.sleepPortLine(line, allowed: lifecycle.canPause) }
+    wc.onWakeRequest = { what in suspender.resume(origin: what) }
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
                                           vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
@@ -403,6 +424,12 @@ do {
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
     let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings) }
+    // Nothing reaches a paused VM; while SteamOS sleeps (window up) a button press wakes it.
+    gamepad?.intercept = { pressed in
+        guard suspender.paused else { return false }
+        if pressed && suspender.asleep && !suspender.suspended { suspender.resume(origin: "controller button") }
+        return true
+    }
     wc.show()
     // Not active after all (launched in the background): start muted / paused; the activation
     // notifications take over from here.

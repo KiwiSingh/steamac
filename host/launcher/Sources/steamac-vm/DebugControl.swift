@@ -24,9 +24,10 @@ import Foundation
 ///   keepalive off|on      stop / resume the paused game's keepalives (guest auto-thaw test)
 ///   set KEY VALUE         change a setting as the Settings window would (LauncherSettings.Key names)
 ///   close                 the window's close button (Settings > General "When closing the window")
-///   suspend | resume      menu Suspend / Resume
-///   wake                  as when the Mac wakes from sleep (the time goes to the guest on fx.clock)
-///   reopen                Dock icon click / opening the app again
+///   suspend | resume      menu Suspend / Resume (Resume also wakes a sleeping SteamOS)
+///   wake                  as when the Mac wakes from sleep (the time goes to the guest on fx.clock,
+///                         the GPU-idle / heartbeat timers start over)
+///   reopen                Dock icon click / opening the app again (resumes, wakes a sleeping SteamOS)
 ///   quit                  Quit (Cmd+Q); while suspended this opens the "SteamOS is suspended" prompt
 ///   quit-prompt shutdown|cancel|dump PATH   press the prompt's button / PNG of the prompt
 ///   status open|close|dump PATH   open / close the menu-bar item's menu while suspended; log its
@@ -150,8 +151,8 @@ enum DebugControl {
             catch { log("control: settings dump failed: \(error)") }
         case "restart": lifecycle.requestRestart()
         case "close": wc.window.performClose(nil)
-        case "suspend", "resume":
-            if (p[0] == "suspend") != (lifecycle.suspender?.suspended ?? false) { lifecycle.menuSuspend() }
+        case "suspend": if !(lifecycle.suspender?.suspended ?? true) { lifecycle.menuSuspend() }
+        case "resume": lifecycle.suspender?.resume(origin: "control")
         case "reopen": _ = lifecycle.applicationShouldHandleReopen(NSApp, hasVisibleWindows: wc.window.isVisible)
         case "wake": lifecycle.suspender?.hostDidWake(origin: "control")
         case "quit":

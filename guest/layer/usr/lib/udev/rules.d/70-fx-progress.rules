@@ -7,3 +7,6 @@ SUBSYSTEM=="virtio-ports", ATTR{name}=="fx.progress", MODE="0666"
 # a resume from suspend) is read by the root service fx-clock-sync.service;
 # the device node keeps the default root-only mode.
 SUBSYSTEM=="virtio-ports", ATTR{name}=="fx.clock", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fx-clock-sync.service"
+# The port "fx.sleep" (guest sleep -> the launcher pauses the VM) needs no rule:
+# only root's systemd-suspend.service opens it (fx-progress-agent sleep), and
+# the default root-only mode is right.

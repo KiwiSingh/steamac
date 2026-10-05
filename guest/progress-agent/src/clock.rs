@@ -86,14 +86,20 @@ fn handle(line: &str) {
         }
         return;
     };
+    sync(host, "a resume", "fx-clock");
+}
+
+/// Step CLOCK_REALTIME to the host's `host_ns` if it lags (see `decide`); `after` names the
+/// pause for the log ("a resume"), `tag` prefixes the log line.
+pub fn sync(host: i128, after: &str, tag: &str) {
     let secs = |ns: i128| ns as f64 / NS as f64;
     match decide(host, realtime_ns()) {
         Decision::Step(d) => match step(d) {
-            Ok(()) => eprintln!("fx-clock: wall clock was {:.3} s behind the host after a resume; stepped forward", secs(d)),
-            Err(e) => eprintln!("fx-clock: cannot step the wall clock by {:.3} s: {e}", secs(d)),
+            Ok(()) => eprintln!("{tag}: wall clock was {:.3} s behind the host after {after}; stepped forward", secs(d)),
+            Err(e) => eprintln!("{tag}: cannot step the wall clock by {:.3} s: {e}", secs(d)),
         },
-        Decision::Close(d) => eprintln!("fx-clock: wall clock within {:.3} s of the host; left to timesyncd", secs(d)),
-        Decision::Ahead(d) => eprintln!("fx-clock: wall clock {:.3} s ahead of the host's time; not stepping back", secs(d)),
+        Decision::Close(d) => eprintln!("{tag}: wall clock within {:.3} s of the host; left to timesyncd", secs(d)),
+        Decision::Ahead(d) => eprintln!("{tag}: wall clock {:.3} s ahead of the host's time; not stepping back", secs(d)),
     }
 }
 

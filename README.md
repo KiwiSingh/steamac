@@ -47,7 +47,10 @@ control queue и Venus-кольца — счётчики `krun_gpu_get_activity`
 Простаивающий интерфейс Steam GPU-команд не шлёт минутами и индикатор не вызывает. Исчезает с первой
 же GPU-командой или при уходе фокуса из игры; каждый случай пишется в лог (`stall: gpu idle 3.1 s
 (guest alive, …)`). С `--perf-stats` раз в 5 с добавляется строка `perf: gpu ctrl/s=… ring/s=…
-longest-idle=…`. Выключается в Settings > General.
+longest-idle=…`. Выключается в Settings > General. Агент живёт только в сессии gamescope: после
+`focus desktop` (Switch to Desktop) heartbeat не ждётся, пока агент новой сессии его не пришлёт; пока
+ВМ приостановлена или спит, индикатор выключен, а после возобновления, пробуждения гостя и сна Mac
+отсчёт простоя и heartbeat начинается заново.
 
 | Клавиши в окне | |
 |---|---|
@@ -145,8 +148,29 @@ virtio-порт `fx.clock`, сервис сдвигает только CLOCK_REA
 занятой, пока ВМ приостановлена. Сетевые соединения гостя (онлайн-игры, загрузки) после долгой
 паузы могут оборваться и переподключиться.
 
-Для тестов в `--control-fifo`: `close`, `suspend`, `resume`, `reopen`, `quit`,
-`quit-prompt shutdown|cancel|dump PNG`, `status open|close|dump PNG|item TITLE`.
+## Сон SteamOS (Sleep)
+
+Steam → Power → **Sleep**, автосон Steam по простою (Settings → Power → «Sleep after», по
+умолчанию 1 час) и `systemctl suspend` в госте не усыпляют ядро гостя (s2idle в ВМ разбудить нечем —
+раньше SteamOS так и висел до выхода из приложения). Слой подменяет `ExecStart` у
+`systemd-suspend.service` (и `systemd-suspend-then-hibernate` / `systemd-hybrid-sleep` — то же
+самое; гибернация выключена в `sleep.conf.d`) на `fx-progress-agent sleep`: он выполняет хуки
+`system-sleep` (`pre`), пишет `sleep <action> <token>` в virtio-порт `fx.sleep` и ждёт ответа.
+Лаунчер приостанавливает ВМ (`krun_pause`, как Suspend — CPU ~0 %, Mac может засыпать), но окно
+остаётся: поверх кадра — карточка «SteamOS is sleeping». Щелчок, клавиша, кнопка геймпада или
+иконка в Dock будят: `krun_resume`, гостю уходит `wake <token> <unix_ns>`, команда сдвигает
+настенные часы (как clock-sync), выполняет хуки `post` и завершается — logind шлёт
+PrepareForSleep(false), Steam просыпается; плашка «Waking up…» держится до первого кадра. Щелчок или
+клавиша, разбудившие гостя, в гостя не попадают.
+
+Закрытие окна во время сна — по «When closing the window»: Suspend прячет окно (Resume потом и
+будит), Shut Down / Cmd+Q будят гостя и нажимают кнопку питания, когда задача сна в госте закончилась
+(`awake <token>`; пока она идёт, logind кнопку игнорирует). Без порта (`--headless`, старый лаунчер)
+сон в госте завершается ошибкой, а не засыпанием.
+
+Для тестов в `--control-fifo`: `close`, `suspend`, `resume` (будит и спящего гостя), `reopen`,
+`quit`, `wake` (как пробуждение Mac), `quit-prompt shutdown|cancel|dump PNG`,
+`status open|close|dump PNG|item TITLE`.
 
 ## FX Steam Launcher.app
 
@@ -212,6 +236,21 @@ work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64
 диска из Docker-сборки (`work/out/steamos.img` открывается только на чтение; `--reference-disk IMG`),
 CMS/squashfs против кеша `work/cache/rootfs`, cpio, SHA-512 crypt.
 
+## Вход в Steam (Signing in)
+
+Экран входа клиента Steam Frame рассчитан на шлем: «Tap to confirm» связывается с телефоном по
+Bluetooth LE, «Scan QR code» открывает VR-окно — в ВМ оба не работают (остаётся только пароль).
+Поэтому, пока в `config/loginusers.vdf` нет запомненного аккаунта (новый диск, выход из аккаунта,
+вход без «Remember me»), `RUNSTEAM.sh` запускает Steam без `-deckard`/`-vrgamepadui`: загрузчик сам
+переключается на публичный ARM64-клиент Steam Deck (`steamdeck_stable`), и вход показывает
+QR-код на экране (Steam Mobile App → Steam Guard → сканировать) рядом с формой пароля. После входа
+с «Remember me» Steam один раз перезапускается и возвращается к клиенту Steam Frame (каждая смена
+клиента — загрузка до ~1 ГБ, прогресс виден в оверлее загрузки). Без доступа к
+`client-update.steamstatic.com` режим входа не включается.
+
+Строки `RecvMsgClientLogOnResponse() : 'Try another CM'` в `connection_log.txt` на экране входа —
+норма: сервер CM разрывает соединение без входа в аккаунт через ~60 с, клиент переподключается.
+
 ## Дистрибутив (DMG)
 
 `host/launcher/dist.sh` делает из собранного `work/out/FX Steam Launcher.app` то, что выкладывается
@@ -253,16 +292,29 @@ host/launcher/dist.sh       # подпись, нотаризация, DMG
 - немногие ошибки (не чаще раза на отпечаток за процесс, общий лимит, повтор того же отпечатка — не
   раньше чем через сутки, для ошибок компиляции шейдеров — 30 дней): гостевой GPU-контекст стал
   фатальным/потеря устройства (vkr «fatal decoder state», «device lost»), ошибки компиляции
-  пайплайнов MoltenVK (`[mvk-error] … compile failed`) и vkr «pipeline … creation failed on host»,
+  пайплайнов MoltenVK (`[mvk-error] … compile failed`; если MoltenVK напечатал исходник MSL
+  (`[mvk-msl] …`: первые 40 строк и строки вокруг ошибки) — он уходит в extra `msl_source`, не в
+  breadcrumbs; строка vkr «pipeline … creation failed on host» — только breadcrumb),
   паника Rust в libkrun (`thread … panicked at`), провал первичной настройки диска (`provision
   failed`), провал создания диска, неожиданный выход ВМ (ненулевой код или сигнал, если выключение не
   запрошено пользователем), «SteamOS is not responding» индикатора простоя;
+- выход ВМ по SIGTERM/SIGINT/SIGHUP (выход из системы, `kill`, ^C до установки обработчиков) — не
+  падение: только строка в логе, без события и без окна Report a Problem. SIGKILL — событие
+  `vm-killed` уровня warning «VM process killed (SIGKILL — memory pressure or force quit)»: убило ли
+  ядро за память (jetsam, `NOTE_EXIT_DETAIL` из kqueue супервизора), память ВМ и footprint процесса ВМ
+  при выходе/пик, `vm_stat`-числа хоста (free/compressed/wired, swap), `kern.memorystatus_level` и
+  история уровней memory pressure с начала загрузки (переходы пишутся и в лог: `memory pressure: …`).
+  Force Quit из меню приложения — запрошенный выход, не отчёт;
 - в каждом событии — последние ~200 строк stderr лаунчера как breadcrumbs (строки `[steamac-vm]`,
   `[mvk-*]`, предупреждения libkrun/virglrenderer, этапы загрузки) и теги: версия
-  (`es.fxgam.steamac@<CFBundleShortVersionString>+<git sha>`), окружение `release` (`.app`) или
-  `development`, macOS, модель Mac, GPU, vCPU/RAM, режим дисплея, UUID сборок libkrun /
-  virglrenderer / MoltenVK, `MVK_PATCH_REVISION`, версия ядра, BUILD_ID SteamOS и релиз слоя (из
-  строк initramfs), случайный ID установки.
+  (`es.fxgam.steamac@<CFBundleShortVersionString>+<git sha>`), окружение и тег `build_kind`:
+  `release` — только сборка `dist.sh` с нотаризацией (Info.plist `SteamacDistTeamID`, и подпись
+  работающего кода — Developer ID этой команды, проверка `SecCodeCheckValidity`), `source-build` —
+  любой другой `.app` (`bundle.sh`, ad-hoc/переподписанные копии, `dist.sh --no-notarize`),
+  `development` — `work/out/steamac-vm` вне бандла; macOS, модель Mac, GPU, vCPU/RAM, режим дисплея,
+  UUID сборок libkrun / virglrenderer / MoltenVK, `MVK_PATCH_REVISION`, версия ядра, BUILD_ID SteamOS
+  и релиз слоя (из строк initramfs), `appid` игры в фокусе гостя (пока она в фокусе), случайный ID
+  установки.
 
 Не отправляется: консоль гостя (hvc0), имя пользователя и компьютера (`/Users/<имя>` → `~`, имя и
 hostname вырезаются), IP (`sendDefaultPii=false`, сервер не выводит IP), локаль/часовой пояс,
@@ -270,10 +322,12 @@ hostname вырезаются), IP (`sendDefaultPii=false`, сервер не в
 (всё по-прежнему попадает в терминал/лог), поэтому видит и последние строки упавшего процесса ВМ.
 
 Проверка: `--sentry-test-event` (тестовое событие из супервизора и процесса ВМ, процесс ВМ заодно
-отправляет отложенный отчёт о падении и выходит), `--sentry-test-crash abort|segv|metal|panic`
+отправляет отложенный отчёт о падении и выходит), `--sentry-test-crash abort|segv|metal|panic|kill|term|shader`
 (процесс ВМ падает: `abort()` внутри вызова C, `EXC_BAD_ACCESS` в `memset`, assert Metal, паника
 Rust в `krun_start_enter` из-за слишком длинной командной строки ядра — для `panic` нужны `--kernel`
-и, при необходимости, `--initrd`). Такие события идут с `environment=development` и тегом `test=true`.
+и, при необходимости, `--initrd`; `kill`/`term` — процесс ВМ убивает себя SIGKILL (отчёт
+`vm-killed`) или SIGTERM (без отчёта и окна); `shader` — печатает пример ошибки компиляции MoltenVK с
+`[mvk-msl]` и строку vkr и выходит). Такие события идут с `environment=development` и тегом `test=true`.
 `STEAMAC_SENTRY_DEBUG=1` печатает отладочный лог SDK (ответы сервера).
 
 Символы: `build.sh` кладёт dSYM `steamac-vm` и библиотек бандла в `work/out/dSYMs` (libkrun,
@@ -349,7 +403,7 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
 | `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
 | `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos` |
-| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`) |
+| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
 Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому

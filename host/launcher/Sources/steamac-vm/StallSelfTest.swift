@@ -137,6 +137,14 @@ enum StallSelfTest {
             Step(name: "12-heartbeat-back", action: { heartbeats.store(true, ordering: .relaxed) }, wait: 1.8) {
                 view.isIdle ? expectHidden("heartbeat back in the Steam UI") : "indicator view not hidden + idle after heartbeat"
             },
+            // Switch to Desktop: the agent ends with the gamescope session, no heartbeat follows.
+            Step(name: "12a-desktop-no-heartbeat-6.5s", action: { heartbeats.store(false, ordering: .relaxed); guest("focus desktop\n") },
+                 wait: 6.5) {
+                expectHidden("desktop mode, no heartbeat for 6.5 s")
+            },
+            Step(name: "12b-session-back", action: { heartbeats.store(true, ordering: .relaxed); guest("focus steam\n") }, wait: 1.5) {
+                expectHidden("gamescope session back")
+            },
             Step(name: "13-setting-off", action: { guest("focus game 4242\n"); monitor.enabled = false }, wait: 2.6) {
                 view.isIdle ? expectHidden("setting off") : "indicator view not hidden + idle with the setting off"
             },

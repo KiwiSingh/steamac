@@ -55,6 +55,10 @@
 //! `fx-progress-agent clock-sync` is a separate mode, run as root by
 //! fx-clock-sync.service: it steps the wall clock after the launcher resumes a
 //! suspended VM (clock.rs, port fx.clock).
+//!
+//! `fx-progress-agent sleep <action>` replaces systemd-sleep as the ExecStart of
+//! systemd-suspend.service (root): the launcher pauses the whole VM instead of
+//! a guest kernel suspend nothing could wake (sleep.rs, port fx.sleep).
 
 mod alive;
 mod clock;
@@ -64,6 +68,7 @@ mod collect;
 mod focus;
 mod port;
 mod shutdown;
+mod sleep;
 mod steamlog;
 mod ui;
 mod freeze;
@@ -368,8 +373,10 @@ fn report_boot(
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("clock-sync") {
-        std::process::exit(clock::run());
+    match std::env::args().nth(1).as_deref() {
+        Some("clock-sync") => std::process::exit(clock::run()),
+        Some("sleep") => std::process::exit(sleep::run(&std::env::args().nth(2).unwrap_or_else(|| "suspend".into()))),
+        _ => {}
     }
     let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
     let port = match Port::open(&port_path) {

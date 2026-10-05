@@ -263,7 +263,9 @@ struct Options {
             case "--sentry-test-event": o.sentryTestEvent = true
             case "--sentry-test-crash":
                 let v = try value(a)
-                guard ["abort", "segv", "metal", "panic"].contains(v) else { throw OptionError("--sentry-test-crash: abort, segv, metal or panic") }
+                guard ["abort", "segv", "metal", "panic", "kill", "term", "shader"].contains(v) else {
+                    throw OptionError("--sentry-test-crash: abort, segv, metal, panic, kill, term or shader")
+                }
                 o.sentryTestCrash = v
             case "--selftest-display": o.selftestDisplay = true
             case "--selftest-out": o.selftestOut = try value(a)

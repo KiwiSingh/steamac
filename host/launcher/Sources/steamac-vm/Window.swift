@@ -38,10 +38,19 @@ final class WindowController: NSObject, NSWindowDelegate {
     let pauseView: PauseOverlayView
     /// App id shown as paused (nil = not paused).
     private(set) var pausedGame: Int?
+    /// "SteamOS is sleeping" (the guest went to sleep, SuspendController paused the VM).
+    let sleepView: PauseOverlayView
+    /// The guest sleeps: nothing reaches it; the first click, key or controller button wakes it.
+    private(set) var guestAsleep = false
+    /// A click / key while the guest sleeps (argument: what it was, for the log).
+    var onWakeRequest: ((String) -> Void)?
     /// "Resuming…" chip after a suspend, until the guest's next frame.
     let resumeChip: ResumeChipView
-    /// Buttons whose press was swallowed (it resumed a paused game): their release is too.
+    /// Buttons whose press was swallowed (it resumed a paused game or woke the guest): their
+    /// release is too.
     private var swallowedButtons = Set<UInt16>()
+    /// Same for keys (macOS key codes) that woke the guest.
+    private var swallowedKeys = Set<UInt16>()
     private var progress: BootProgress?
     private var overlayDismissed = false
 
@@ -82,6 +91,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay = OverlayView(frame: rect)
         stallView = StallIndicatorView(frame: rect)
         pauseView = PauseOverlayView(frame: rect)
+        sleepView = PauseOverlayView(frame: rect, style: .sleeping)
         resumeChip = ResumeChipView(frame: rect)
         settings = LauncherSettings.shared
         super.init()
@@ -102,6 +112,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.addSubview(stallView)
         pauseView.frame = view.bounds
         view.addSubview(pauseView)
+        sleepView.frame = view.bounds
+        view.addSubview(sleepView)
         resumeChip.frame = view.bounds
         view.addSubview(resumeChip)
         updateTitle()
@@ -176,9 +188,10 @@ final class WindowController: NSObject, NSWindowDelegate {
         return (w, h)
     }
 
-    /// Set while the VM is suspended: window size changes (leaving full screen before the window
-    /// hides) do not resize the guest.
-    var holdGuestSize = false
+    /// Set while the VM is paused (suspended, guest asleep): window size changes (leaving full
+    /// screen before the window hides, resizes while it sleeps) do not resize the guest until it
+    /// runs again.
+    var holdGuestSize = false { didSet { if oldValue && !holdGuestSize { scheduleGuestResize() } } }
     /// One-shot: the window has left full screen.
     var onDidExitFullScreen: (() -> Void)?
 
@@ -224,7 +237,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     private func updateTitle() {
-        if pausedGame != nil {
+        if guestAsleep {
+            setStatus("sleeping — click to wake")
+        } else if pausedGame != nil {
             setStatus("paused")
         } else if captured {
             setStatus("mouse captured — Ctrl+Option releases")
@@ -236,15 +251,34 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     /// GamePause: the guest confirmed `appid` frozen (nil: running again). The card stays off
-    /// while the boot/shutdown overlay is up.
+    /// while the boot/shutdown overlay is up or the guest sleeps.
     func gamePaused(_ appid: Int?) {
         pausedGame = appid
-        if let appid, !overlay.shown {
+        if let appid, !overlay.shown, !guestAsleep {
             pauseView.show(gameName: settings.gameName(appid))
         } else {
             pauseView.hide()
         }
         updateTitle()
+    }
+
+    /// SuspendController: the guest went to sleep (VM paused) / woke up. "Game paused" gives way
+    /// to "SteamOS is sleeping" (GamePause freezes the game again after the wake if it still should).
+    func guestSleeping(_ asleep: Bool) {
+        guestAsleep = asleep
+        if asleep {
+            pauseView.hide(animated: false)
+            sleepView.show(gameName: nil)
+        } else {
+            sleepView.hide()
+        }
+        updateTitle()
+    }
+
+    /// First click / key while the guest sleeps: wake it (the event itself is swallowed).
+    private func wakeGuest(_ what: String) {
+        log("input: \(what) wakes SteamOS (not sent to the guest)")
+        onWakeRequest?(what)
     }
 
     // MARK: overlay
@@ -323,14 +357,20 @@ final class WindowController: NSObject, NSWindowDelegate {
         overlay.hide()
     }
 
-    /// Read back the next presented drawable; `composite` = drawable with the overlay and the
-    /// GPU-idle indicator on top, at 2x.
+    /// Read back the next presented drawable; `composite` = drawable with the overlay, the
+    /// GPU-idle indicator, the "Game paused" / "SteamOS is sleeping" cards and the "Resuming…"
+    /// chip on top, at 2x.
     func captureWindow(_ done: @escaping (_ drawable: CGImage?, _ composite: CGImage?) -> Void) {
         view.renderer.captureNextDraw = { [weak self] bytes, w, h in
             DispatchQueue.main.async {
                 let drawable = PNG.image(bgra: bytes, width: w, height: h)
-                let withOverlay = self?.overlay.renderImage(scale: 2, under: drawable)
-                done(drawable, self?.stallView.renderImage(scale: 2, under: withOverlay))
+                guard let self else { return done(drawable, nil) }
+                var composite = self.overlay.renderImage(scale: 2, under: drawable)
+                composite = self.stallView.renderImage(scale: 2, under: composite)
+                for v in [self.pauseView, self.sleepView, self.resumeChip] as [NSView] {
+                    composite = v.renderLayerImage(scale: 2, under: composite)
+                }
+                done(drawable, composite)
             }
         }
         view.redraw()
@@ -391,14 +431,21 @@ final class WindowController: NSObject, NSWindowDelegate {
                 return true
             }
             if e.isARepeat { return true }   // guest does autorepeat
+            if guestAsleep {
+                swallowedKeys.insert(e.keyCode)
+                wakeGuest("key")
+                return true
+            }
             guard let code = Keymap.linuxKey(e.keyCode) else { return true }
             if pressedKeys.insert(code).inserted { sendKey(code, true) }
             return true
         case .keyUp:
+            if swallowedKeys.remove(e.keyCode) != nil || guestAsleep { return true }
             guard let code = Keymap.linuxKey(e.keyCode) else { return true }
             if pressedKeys.remove(code) != nil { sendKey(code, false) }
             return true
         default: // flagsChanged
+            if guestAsleep { return true }   // modifiers alone do not wake it
             if Int(e.keyCode) == kVK_CapsLock {
                 // macOS reports the lock *state*; evdev wants a key press each time.
                 sendKey(KEY.CAPSLOCK, true)
@@ -459,6 +506,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     func guestFocusChanged(_ f: GuestFocus) {
+        // The agent ends with the gamescope session: no heartbeats in desktop mode.
+        if f == .desktop { stall?.heartbeatsEnded() }
         guard f != guestFocus else { return }
         guestFocus = f
         stall?.gameFocused = focusedGame != nil
@@ -656,7 +705,7 @@ extension WindowController {
     }
 
     func pointerMoved(_ e: NSEvent) {
-        if pauseView.shown { return }   // nothing reaches a frozen game
+        if pauseView.shown || guestAsleep { return }   // nothing reaches a frozen game / sleeping guest
         if captured {
             moveRelative(dx: Double(e.deltaX), dy: Double(e.deltaY))
         } else if inPicture(e) || NSEvent.pressedMouseButtons != 0 {
@@ -675,6 +724,11 @@ extension WindowController {
             swallowedButtons.insert(b)
             log("input: click resumes the paused game (not sent to the guest)")
             NSApp.activate()
+            return
+        }
+        if down && guestAsleep {
+            swallowedButtons.insert(b)
+            wakeGuest("click")
             return
         }
         if !down && swallowedButtons.remove(b) != nil { return }
@@ -712,7 +766,7 @@ extension WindowController {
     }
 
     func scroll(_ e: NSEvent) {
-        guard inputs != nil, !pauseView.shown else { return }
+        guard inputs != nil, !pauseView.shown, !guestAsleep else { return }
         if !captured {
             guard inPicture(e) else { return }
             if usesTablet { moveTablet(e) } else { moveEmulated(e) }

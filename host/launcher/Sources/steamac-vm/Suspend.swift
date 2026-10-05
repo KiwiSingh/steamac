@@ -16,9 +16,19 @@ import QuartzCore
 /// suspended time (libkrun shifts the virtual counter); its wall clock is set right after the
 /// resume from this process's clock (ClockPort → fx-clock-sync.service in the guest), and also
 /// when the Mac wakes from sleep while the VM runs (the guest's clock stood still meanwhile).
+///
+/// Guest sleep (Steam's Power > Sleep and idle auto-sleep, `systemctl suspend`): the guest's
+/// systemd-suspend.service asks over `fx.sleep` (SleepPort) instead of suspending its kernel,
+/// which nothing in a VM could wake. The VM is paused the same way, but the window stays up
+/// with "SteamOS is sleeping"; a click, key, controller button or the Dock icon wakes it (the
+/// guest gets `wake <token> <time>`, steps its wall clock and finishes its sleep job). Closing
+/// the window while it sleeps follows closeAction (Suspend hides it; Resume later wakes the
+/// guest too); a shutdown or restart wakes it first and presses the power key only once the
+/// guest's sleep job is over (`awake`), since logind ignores the key while one runs.
 final class SuspendController: NSObject, NSMenuDelegate {
     private let ctx: UInt32
     private let clock: ClockPort?
+    private let sleepPort: SleepPort?
     private weak var window: WindowController?
     private let presenter: Presenter
     private let stall: StallMonitor
@@ -26,57 +36,83 @@ final class SuspendController: NSObject, NSMenuDelegate {
     /// krun_gpu_get_activity (nil: no counters).
     private let gpuCounters: () -> StallMonitor.Counters?
     var onShutdown: (() -> Void)?
-    /// After a suspend (true) / resume (false).
-    var onSuspendedChange: ((Bool) -> Void)?
+    /// The VM was paused (true: suspend or guest sleep) / runs again (false).
+    var onPausedChange: ((Bool) -> Void)?
+    /// Window hidden, menu-bar item up (menu Suspend, window close with closeAction suspend).
     private(set) var suspended = false
+    /// The guest asked to sleep (`sleep` on fx.sleep): VM paused, "SteamOS is sleeping".
+    private(set) var asleep = false
+    /// krun_pause'd, for either reason.
+    var paused: Bool { suspended || asleep }
     /// The menu-bar item's button and menu (control FIFO `status`).
     var statusButton: NSStatusBarButton? { statusItem?.button }
     var statusMenu: NSMenu? { statusItem?.menu }
-    private var suspendedAt: Date?
+    private var pausedAt: Date?
     private var wasCaptured = false
     private var wasFullScreen = false
     private var statusItem: NSStatusItem?
     private var memoryItem: NSMenuItem?
     private var chipTimers: [DispatchWorkItem] = []
-    private var wakeObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var chipShownAt: CFTimeInterval = 0
+    /// The guest's sleep request being answered (`sleep <action> <token>`).
+    private var sleepToken: String?
+    /// Woken, its sleep job not over yet (`awake <token>` pending): actions that need logind.
+    private var wakingToken: String?
+    private var afterWake: [() -> Void] = []
     /// Longest the "Resuming…" chip waits for a guest frame.
     static let chipTimeout: TimeInterval = 2.5
     /// Without GPU work by then the guest is idle (a still Steam UI draws nothing): hide.
     static let chipIdleCheck: TimeInterval = 0.5
+    /// After `awake`: logind sees the sleep job end (JobRemoved) before it handles a key again.
+    static let awakeSettle: TimeInterval = 1
+    /// No `awake` by then (older guest, hooks hanging): run the waiting actions anyway.
+    static let awakeTimeout: TimeInterval = 10
 
-    init(ctx: UInt32, clock: ClockPort?, window: WindowController, presenter: Presenter, stall: StallMonitor,
-         gamePause: GamePause, gpuCounters: @escaping () -> StallMonitor.Counters?) {
+    init(ctx: UInt32, clock: ClockPort?, sleepPort: SleepPort?, window: WindowController, presenter: Presenter,
+         stall: StallMonitor, gamePause: GamePause, gpuCounters: @escaping () -> StallMonitor.Counters?) {
         self.ctx = ctx
         self.clock = clock
+        self.sleepPort = sleepPort
         self.window = window
         self.presenter = presenter
         self.stall = stall
         self.gamePause = gamePause
         self.gpuCounters = gpuCounters
         super.init()
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+        let nc = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.hostWillSleep()
+        })
+        workspaceObservers.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.hostDidWake(origin: "Mac woke from sleep")
-        }
+        })
     }
 
-    /// The Mac woke from sleep: a running VM gets the host's time (a suspended one gets it on
-    /// resume). Control FIFO `wake` calls this too.
+    /// The Mac goes to sleep: no GPU-idle / heartbeat judgement across it (hostDidWake restarts).
+    private func hostWillSleep() {
+        guard !paused else { return }
+        stall.stop()
+        log("wake: Mac going to sleep; GPU-idle indicator stopped until it wakes")
+    }
+
+    /// The Mac woke from sleep: a running VM gets the host's time (a paused one gets it when it
+    /// runs again) and the GPU-idle / heartbeat timers start over (the guest could not run while
+    /// the Mac slept). Control FIFO `wake` calls this too.
     func hostDidWake(origin: String) {
-        guard !suspended else {
-            log("wake: VM suspended; the time goes to the guest on resume (\(origin))")
+        guard !paused else {
+            log("wake: VM \(suspended ? "suspended" : "asleep"); the time goes to the guest when it runs again (\(origin))")
             return
         }
+        stall.resumeAfterSuspend()
         guard let clock else { return }
         if clock.sendTime() { log("wake: sent the time to the guest (\(origin))") }
         else { log("wake: cannot send the time to the guest (fx.clock)") }
     }
 
-    /// Freeze the VM and hide the window. Returns false if it could not be paused.
-    @discardableResult
-    func suspend(origin: String) -> Bool {
-        guard !suspended, let wc = window else { return false }
+    /// krun_pause with the window's input released, the GPU-idle indicator and game pause off.
+    private func pauseVM(_ what: String, origin: String) -> Bool {
+        guard let wc = window else { return false }
         wasCaptured = wc.pointerCaptured
         wc.releaseAll()   // key / button releases are queued before the guest stops
         gamePause.vmSuspended = true
@@ -84,17 +120,31 @@ final class SuspendController: NSObject, NSMenuDelegate {
         let t0 = CACurrentMediaTime()
         let r = krun_pause(ctx)
         guard r == 0 else {
-            log("suspend: krun_pause failed: \(r) (\(String(cString: strerror(-r))))")
+            log("\(what): krun_pause failed: \(r) (\(String(cString: strerror(-r))))")
             gamePause.vmSuspended = false
             stall.resumeAfterSuspend()
             return false
         }
-        suspended = true
-        suspendedAt = Date()
-        log("suspend: VM paused in \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms (\(origin)); "
+        pausedAt = Date()
+        log("\(what): VM paused in \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms (\(origin)); "
             + "\(SuspendController.memoryText() ?? "memory unknown")")
         wc.holdGuestSize = true
         endChip(nil)
+        onPausedChange?(true)
+        return true
+    }
+
+    /// Freeze the VM (unless asleep: already paused) and hide the window. Returns false if it
+    /// could not be paused.
+    @discardableResult
+    func suspend(origin: String) -> Bool {
+        guard !suspended, let wc = window else { return false }
+        if asleep {
+            log("suspend: SteamOS is asleep; window hidden (\(origin))")
+        } else {
+            guard pauseVM("suspend", origin: origin) else { return false }
+        }
+        suspended = true
         wasFullScreen = wc.window.styleMask.contains(.fullScreen)
         if wasFullScreen {
             // An ordered-out full-screen window would leave its empty Space behind.
@@ -107,22 +157,30 @@ final class SuspendController: NSObject, NSMenuDelegate {
             wc.window.orderOut(nil)
         }
         showStatusItem()
-        onSuspendedChange?(true)
         return true
     }
 
-    /// Show the window and let the VM run again.
+    /// Show the window (if suspended), wake a sleeping guest and let the VM run again.
     func resume(origin: String) {
-        guard suspended, let wc = window else { return }
-        let seconds = suspendedAt.map { Date().timeIntervalSince($0) } ?? 0
-        if quitPrompt != nil {
-            log("quit while suspended: prompt closed, SteamOS resumes (\(origin))")
-            closeQuitPrompt()
+        guard paused, let wc = window else { return }
+        let seconds = pausedAt.map { Date().timeIntervalSince($0) } ?? 0
+        let wasSuspended = suspended
+        if suspended {
+            if quitPrompt != nil {
+                log("quit while suspended: prompt closed, SteamOS resumes (\(origin))")
+                closeQuitPrompt()
+            }
+            removeStatusItem()
+            wc.onDidExitFullScreen = nil
         }
-        removeStatusItem()
-        wc.onDidExitFullScreen = nil
+        let wakeToken = asleep ? sleepToken : nil
+        if asleep {
+            asleep = false
+            sleepToken = nil
+            wc.guestSleeping(false)
+        }
         endChip(nil)
-        wc.resumeChip.show()
+        wc.resumeChip.show(wakeToken != nil ? "Waking up…" : "Resuming…")
         chipShownAt = CACurrentMediaTime()
         presenter.onNextFrame = { [weak self] in self?.endChip("first guest frame") }
         // The guest is still frozen: these are the counters it left off with.
@@ -136,19 +194,95 @@ final class SuspendController: NSObject, NSMenuDelegate {
         chipTimers = [idle, timeout]
         DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.chipIdleCheck, execute: idle)
         DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.chipTimeout, execute: timeout)
-        wc.show()
-        if wasFullScreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
+        if wasSuspended {
+            wc.show()
+            if wasFullScreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
+        }
         let r = krun_resume(ctx)
-        if r != 0 { log("resume: krun_resume failed: \(r) (\(String(cString: strerror(-r))))") }
-        else if let clock, !clock.sendTime() { log("resume: cannot send the time to the guest (fx.clock)") }
+        if r != 0 {
+            log("resume: krun_resume failed: \(r) (\(String(cString: strerror(-r))))")
+        } else if let wakeToken {
+            // The guest's sleep command steps the wall clock itself: no fx.clock line (two
+            // services stepping by the same difference at once would double it).
+            if sleepPort?.sendWake(token: wakeToken) == true { expectAwake(wakeToken) }
+            else { log("sleep: cannot send the wake to the guest (fx.sleep)") }
+        } else if let clock, !clock.sendTime() {
+            log("resume: cannot send the time to the guest (fx.clock)")
+        }
         suspended = false
-        suspendedAt = nil
+        pausedAt = nil
         wc.holdGuestSize = false
         stall.resumeAfterSuspend()
         gamePause.vmSuspended = false
         if wasCaptured { wc.grabPointer() }
-        log("resume: VM running again after \(String(format: "%.1f", seconds)) s suspended (\(origin))")
-        onSuspendedChange?(false)
+        if wakeToken != nil {
+            log("sleep: SteamOS woke after \(String(format: "%.1f", seconds)) s asleep (\(origin))")
+        } else {
+            log("resume: VM running again after \(String(format: "%.1f", seconds)) s suspended (\(origin))")
+        }
+        onPausedChange?(false)
+    }
+
+    // MARK: Guest sleep
+
+    /// One line from fx.sleep. `allowed` false (shutting down, restarting): answered at once.
+    func sleepPortLine(_ line: String, allowed: Bool) {
+        let w = line.split(separator: " ").map(String.init)
+        switch w.first {
+        case "sleep" where w.count >= 3:
+            guestRequestedSleep(action: w[1], token: w[2], allowed: allowed)
+        case "awake" where w.count >= 2:
+            guard w[1] == wakingToken else { return log("sleep: stale \"\(line)\" ignored") }
+            log("sleep: the guest finished its sleep job")
+            wakingToken = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.awakeSettle) { [weak self] in
+                self?.runAfterWake()
+            }
+        default:
+            log("sleep: unknown line \"\(line)\" on fx.sleep")
+        }
+    }
+
+    private func guestRequestedSleep(action: String, token: String, allowed: Bool) {
+        if asleep {
+            // A new request while paused cannot happen (no vCPU runs); answer it with the next wake.
+            sleepToken = token
+            return
+        }
+        guard allowed, !suspended, let wc = window, pauseVM("sleep", origin: "guest \(action)") else {
+            log("sleep: guest asked to \(action); not now, woken at once")
+            if sleepPort?.sendWake(token: token) == true { expectAwake(token) }
+            return
+        }
+        asleep = true
+        sleepToken = token
+        wc.guestSleeping(true)
+        log("sleep: SteamOS is sleeping (\(action)); a click, key, controller button or the Dock icon wakes it")
+    }
+
+    private func expectAwake(_ token: String) {
+        wakingToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + SuspendController.awakeTimeout) { [weak self] in
+            guard let self, self.wakingToken == token else { return }
+            log("sleep: no \"awake\" from the guest within \(Int(SuspendController.awakeTimeout)) s")
+            self.wakingToken = nil
+            self.runAfterWake()
+        }
+    }
+
+    private func runAfterWake() {
+        guard wakingToken == nil, !asleep else { return }
+        let actions = afterWake
+        afterWake = []
+        actions.forEach { $0() }
+    }
+
+    /// Run `action` once the guest is fully awake: right away unless it is still finishing a
+    /// sleep (logind ignores the power key while the sleep job runs).
+    func whenAwake(_ action: @escaping () -> Void) {
+        guard wakingToken != nil || asleep else { return action() }
+        log("sleep: waiting for the guest to finish waking up")
+        afterWake.append(action)
     }
 
     /// Take the "Resuming…" chip down (`why` nil: without animation or log, e.g. on suspend).
@@ -159,7 +293,7 @@ final class SuspendController: NSObject, NSMenuDelegate {
         guard let wc = window else { return }
         guard let why else { return wc.resumeChip.hide(animated: false) }
         wc.resumeChip.hide()
-        log("resume: \"Resuming…\" chip hidden after \(Int((CACurrentMediaTime() - chipShownAt) * 1000)) ms (\(why))")
+        log("resume: \"\(wc.resumeChip.text)\" chip hidden after \(Int((CACurrentMediaTime() - chipShownAt) * 1000)) ms (\(why))")
     }
 
     // MARK: Quit while suspended
@@ -274,7 +408,7 @@ final class SuspendController: NSObject, NSMenuDelegate {
     }
 
     private func updateMemoryItem() {
-        let since = suspendedAt.map { DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) } ?? "?"
+        let since = pausedAt.map { DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) } ?? "?"
         memoryItem?.title = "Since \(since) · \(SuspendController.memoryText() ?? "memory unknown")"
     }
 
@@ -344,22 +478,84 @@ final class ClockPort {
 
     /// This process's wall clock, taken right before the write; false if the pipe did not take it.
     func sendTime() -> Bool {
+        ClockPort.write(writeFd, "time \(ClockPort.nowNs())")
+    }
+
+    /// CLOCK_REALTIME in unix ns.
+    static func nowNs() -> Int64 {
         var ts = timespec()
         clock_gettime(CLOCK_REALTIME, &ts)
-        let bytes = Array("time \(Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec))\n".utf8)
+        return Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
+    }
+
+    /// One line to a non-blocking pipe; false if it did not take it whole.
+    static func write(_ fd: Int32, _ line: String) -> Bool {
+        let bytes = Array((line + "\n").utf8)
         var n: Int
-        repeat { n = Darwin.write(writeFd, bytes, bytes.count) } while n < 0 && errno == EINTR
+        repeat { n = Darwin.write(fd, bytes, bytes.count) } while n < 0 && errno == EINTR
         return n == bytes.count
     }
 }
 
-/// "Resuming…" chip at the top of the VM picture (FX overlay style), from Resume until the
-/// guest's next frame (0.5 s while the guest's GPU is idle, 2.5 s at most).
+/// The `fx.sleep` virtio-console port, opened by the guest's systemd-suspend.service
+/// (`fx-progress-agent sleep`, guest/progress-agent/src/sleep.rs) instead of a kernel suspend:
+///   guest → host  `sleep <action> <token>`   SteamOS goes to sleep: pause the VM
+///                 `awake <token>`            its sleep job is over (post-sleep hooks ran)
+///   host → guest  `wake <token> <unix_ns>`   the VM runs again; the guest steps its wall clock
+final class SleepPort {
+    static let name = "fx.sleep"
+    /// Handed to libkrun: guest → host data is written here.
+    let guestOutputFd: Int32
+    /// Handed to libkrun: host → guest data is read from here.
+    let guestInputFd: Int32
+    private let readFd: Int32
+    private let writeFd: Int32
+
+    init() throws {
+        var out: [Int32] = [0, 0], inp: [Int32] = [0, 0]
+        guard pipe(&out) == 0, pipe(&inp) == 0 else { throw OptionError("pipe: \(String(cString: strerror(errno)))") }
+        readFd = out[0]; guestOutputFd = out[1]
+        guestInputFd = inp[0]; writeFd = inp[1]
+        for fd in out + inp { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        _ = fcntl(writeFd, F_SETFL, fcntl(writeFd, F_GETFL) | O_NONBLOCK)
+    }
+
+    /// `wake <token> <now>`, the wall clock taken right before the write.
+    func sendWake(token: String) -> Bool {
+        ClockPort.write(writeFd, "wake \(token) \(ClockPort.nowNs())")
+    }
+
+    /// Reader thread: every complete line goes to `handler` on the main queue.
+    func start(_ handler: @escaping (String) -> Void) {
+        let t = Thread { [readFd] in
+            var splitter = LineSplitter()
+            var buf = [UInt8](repeating: 0, count: 512)
+            while true {
+                let n = Darwin.read(readFd, &buf, buf.count)
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { break }
+                buf.withUnsafeBytes { p in
+                    splitter.feed(UnsafeRawBufferPointer(rebasing: p[0..<n])) { line in
+                        let line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !line.isEmpty { DispatchQueue.main.async { handler(line) } }
+                    }
+                }
+            }
+        }
+        t.name = "fx.sleep"
+        t.start()
+    }
+}
+
+/// "Resuming…" ("Waking up…" after a guest sleep) chip at the top of the VM picture (FX overlay
+/// style), from Resume until the guest's next frame (0.5 s while the guest's GPU is idle, 2.5 s
+/// at most).
 final class ResumeChipView: NSView {
     private let chip = CALayer()
     private let dot = CALayer()
     private let label = CATextLayer()
     private(set) var shown = false
+    private(set) var text = "Resuming…"
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -384,7 +580,8 @@ final class ResumeChipView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override var isOpaque: Bool { false }
 
-    func show() {
+    func show(_ text: String) {
+        self.text = text
         shown = true
         isHidden = false
         needsLayout = true
@@ -431,7 +628,7 @@ final class ResumeChipView: NSView {
     override func layout() {
         super.layout()
         let s = max(0.85, min(1.6, min(bounds.width / 1280, bounds.height / 800)))
-        let text = NSAttributedString(string: "Resuming…", attributes: [
+        let text = NSAttributedString(string: self.text, attributes: [
             .font: NSFont.systemFont(ofSize: 13 * s, weight: .medium),
             .foregroundColor: OverlayView.color(0xc7d5e0)])
         let size = text.size()

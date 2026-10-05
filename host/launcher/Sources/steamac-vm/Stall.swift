@@ -6,7 +6,9 @@ import QuartzCore
 /// boot/shutdown overlay, when the guest sends no GPU work for `idleThreshold` while a game has
 /// focus (`focus game <appid>`; the idle Steam UI legitimately sends none for minutes), or —
 /// whatever has focus — when the guest's heartbeat has also stopped for `heartbeatTimeout`.
-/// Hidden as soon as GPU work arrives, the game loses focus or the guest answers again.
+/// Hidden as soon as GPU work arrives, the game loses focus or the guest answers again. No
+/// heartbeat is expected in desktop mode (the agent runs in the gamescope session only), and
+/// both clocks start over after the VM was paused (suspend, guest sleep) or the Mac slept.
 ///
 /// GPU work = libkrun's krun_gpu_get_activity counters (libkrun patch 0015), sampled every
 /// `tick`: virtio-gpu control-queue commands (SUBMIT_3D, RESOURCE_FLUSH, SET_SCANOUT*, …) and
@@ -81,8 +83,9 @@ final class StallMonitor {
         hide(reason: "stopped")
     }
 
-    /// The VM ran again after a suspend (stopped meanwhile): the guest could neither send GPU
-    /// work nor heartbeats while it was frozen, so idle time and heartbeat age start over.
+    /// The VM ran again after a pause (suspend, guest sleep) or the Mac woke from sleep (stopped
+    /// meanwhile): the guest could neither send GPU work nor heartbeats, so idle time and
+    /// heartbeat age start over.
     func resumeAfterSuspend() {
         let now = CACurrentMediaTime()
         lastActivity = now
@@ -97,6 +100,15 @@ final class StallMonitor {
     func alive(uptimeMs: Int, load: Double) {
         lastAlive = CACurrentMediaTime()
         guestLoad = load
+    }
+
+    /// The agent ended with the gamescope session (`focus desktop`: Switch to Desktop, relogin):
+    /// no heartbeat is expected until the next session's agent sends one.
+    func heartbeatsEnded() {
+        guard lastAlive > 0 else { return }
+        lastAlive = 0
+        log("stall: guest agent ended with its session; no heartbeat expected until it is back")
+        evaluate(CACurrentMediaTime())
     }
 
     private var gateOpen: Bool { enabled && !suppressed && !paused }
@@ -471,16 +483,24 @@ final class StallIndicatorView: NSView {
 
     /// Render the indicator (model values) over `background` at `scale` pixels per point.
     func renderImage(scale: CGFloat, under background: CGImage?) -> CGImage? {
+        renderLayerImage(scale: scale, under: background)
+    }
+}
+
+extension NSView {
+    /// This layer-backed view (if shown) over `background` at `scale` pixels per point: window
+    /// dumps of the cards over the guest frame.
+    func renderLayerImage(scale: CGFloat, under background: CGImage?) -> CGImage? {
         let w = Int(bounds.width * scale), h = Int(bounds.height * scale)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         if let background { ctx.draw(background, in: CGRect(x: 0, y: 0, width: w, height: h)) }
-        if !isHidden && alphaValue > 0 {
+        if !isHidden && alphaValue > 0, let layer {
             ctx.saveGState()
             ctx.setAlpha(alphaValue)
             ctx.scaleBy(x: scale, y: scale)
-            layer!.render(in: ctx)
+            layer.render(in: ctx)
             ctx.restoreGState()
         }
         return ctx.makeImage()
