@@ -376,8 +376,8 @@
         </button></li>
         <li><button type="button" role="tab" data-tab="advanced" aria-selected="false">
           <b>Advanced</b>
-          <span lang="en">vCPUs and memory; SSH into SteamOS with one switch (off by default, a generated password per disk); network on or off; the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
-          <span lang="ru">vCPU и память; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
+          <span lang="en">vCPUs and memory; SSH into SteamOS with one switch (off by default, a generated password per disk); network; the Steam client (Steam Frame, Steam Deck or Steam Deck beta); the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
+          <span lang="ru">vCPU и память; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; клиент Steam (Steam Frame, Steam Deck или Steam Deck beta); диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
         </button></li>
       </ol>
 
@@ -416,25 +416,23 @@
         </div>
         <ol class="steps">
           <li><span lang="en">Download the DMG, open it and drag FX Steam Launcher to Applications. It is signed and notarized by Apple.</span><span lang="ru">Скачайте DMG, откройте и перетащите FX Steam Launcher в «Программы». Приложение подписано и нотаризовано Apple.</span></li>
-          <li><span lang="en">Launch it and choose <b>Create New Disk…</b>: pick the SteamOS branch and the size of the games partition. The launcher downloads Valve's signed image (~4.5 GB), checks the signature and checksum and writes the disk. No Docker needed.</span><span lang="ru">Запустите и выберите <b>Create New Disk…</b>: укажите ветку SteamOS и размер раздела под игры. Лаунчер скачает подписанный образ Valve (~4,5 ГБ), проверит подпись и контрольную сумму и запишет диск. Docker не нужен.</span></li>
+          <li><span lang="en">Launch it and choose <b>Create New Disk…</b>: pick the SteamOS branch, the size of the games partition and the Steam client, and accept Valve's SteamOS license and the Steam Subscriber Agreement. The launcher downloads Valve's signed image (~4.5 GB), checks the signature and checksum and writes the disk. No Docker needed.</span><span lang="ru">Запустите и выберите <b>Create New Disk…</b>: укажите ветку SteamOS, размер раздела под игры и клиент Steam, примите лицензию SteamOS и Steam Subscriber Agreement от Valve. Лаунчер скачает подписанный образ Valve (~4,5 ГБ), проверит подпись и контрольную сумму и запишет диск. Docker не нужен.</span></li>
           <li><span lang="en">Sign in to Steam and install games — Steam brings Proton 11 (ARM64) and FEX itself.</span><span lang="ru">Войдите в Steam и ставьте игры — Proton 11 (ARM64) и FEX Steam поставит сам.</span></li>
         </ol>
         <figure class="create-disk">
-          <img src="media/create-disk.png" alt="Create SteamOS Disk window" width="560" height="588" loading="lazy">
+          <img src="media/create-disk.png" alt="Create SteamOS Disk window" width="560" height="768" loading="lazy">
           <figcaption><span lang="en">Create New Disk: everything comes from Valve's servers, the disk is sparse</span><span lang="ru">Create New Disk: всё скачивается с серверов Valve, диск разреженный</span></figcaption>
         </figure>
       </div>
 
       <div class="get-card">
-        <h3><span lang="en">New in 1.2</span><span lang="ru">Новое в 1.2</span></h3>
+        <h3><span lang="en">New in 1.3</span><span lang="ru">Новое в 1.3</span></h3>
         <ul class="news">
-          <li><span lang="en">Suspend instead of quitting: close the window or press Ctrl+Cmd+S, resume from the Dock or the menu bar right where you left off</span><span lang="ru">Пауза вместо выключения: закройте окно или нажмите Ctrl+Cmd+S, продолжайте из Dock или строки меню с того же места</span></li>
-          <li><span lang="en">SteamOS Sleep pauses the VM (“SteamOS is sleeping”); a click, key or controller button wakes it</span><span lang="ru">Сон SteamOS ставит ВМ на паузу («SteamOS is sleeping»); будит щелчок, клавиша или кнопка геймпада</span></li>
-          <li><span lang="en">The guest's clock is set right after a resume and when the Mac wakes</span><span lang="ru">Часы гостя выставляются сразу после паузы и после сна Mac</span></li>
-          <li><span lang="en">Paused games show a dimmed frame and a card; a click resumes</span><span lang="ru">Игра на паузе показывает затемнённый кадр и карточку; щелчок продолжает</span></li>
-          <li><span lang="en">First sign-in with an on-screen QR code for the Steam app</span><span lang="ru">Первый вход в Steam по QR-коду на экране для мобильного приложения</span></li>
-          <li><span lang="en">Graphics fixes: a MoltenVK crash on M5 Macs, robust buffer access in shaders, sturdier virglrenderer error handling</span><span lang="ru">Исправления графики: падение MoltenVK на Mac с M5, безопасный доступ к буферам в шейдерах, устойчивее обработка ошибок в virglrenderer</span></li>
-          <li><span lang="en">Faster start and more useful crash reports</span><span lang="ru">Быстрее запуск и полезнее отчёты о сбоях</span></li>
+          <li><span lang="en">Pick the Steam client: Steam Frame (default — the ARM64 client games are tested with), Steam Deck or Steam Deck beta; at first run, in Create New Disk or in Settings → Advanced</span><span lang="ru">Выбор клиента Steam: Steam Frame (по умолчанию — ARM64-клиент, на котором проверяются игры), Steam Deck или Steam Deck beta; при первом запуске, в Create New Disk или в Settings → Advanced</span></li>
+          <li><span lang="en">Boot progress stays until Steam is ready: a click shrinks it into a progress pill, the window title shows the stage, and it covers first-start setup and Steam's own download</span><span lang="ru">Прогресс загрузки не пропадает, пока Steam не готов: щелчок сворачивает его в плашку, заголовок окна показывает этап, и он остаётся на время первой настройки и загрузки самого Steam</span></li>
+          <li><span lang="en">Steam starts through steamac's own launcher script; Valve's RUNSTEAM.sh is no longer modified or shipped</span><span lang="ru">Steam запускается собственным скриптом steamac; RUNSTEAM.sh от Valve больше не изменяется и не поставляется</span></li>
+          <li><span lang="en">Creating a disk asks you to accept Valve's SteamOS license and the Steam Subscriber Agreement</span><span lang="ru">Перед созданием диска нужно принять лицензию SteamOS и Steam Subscriber Agreement от Valve</span></li>
+          <li><span lang="en">Open source under Apache-2.0 (kernel patches GPL-2.0, Mesa and virglrenderer patches MIT); third-party notices inside the app, GPL sources attached to every release</span><span lang="ru">Открытый код под Apache-2.0 (патчи ядра — GPL-2.0, патчи Mesa и virglrenderer — MIT); лицензии сторонних компонентов внутри приложения, исходники GPL приложены к каждому релизу</span></li>
         </ul>
         <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
 <pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
@@ -461,7 +459,8 @@ cd steamac
   <div class="wrap">
     <p><span lang="en">steamac is an independent project, not affiliated with or endorsed by Valve. Steam, SteamOS and Steam Frame are trademarks of Valve Corporation.</span><span lang="ru">steamac — независимый проект, не связанный с Valve. Steam, SteamOS и Steam Frame — товарные знаки Valve Corporation.</span></p>
     <p><span lang="en">Built on</span><span lang="ru">Построено на</span> <a href="https://github.com/containers/libkrun">libkrun</a>, <a href="https://gitlab.freedesktop.org/virgl/virglrenderer">virglrenderer</a>, <a href="https://github.com/KhronosGroup/MoltenVK">MoltenVK</a> (<a href="https://github.com/utmapp/MoltenVK">UTM fork</a>), <a href="https://mesa3d.org">Mesa</a>, <a href="https://fex-emu.com">FEX</a>, <a href="https://github.com/doitsujin/dxvk">DXVK</a>, <a href="https://github.com/ValveSoftware/Proton">Proton</a>, <a href="https://github.com/containers/gvisor-tap-vsock">gvproxy</a>.</p>
-    <p class="muted"><a href="https://github.com/fxgl/steamac">github.com/fxgl/steamac</a> · <a href="https://github.com/fxgl/steamac/blob/main/LICENSE">Apache-2.0</a></p>
+    <p class="muted"><a href="https://github.com/fxgl/steamac">github.com/fxgl/steamac</a> · <a href="https://github.com/fxgl/steamac/blob/main/LICENSE">Apache-2.0</a> · <a href="https://github.com/fxgl/steamac/blob/main/NOTICE"><span lang="en">kernel patches GPL-2.0, Mesa and virglrenderer patches MIT</span><span lang="ru">патчи ядра — GPL-2.0, патчи Mesa и virglrenderer — MIT</span></a></p>
+    <p class="muted"><span lang="en">Screenshots and video show software and artwork that belong to Valve Corporation and the respective game publishers.</span><span lang="ru">На скриншотах и в ролике — программы и графика, принадлежащие Valve Corporation и издателям игр.</span></p>
   </div>
 </footer>
 
