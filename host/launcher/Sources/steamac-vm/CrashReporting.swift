@@ -4,6 +4,7 @@ import Foundation
 import MachO
 import Metal
 import Sentry
+import SystemConfiguration
 
 /// Crash and error reporting through Sentry (self-hosted, sentry.fxgam.es). Opt-out: Settings >
 /// General "Send crash reports and diagnostics" (`sendCrashReports`, on by default, also shown by
@@ -183,6 +184,7 @@ enum CrashReporting {
 
     private static func start() {
         guard configured, runOverride == nil, !locked({ running }) else { return }
+        prepareScrubber()
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
         let currentTags = locked { tags }
         SentrySDK.start { o in
@@ -237,14 +239,15 @@ enum CrashReporting {
         return locked({ running }) ? "on" : "off (Settings > General)"
     }
 
-    /// Tags of this process plus, in the supervisor, the VM process's (run dir file).
+    /// Tags of this process plus, in the supervisor, the VM process's (run dir file); scrubbed
+    /// (only reports call this).
     static func tagSnapshot(runDir dir: String?) -> [String: String] {
         var t = locked { tags }
         if let dir, let data = FileManager.default.contents(atPath: dir + "/sentry-tags.json"),
            let vm = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] {
             t.merge(vm) { old, _ in old }
         }
-        return t
+        return t.mapValues(scrub)
     }
 
     /// The last event either process of this session sent (run dir file), else this process's.
@@ -266,8 +269,11 @@ enum CrashReporting {
 
     // MARK: tags
 
+    /// Tags are kept as given (none carries user data by construction) and scrubbed where they
+    /// leave the process: beforeSend (scope tags included), report() and tagSnapshot. Scrubbing
+    /// here would build the identity patterns on every boot, reporting off included.
     private static func setTags(_ new: [String: String]) {
-        let clean = new.filter { !$0.value.isEmpty }.mapValues { String(scrub($0).prefix(200)) }
+        let clean = new.filter { !$0.value.isEmpty }.mapValues { String($0.prefix(200)) }
         locked { tags.merge(clean) { $1 } }
         if locked({ running }) { SentrySDK.configureScope { $0.setTags(clean) } }
     }
@@ -533,15 +539,59 @@ enum CrashReporting {
     private static let emailRegex = try! NSRegularExpression(
         pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.(?!(?:service|socket|target|mount|automount|timer|path|slice|scope|device|swap)\\b)[A-Za-z]{2,}")
     private static let ipv4Regex = try! NSRegularExpression(pattern: "(?<![\\w.~-])(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\w.~-])")
-    /// Names that identify the user or the Mac (whole words, 4+ characters).
-    private static let identityRegexes: [NSRegularExpression] = {
-        var names = [NSUserName(), NSFullUserName(), ProcessInfo.processInfo.hostName]
-        if let local = Host.current().localizedName { names.append(local) }
+    /// Names that identify the user or the Mac (whole words, 4+ characters). Built once, on first
+    /// use: a breadcrumb or report while reporting is on (start() builds them in the background)
+    /// or a Report a Problem bundle (built off the main thread). Never touched otherwise.
+    private static let identityRegexes: [NSRegularExpression] = identityNames.compactMap {
+        try? NSRegularExpression(pattern: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .caseInsensitive)
+    }
+
+    /// User name, full name, host name (gethostname), computer name and Bonjour name (configd's
+    /// dynamic store). Local sources only: ProcessInfo.hostName and Host.current() resolve the
+    /// name through DNS and block for over a minute when the network's DNS server does not answer.
+    static var identitySources: [(source: String, name: String)] {
+        var sources = [("user", NSUserName()), ("full name", NSFullUserName())]
+        var buf = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+        if gethostname(&buf, buf.count - 1) == 0 { sources.append(("host", String(cString: buf))) }
+        if let computer = SCDynamicStoreCopyComputerName(nil, nil) { sources.append(("computer", computer as String)) }
+        if let bonjour = SCDynamicStoreCopyLocalHostName(nil) { sources.append(("Bonjour", bonjour as String)) }
+        return sources
+    }
+
+    /// The identity sources, each also without ".local".
+    private static var identityNames: Set<String> {
+        var names = identitySources.map(\.name)
         names += names.map { $0.replacingOccurrences(of: ".local", with: "") }
-        return Set(names.filter { $0.count >= 4 }).compactMap {
-            try? NSRegularExpression(pattern: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .caseInsensitive)
+        return Set(names.filter { $0.count >= 4 })
+    }
+
+    /// Build the identity patterns on a background queue (reporting turned on).
+    private static func prepareScrubber() {
+        DispatchQueue.global(qos: .utility).async { _ = identityRegexes }
+    }
+
+    /// Settings self-test: the host, computer and Bonjour names are found and every identity name
+    /// is redacted (alone, as `NAME.local`, upper case). Logs the sources, never the names.
+    static func scrubSelfCheck() -> [String] {
+        var failures: [String] = []
+        let sources = identitySources
+        for required in ["host", "computer", "Bonjour"] where !sources.contains(where: { $0.source == required && !$0.name.isEmpty }) {
+            failures.append("scrub: no \(required) name")
         }
-    }()
+        var checked: [String] = []
+        for (source, name) in sources {
+            let bare = name.replacingOccurrences(of: ".local", with: "")
+            guard bare.count >= 4 else { continue }   // too short to redact (whole words, 4+ characters)
+            for text in ["host \(name) said", "smb://\(bare).local/share", "\"\(name.uppercased())\""]
+                where scrub(text).range(of: bare, options: .caseInsensitive) != nil {
+                failures.append("scrub: \(source) name (\(name.count) chars) not redacted")
+            }
+            checked.append(source)
+        }
+        log("selftest-settings: scrub check: \(checked.joined(separator: ", ")) names: "
+            + (failures.isEmpty ? "all redacted" : failures.joined(separator: "; ")))
+        return failures
+    }
 
     static func scrub(_ s: String) -> String {
         var out = s

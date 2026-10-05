@@ -7,6 +7,7 @@ import SwiftUI
 /// DIR/settings-first-run.png of the first-run alert, DIR/settings-what-is-sent.png (the crash
 /// reports popover), DIR/settings-display-presets.png (window size popup open; screen capture)
 /// and DIR/settings-display-custom.png (Custom… fields), and check that each capture has content.
+/// Also checks that crash-report scrubbing redacts the user, host, computer and Bonjour names.
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
         let settings = LauncherSettings.shared
@@ -22,7 +23,8 @@ enum SettingsSelfTest {
         MainMenu.installMinimal(settings: (#selector(Target.open), target))
         let dir = o.selftestOut ?? "."
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        var failures: [String] = []
+        // Crash-report scrubbing: the user, host, computer and Bonjour names never leave the Mac.
+        var failures = CrashReporting.scrubSelfCheck()
         var tabs = SettingsWindowController.Tab.allCases[...]
 
         func capture(_ name: String, _ rep: NSBitmapImageRep?) {

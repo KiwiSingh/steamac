@@ -25,6 +25,7 @@ import Foundation
 ///   set KEY VALUE         change a setting as the Settings window would (LauncherSettings.Key names)
 ///   close                 the window's close button (Settings > General "When closing the window")
 ///   suspend | resume      menu Suspend / Resume
+///   wake                  as when the Mac wakes from sleep (the time goes to the guest on fx.clock)
 ///   reopen                Dock icon click / opening the app again
 ///   quit                  Quit (Cmd+Q); while suspended this opens the "SteamOS is suspended" prompt
 ///   quit-prompt shutdown|cancel|dump PATH   press the prompt's button / PNG of the prompt
@@ -152,6 +153,7 @@ enum DebugControl {
         case "suspend", "resume":
             if (p[0] == "suspend") != (lifecycle.suspender?.suspended ?? false) { lifecycle.menuSuspend() }
         case "reopen": _ = lifecycle.applicationShouldHandleReopen(NSApp, hasVisibleWindows: wc.window.isVisible)
+        case "wake": lifecycle.suspender?.hostDidWake(origin: "control")
         case "quit":
             DispatchQueue.main.async { NSApp.terminate(nil) }
         case "quit-prompt": lifecycle.suspender?.controlQuitPrompt(args)

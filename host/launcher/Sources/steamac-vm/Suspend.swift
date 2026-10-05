@@ -14,7 +14,8 @@ import QuartzCore
 /// chip stays up until the guest's next frame, or 0.5 s if the guest does no GPU work (an idle
 /// Steam UI draws nothing). The guest's monotonic clock does not see the
 /// suspended time (libkrun shifts the virtual counter); its wall clock is set right after the
-/// resume from this process's clock (ClockPort → fx-clock-sync.service in the guest).
+/// resume from this process's clock (ClockPort → fx-clock-sync.service in the guest), and also
+/// when the Mac wakes from sleep while the VM runs (the guest's clock stood still meanwhile).
 final class SuspendController: NSObject, NSMenuDelegate {
     private let ctx: UInt32
     private let clock: ClockPort?
@@ -37,6 +38,7 @@ final class SuspendController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var memoryItem: NSMenuItem?
     private var chipTimers: [DispatchWorkItem] = []
+    private var wakeObserver: NSObjectProtocol?
     private var chipShownAt: CFTimeInterval = 0
     /// Longest the "Resuming…" chip waits for a guest frame.
     static let chipTimeout: TimeInterval = 2.5
@@ -52,6 +54,23 @@ final class SuspendController: NSObject, NSMenuDelegate {
         self.stall = stall
         self.gamePause = gamePause
         self.gpuCounters = gpuCounters
+        super.init()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.hostDidWake(origin: "Mac woke from sleep")
+        }
+    }
+
+    /// The Mac woke from sleep: a running VM gets the host's time (a suspended one gets it on
+    /// resume). Control FIFO `wake` calls this too.
+    func hostDidWake(origin: String) {
+        guard !suspended else {
+            log("wake: VM suspended; the time goes to the guest on resume (\(origin))")
+            return
+        }
+        guard let clock else { return }
+        if clock.sendTime() { log("wake: sent the time to the guest (\(origin))") }
+        else { log("wake: cannot send the time to the guest (fx.clock)") }
     }
 
     /// Freeze the VM and hide the window. Returns false if it could not be paused.
@@ -300,7 +319,8 @@ final class SuspendController: NSObject, NSMenuDelegate {
     }
 }
 
-/// The `fx.clock` virtio-console port (host → guest only): `time <unix_ns>` after every resume.
+/// The `fx.clock` virtio-console port (host → guest only): `time <unix_ns>` after every resume
+/// and every Mac wake while the VM runs.
 /// The guest's root service fx-clock-sync (guest/progress-agent/src/clock.rs) steps its wall
 /// clock forward to it; the monotonic clock keeps hiding the suspended time.
 final class ClockPort {
