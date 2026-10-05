@@ -23,7 +23,11 @@ if [[ ! -d "$WORK/src/.git" ]]; then
     git -C "$WORK/src" remote add origin https://gitlab.freedesktop.org/mesa/mesa.git
 fi
 git -C "$WORK/src" fetch --depth=1 origin "$MESA_COMMIT"
-git -C "$WORK/src" checkout --detach "$MESA_COMMIT"
+git -C "$WORK/src" checkout -f --detach "$MESA_COMMIT"
+for patch in "$ROOT"/host/kosmickrisp/patches/*.patch; do
+    [[ -e "$patch" ]] || continue
+    git -C "$WORK/src" apply "$patch"
+done
 python3 -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" install mako==1.3.10 pyyaml==6.0.3 packaging==25.0
 export PATH="$WORK/venv/bin:$(brew --prefix llvm)/bin:$(brew --prefix spirv-llvm-translator)/bin:$PATH"
@@ -55,4 +59,9 @@ cp -R "$(brew --prefix vulkan-headers)/include/vulkan" "$OUT/include/"
 cp -R "$(brew --prefix vulkan-headers)/include/vk_video" "$OUT/include/"
 python3 -c 'import json,sys; json.dump({"file_format_version":"1.0.0","ICD":{"library_path":"../../../lib/libvulkan_kosmickrisp.dylib","api_version":"1.4.0"}},open(sys.argv[1],"w"),indent=2)' "$OUT/share/vulkan/icd.d/kosmickrisp.json"
 printf 'Mesa KosmicKrisp %s\n' "$MESA_COMMIT" > "$OUT/KOSMICKRISP.txt"
-echo "Built KosmicKrisp; next build virglrenderer to run the Venus shared-memory check."
+
+# Exercise the Venus allocation policy and the texture upload that starts the desktop.
+clang -std=c11 -Wall -Wextra -Werror "$ROOT/host/kosmickrisp/test/image-upload-check.c" \
+    -I"$OUT/include" -L"$OUT/lib" -lvulkan -Wl,-rpath,"$OUT/lib" -o "$WORK/image-upload-check"
+VK_DRIVER_FILES="$OUT/share/vulkan/icd.d/kosmickrisp.json" "$WORK/image-upload-check"
+echo "Built KosmicKrisp with native texture and shared scanout memory; next build virglrenderer."

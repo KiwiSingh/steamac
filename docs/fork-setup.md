@@ -23,6 +23,10 @@ Keep the checkout and its work directory on an external drive too. Build scratch
 
 Requires Apple Silicon, macOS 26+ and full Xcode 26+. KosmicKrisp is built from Mesa commit `4cf0989083d25b92d02c6fef2bed934ad77b4ecd`, the same Mesa revision as the guest Venus build.
 
+This fork patches KosmicKrisp to expose separate native device-local and host-visible memory types. Optimal textures require native Metal heaps; linear scanout images require host-visible memory that Venus can export as shared memory. Importing every allocation as a host pointer leaves optimal textures without a Metal heap and caused a SIGSEGV in `mtl_copy_from_buffer_to_texture`. The patch also returns binding/allocation errors instead of leaving a null Metal texture.
+
+`host/kosmickrisp/build.sh` runs a real Vulkan regression test: it follows Venus's allocation policy, uploads an imported staging buffer into an optimal image, copies it back and verifies every byte. It checks that linear images only offer shareable memory. The original driver crashed this test with SIGSEGV; the patched driver passes.
+
 The rendering path is:
 `Proton vkd3d-proton → guest Vulkan/Venus → virglrenderer → Vulkan loader → KosmicKrisp → Metal 4`.
 
@@ -68,6 +72,6 @@ The bridge covers buttons, sticks, triggers and D-pad with standard Linux button
 - Launcher release build, signed app assembly and all eight display formats (CPU PNG and Metal offscreen rendering) passed.
 - A direct host Vulkan check passed device creation, external host-memory import, GPU transfer and CPU readback.
 - For this launch, the unchanged guest kernel, initramfs, guest layer and libkrun were reused from the official upstream v1.1 DMG; the launcher, virglrenderer and KosmicKrisp were rebuilt. The reused guest layer does not yet include this fork's `steamac-dx12-check` binary.
-- Disk creation verified Valve's signed SteamOS stable bundle and began downloading to `/Volumes/Zweidrive/steamac/steamos.img` with its cache on Zweidrive. Final disk writing, full guest rebuild, guest DualSense recognition and DX12 gameplay remain unverified.
+- Disk creation verified Valve's signed SteamOS stable bundle and began downloading to `/Volumes/Zweidrive/steamac/steamos.img` with its cache on Zweidrive. The 96 GiB home image finished creation, verified its rootfs checksum and booted SteamOS. The original host crashed when the graphical session began. With the native-heap patch, an isolated boot using an APFS clone of that disk reached the graphical session and Steam client startup without that crash. This check used headless mode with networking disabled; a usable Steam login screen, full guest rebuild, guest DualSense recognition and DX12 gameplay remain unverified.
 
 Sources: [Mesa KosmicKrisp](https://docs.mesa3d.org/drivers/kosmickrisp.html), [vkd3d-proton driver requirements](https://github.com/HansKristian-Work/vkd3d-proton#drivers), [Linux PlayStation driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c).

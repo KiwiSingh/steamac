@@ -1,0 +1,90 @@
+diff --git a/src/kosmickrisp/vulkan/kk_device_memory.c b/src/kosmickrisp/vulkan/kk_device_memory.c
+index e658bd7..a24b081 100644
+--- a/src/kosmickrisp/vulkan/kk_device_memory.c
++++ b/src/kosmickrisp/vulkan/kk_device_memory.c
+@@ -79,8 +79,11 @@ kk_GetMemoryHostPointerPropertiesEXT(
+    default:
+       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+    }
+-   pMemoryHostPointerProperties->memoryTypeBits =
+-      BITFIELD_MASK(pdev->mem_type_count);
++   pMemoryHostPointerProperties->memoryTypeBits = 0;
++   for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
++      if (pdev->mem_types[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         pMemoryHostPointerProperties->memoryTypeBits |= BITFIELD_BIT(i);
++   }
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index de27a6d..78d33bd 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -666,15 +666,14 @@ kk_get_image_memory_requirements(struct kk_device *dev, struct kk_image *image,
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+    uint32_t memory_types = (1 << pdev->mem_type_count) - 1;
+ 
+-   /* Remove non host visible heaps from the types for host image copy in case
+-    * of potential issues. This should be removed when we get ReBAR.
+-    */
+-   if (image->vk.usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT) {
+-      for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
+-         if (!(pdev->mem_types[i].propertyFlags &
+-               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+-            memory_types &= ~BITFIELD_BIT(i);
+-      }
++   /* Optimal textures need a native MTLHeap. Linear/exportable textures
++    * must stay on the host-pointer memory type that Venus shares with the VMM. */
++   const bool needs_host_pointer = image->vk.tiling != VK_IMAGE_TILING_OPTIMAL;
++   for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
++      const bool host_visible = pdev->mem_types[i].propertyFlags &
++                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
++      if (host_visible != needs_host_pointer)
++         memory_types &= ~BITFIELD_BIT(i);
+    }
+ 
+    // TODO hope for the best?
+@@ -852,12 +851,15 @@ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
+                                &plane_align_B);
+    *offset_B = align64(*offset_B, plane_align_B);
+ 
+-   assert(plane->layout.linear || mem->bo->mtl_handle);
++   if (!plane->layout.linear && !mem->bo->mtl_handle)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+ 
+    /* Linear textures in Metal need to be allocated through a buffer... */
+    plane->mem = mem;
+    plane->mem_offset_B = *offset_B;
+    plane->mtl_handle = kk_image_plane_create_texture(plane, &plane->layout, 0u);
++   if (!plane->mtl_handle)
++      return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    if (image->vk.base.object_name)
+       mtl_resource_set_label(plane->mtl_handle, image->vk.base.object_name);
+ 
+@@ -958,7 +960,7 @@ kk_BindImageMemory2(VkDevice device, uint32_t bindInfoCount,
+       const VkBindMemoryStatusKHR *status =
+          vk_find_struct_const(pBindInfos[i].pNext, BIND_MEMORY_STATUS_KHR);
+       if (status != NULL && status->pResult != NULL)
+-         *status->pResult = VK_SUCCESS;
++         *status->pResult = result;
+ 
+       if (first_error_or_success == VK_SUCCESS)
+          first_error_or_success = result;
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 2d5be6b..777e6da 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -1192,6 +1192,13 @@ kk_enumerate_physical_devices(struct vk_instance *_instance)
+       .used = kk_get_sysmem_heap_used,
+    };
+ 
++   /* Venus imports host-visible allocations as host pointers. Optimal textures
++    * need a native Metal heap, so expose a separate device-local memory type. */
++   pdev->mem_types[pdev->mem_type_count++] = (VkMemoryType){
++      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
++      .heapIndex = sysmem_heap_idx,
++   };
++
+    pdev->mem_types[pdev->mem_type_count++] = (VkMemoryType){
+       .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
