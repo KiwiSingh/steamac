@@ -8,8 +8,8 @@ final class CreateDiskModel: ObservableObject {
     @Published var path: String
     @Published var branch: String
     @Published var homeGiB = DiskLayout.defaultHomeGiB
-    /// Empty = no password (release default; Settings > Advanced "Enable SSH" sets one later).
-    @Published var password = AppBundle.releaseDefaults ? "" : "steamos"
+    /// Shared default; users can choose a different password during creation.
+    @Published var password = GuestPassword.defaultPassword
     @Published private(set) var running = false
     @Published private(set) var status: DiskCreator.Status?
     @Published private(set) var error: String?

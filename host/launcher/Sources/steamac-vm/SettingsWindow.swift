@@ -812,7 +812,7 @@ private struct AdvancedTab: View {
                     if on { password.ensure() }
                 })) {
                     Label2(title: "Enable SSH", detail: "Off: no port on the Mac and sshd masked in SteamOS. Turning it on "
-                           + "generates a password for the user steamos (kept on, but unused, when SSH is off).",
+                           + "sets the default password for the user steamos if none is saved (kept on, but unused, when SSH is off).",
                            now: false, key: .sshEnabled)
                 }
                 HStack {
@@ -846,14 +846,14 @@ private struct AdvancedTab: View {
                         Text(state == .applied ? "Password applied in SteamOS" : "Password will apply on next start")
                             .font(.caption).foregroundStyle(state == .applied ? Color.secondary : Color.orange)
                         Spacer()
-                        Button("Regenerate Password") { password.regenerate() }
+                        Button("Reset to Default Password") { password.regenerate() }
                     }
                 } else {
                     HStack {
-                        Text("No generated password for this disk (disks built with Docker use steamos).")
+                        Text("Default login: steamos / password. No saved password for this disk.")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Generate Password") { password.ensure() }
+                        Button("Set Default Password") { password.ensure() }
                     }
                 }
                 if let error = password.error { Text(error).font(.caption).foregroundStyle(.red) }

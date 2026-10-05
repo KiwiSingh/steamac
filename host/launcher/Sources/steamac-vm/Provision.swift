@@ -100,7 +100,7 @@ enum Provision {
     }
 }
 
-/// Generated password of the guest user steamos, one per disk (Keychain generic password,
+/// Saved password of the guest user steamos, one per disk (Keychain generic password,
 /// service es.fxgam.steamac.guest-password, account = the disk's GPT GUID). The plaintext is
 /// kept so Settings can show it; the guest only ever gets its SHA-512-crypt hash. State in the
 /// item's generic attribute: "pending" until a boot reports `config applied`, then "applied".
@@ -109,9 +109,7 @@ enum GuestPassword {
 
     private static let service = LauncherSettings.defaultDomain + ".guest-password"
     static let user = "steamos"
-    /// No 0/O, 1/l/I: readable when typed from the Settings window.
-    private static let alphabet = Array("abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789")
-
+    static let defaultPassword = "password"
     static func identity(_ gpt: GPT) -> String { gpt.diskGUID.uuidString.lowercased() }
 
     /// The disk the next start uses (Settings / default), as a Keychain identity.
@@ -140,24 +138,10 @@ enum GuestPassword {
         return String(data: data, encoding: .utf8)
     }
 
-    /// 20 characters, ~117 bits (SecRandomCopyBytes, rejection sampling for a uniform pick).
-    static func random() throws -> String {
-        var out = ""
-        let limit = UInt8(256 - 256 % alphabet.count)
-        while out.count < 20 {
-            var bytes = [UInt8](repeating: 0, count: 32)
-            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-                throw OptionError("SecRandomCopyBytes failed")
-            }
-            for b in bytes where b < limit && out.count < 20 { out.append(alphabet[Int(b) % alphabet.count]) }
-        }
-        return out
-    }
-
-    /// New random password for the disk, applied on its next start.
+    /// Reset to the shared fork default, applied on the disk’s next start.
     @discardableResult
     static func generate(disk: String) throws -> String {
-        let pw = try random()
+        let pw = defaultPassword
         SecItemDelete(query(disk) as CFDictionary)
         var q = query(disk)
         q[kSecValueData as String] = Data(pw.utf8)
@@ -167,7 +151,7 @@ enum GuestPassword {
         guard status == errSecSuccess else {
             throw OptionError("Keychain: \(SecCopyErrorMessageString(status, nil) as String? ?? "error \(status)")")
         }
-        log("config: generated a new SteamOS password for disk \(disk) (Keychain; shown in Settings > Advanced), applied on the next start")
+        log("config: prepared the default SteamOS password for disk \(disk) (Keychain; shown in Settings > Advanced), applied on the next start")
         return pw
     }
 

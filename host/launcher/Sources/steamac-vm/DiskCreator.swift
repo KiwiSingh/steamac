@@ -21,7 +21,7 @@ final class DiskCreator {
         var homeGiB = DiskLayout.defaultHomeGiB
         /// Password of the guest user steamos; nil = none (stock shadow field, the release
         /// default; Settings > Advanced "Enable SSH" sets one later). Dev default "steamos".
-        var password: String? = AppBundle.releaseDefaults ? nil : "steamos"
+        var password: String? = GuestPassword.defaultPassword
         /// Keep the downloaded bundle and chunk cache after success (re-creating disks quickly).
         var keepCache = false
     }

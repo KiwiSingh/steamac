@@ -19,7 +19,7 @@ Broad DirectX 12 compatibility, ray tracing, and other games remain unverified. 
 
 ## Install a release
 
-Download the launcher from **[this fork’s Releases](https://github.com/KiwiSingh/steamac/releases)**. Read the release notes for signing status and the exact bundled components. The desktop, mouse, and Flatpak startup fixes are included in [`v1.2.3-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.3-preview.1). Early fork builds are prereleases and are ad-hoc signed, **not Apple-notarized**; downloaded builds may require approval in macOS **System Settings → Privacy & Security**, or you can build locally instead.
+Download the launcher from **[this fork’s Releases](https://github.com/KiwiSingh/steamac/releases)**. Read the release notes for signing status and the exact bundled components. The latest presence and default-password changes are included in [`v1.2.4-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.4-preview.1). The desktop, mouse, and Flatpak startup fixes are included in [`v1.2.3-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.3-preview.1). Early fork builds are prereleases and are ad-hoc signed, **not Apple-notarized**; downloaded builds may require approval in macOS **System Settings → Privacy & Security**, or you can build locally instead.
 
 1. Extract the app and place **FX Steam Launcher.app** in your Applications folder. An Applications folder on an external SSD also works.
 2. Launch it. Choose **Create New Disk…**, then **Choose SSD…** to select a mounted writable external SSD or a folder on it. **Location…** selects a custom image filename.
@@ -118,7 +118,7 @@ Closing the VM window requests guest shutdown. Settings identify which changes r
 
 The normal **2D Steam interface** is the default. Frame VR flags are only enabled by `STEAMAC_STEAM_VR_UI=1`, for experiments with a working VR compositor.
 
-SSH is off by default in the app. Enable it under **Settings → Advanced** when needed. The app generates a per-disk password stored in macOS Keychain; do not assume a shared default password. The development scripts have different SSH defaults.
+SSH is off by default in the app. Enable it under **Settings → Advanced** when needed. The default SteamOS login is **`steamos` / `password`** for new disks and password resets. You can choose a different password when creating a disk. Existing saved passwords are retained; **Reset to Default Password** in Settings → Advanced applies `password` on the next boot. SSH credentials are stored in macOS Keychain.
 
 Crash reporting and **Help → Report a Problem** are inherited from upstream and use upstream infrastructure. Review the settings and disclosure before enabling or submitting reports; use this fork’s [GitHub issues](https://github.com/KiwiSingh/steamac/issues) for fork-specific problems. `--no-crash-reports` disables automatic reporting for one launch.
 
@@ -156,7 +156,7 @@ Choose **Switch to Desktop** in Steam, then **Return to Gaming Mode** on the Pla
 
 Discover-installed apps such as Chromium and Vesktop use Flatpak. Builds before `v1.2.3-preview.1` could show a loading icon and then exit with `bwrap: Can't mount proc on /newroot/proc: Operation not permitted`. The new guest layer mounts an intact procfs at `/run/steamac/proc`, allowing application sandboxes to create their own procfs while SteamOS keeps its synthesized `/proc/cmdline`. It preserves Flatpak’s sandbox rather than disabling it.
 
-Upgrade the app while SteamOS is shut down, then reboot your existing image. No SteamOS download or game reinstall is needed. The fix has been tested on the owner’s Steam Frame image; other image revisions and every Flatpak application remain unverified. Local account/password changes are personal VM state and are not bundled in releases.
+Upgrade the app while SteamOS is shut down, then reboot your existing image. No SteamOS download or game reinstall is needed. The fix has been tested on the owner’s Steam Frame image; other image revisions and every Flatpak application remain unverified. Existing custom account passwords remain personal VM state; the shared default is documented above.
 
 ### Steam presence with Vesktop
 

@@ -142,11 +142,11 @@ struct Options {
                            GPT disk to PATH (never overwritten) plus PATH's .provision.img payload, which
                            the first boot uses to format and fill the remaining partitions
       --home-gib N         size of the home partition (default 64; sparse)
-      --password PW        password of the guest user steamos (default: steamos for this dev launcher,
-                           none in the release .app; "" = none)
+      --password PW        password of the guest user steamos (default: password,
+                           "" = none)
       --keep-cache         keep the bundle and chunk cache after success
 
-    SSH: --ssh-password DISK prints user, generated password and state (pending / applied) of DISK
+    SSH: --ssh-password DISK prints user, saved password and state (pending / applied) of DISK
     (the password Settings > Advanced shows; it exists once SSH was enabled for that disk).
 
     Crash reports (Settings > General "Send crash reports and diagnostics", on by default):
