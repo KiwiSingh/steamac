@@ -37,8 +37,23 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 интервалы кадров гостя и кадров на экране (p50/p95/p99/max, число интервалов > 25 и > 50 мс).
 Подтормаживания при первом появлении нового эффекта — это компиляция шейдеров Metal (~50–100 мс на
 пайплайн); результат кешируется Metal на диске, повторно эффект не тормозит, в том числе после
-перезапуска ВМ. Steam сам прогревает этот кеш (Shader Pre-Caching / fossilize_replay включены
-в SteamOS по умолчанию), делать ничего не нужно.
+перезапуска игры или ВМ (замер через Venus: 102 мс → 0,95 мс на пайплайн в новом процессе).
+
+Shader Pre-Caching Steam (Settings → Downloads) в ВМ по умолчанию выключен, как и «Allow background
+processing of Vulkan shaders»: перед стартом Steam `/usr/lib/steamac/steam-shader-defaults`
+(ExecStartPre `steam.service`) пишет в `~/.local/share/Steam/config/config.vdf`, блок
+`ShaderCacheManager`, `"DisableShaderCache" "1"` и `"EnableShaderBackgroundProcessing" "0"` — один раз
+на установку Steam (метка `config/steamac-shader-defaults`) и только если этих значений там ещё нет,
+поэтому выбор в настройках Steam (переключатель пишет `"DisableShaderCache" "0"`) сохраняется. Зачем:
+под Venus каждый пайплайн, который обрабатывает fossilize_replay Steam, компилирует Metal на Mac
+(~70–100 мс), а Steam обрабатывает заново после каждой новой загрузки кеша игры (у популярных игр —
+почти ежедневно) и для всех игр после обновления лаунчера с другим MoltenVK (идентичность драйвера
+Venus — хеш `pipelineCacheUUID` MoltenVK); запуск игры при этом минутами ждёт «Processing Vulkan
+shaders». Сами загружаемые кеши записаны на GPU других игроков: из пайплайнов, которые DXVK создаёт на
+MoltenVK, в них нашлось 4 из 86 (Heroes of Might and Magic: Olden Era) и 0 из 197 (Death's Door).
+Цена: с выключенным Shader Pre-Caching Steam не скачивает и транскодированные видео Proton
+(`transcoded_video.foz`), так что ролики, которые Proton не декодирует сам, могут показываться
+заглушкой. Включить обратно: Steam → Settings → Downloads → Enable Shader Pre-caching.
 
 Прогресс загрузки и выключения не пропадает до `ready`: первый клик или клавиша в окне сворачивает
 полноэкранный оверлей в плашку внизу по центру (этап, процент, полоска, строка деталей вроде
@@ -441,7 +456,7 @@ email (обязателен, запоминается на этом Mac — чт
   (`journalctl -b`, последние 5000 строк, плюс пользовательский журнал), `coredumpctl list`/`info`,
   `dmesg`, `systemctl --failed`, `os-release`, `layer-release`, `/proc/cmdline`, `df`/`free`, хвосты
   логов клиента Steam (`console_log`, `stderr`, `bootstrap_log`, `compat_log`, `connection_log`,
-  `webhelper`, `cef_log`, `steamui_*`) и Proton (`~/steam-*.log` от `PROTON_LOG=1`, `version` и
+  `webhelper`, `cef_log`, `shader_log`, `steamui_*`) и Proton (`~/steam-*.log` от `PROTON_LOG=1`, `version` и
   `config_info` префиксов в `compatdata`). Steam ID (`[U:1:…]`, 7656119…), имена аккаунтов и
   персон Steam (из `loginusers.vdf`/`registry.vdf`) и email заменяются заглушками до упаковки;
   `collect-notes.txt` в архиве перечисляет, что удалось прочитать;
@@ -492,7 +507,7 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
 | `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
 | `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos` |
-| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`) |
+| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), Shader Pre-Caching Steam выключен по умолчанию (`steam-shader-defaults`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
 Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому

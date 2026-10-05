@@ -37,6 +37,7 @@ const STEAM_LOGS: &[&str] = &[
     "connection_log.txt",
     "webhelper.txt",
     "cef_log.txt",
+    "shader_log.txt",
 ];
 const STEAM_LOG_TAIL: usize = 512 * 1024;
 const PROTON_LOG_TAIL: usize = 1024 * 1024;
