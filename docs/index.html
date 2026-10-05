@@ -279,6 +279,7 @@
           <li><span lang="en">The image comes from Valve as a signed RAUC bundle; signature and sha256 are verified. The SteamOS root filesystem is never modified — VM bits live in the initramfs and a separate read-only layer.</span><span lang="ru">Образ скачивается с серверов Valve подписанным RAUC-бандлом; подпись и sha256 проверяются. Корневая ФС SteamOS не изменяется — всё для ВМ живёт в initramfs и отдельном read-only слое.</span></li>
           <li><span lang="en">So official updates just work: RAUC installs into the other A/B slot and rolls back the standard way, with the initramfs acting as the bootloader.</span><span lang="ru">Поэтому официальные обновления просто работают: RAUC ставит их в другой слот A/B и откатывает штатно, а initramfs играет роль загрузчика.</span></li>
           <li><span lang="en">vCPU and GPU threads run at user-interactive QoS; networking goes through gvproxy. SSH into SteamOS is one switch in Settings, off by default, with a generated password per disk.</span><span lang="ru">Потоки vCPU и GPU работают с QoS user-interactive; сеть — через gvproxy. SSH в SteamOS — один переключатель в настройках, по умолчанию выключен, пароль генерируется для каждого диска.</span></li>
+          <li><span lang="en">Closing the window can suspend instead of shutting down: the vCPUs and the guest's audio stop in place and the game waits in memory. Resume from the Dock or the menu bar and you are exactly where you left off. SteamOS's own Sleep pauses the VM the same way.</span><span lang="ru">Закрытие окна может не выключать, а приостанавливать: vCPU и звук гостя останавливаются на месте, игра ждёт в памяти. Продолжить — из Dock или строки меню, ровно с того же места. Сон SteamOS ставит ВМ на паузу так же.</span></li>
         </ul>
         <p class="tags"><span>libkrun</span><span>Hypervisor.framework</span><span>RAUC A/B</span><span>gvproxy</span></p>
       </article>
@@ -350,8 +351,8 @@
       <ol class="settings-tabs" role="tablist" aria-label="Settings tabs">
         <li><button type="button" role="tab" data-tab="general" aria-selected="true">
           <b>General</b>
-          <span lang="en">Boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; frame-pacing log; Report a Problem with the logs you choose.</span>
-          <span lang="ru">Оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; журнал плавности; Report a Problem с выбранными логами.</span>
+          <span lang="en">Close the window to shut down or suspend SteamOS in memory (Ctrl+Cmd+S); boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; Report a Problem with the logs you choose.</span>
+          <span lang="ru">Закрытие окна выключает SteamOS или приостанавливает её в памяти (Ctrl+Cmd+S); оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; Report a Problem с выбранными логами.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="display" aria-selected="false">
           <b>Display</b>
@@ -425,14 +426,15 @@
       </div>
 
       <div class="get-card">
-        <h3><span lang="en">New in 1.1</span><span lang="ru">Новое в 1.1</span></h3>
+        <h3><span lang="en">New in 1.2</span><span lang="ru">Новое в 1.2</span></h3>
         <ul class="news">
-          <li><span lang="en">Smoother sound: buffering fixes in the CoreAudio backend and the guest's virtio-snd driver</span><span lang="ru">Ровнее звук: исправления буферизации в бэкенде CoreAudio и драйвере virtio-snd гостя</span></li>
-          <li><span lang="en">Resolution presets (Steam Deck 1280×800 up to 4K and 21:9), Fit to screen, Custom</span><span lang="ru">Пресеты разрешения (от Steam Deck 1280×800 до 4K и 21:9), Fit to screen, Custom</span></li>
-          <li><span lang="en">In the background the sound fades out; optionally the game pauses</span><span lang="ru">В фоне звук плавно выключается; по желанию игра встаёт на паузу</span></li>
-          <li><span lang="en">A “still working” card when the GPU idles for 2 s, “not responding” if SteamOS stops answering</span><span lang="ru">Карточка «still working», если GPU простаивает 2 с, и «not responding», если SteamOS перестала отвечать</span></li>
-          <li><span lang="en">Report a Problem with the logs you choose; crash reports you can turn off</span><span lang="ru">Report a Problem с выбранными логами; отчёты о сбоях, которые можно отключить</span></li>
-          <li><span lang="en">Metal Performance HUD (Ctrl+Cmd+P) and a new app icon</span><span lang="ru">Metal Performance HUD (Ctrl+Cmd+P) и новая иконка</span></li>
+          <li><span lang="en">Suspend instead of quitting: close the window or press Ctrl+Cmd+S, resume from the Dock or the menu bar right where you left off</span><span lang="ru">Пауза вместо выключения: закройте окно или нажмите Ctrl+Cmd+S, продолжайте из Dock или строки меню с того же места</span></li>
+          <li><span lang="en">SteamOS Sleep pauses the VM (“SteamOS is sleeping”); a click, key or controller button wakes it</span><span lang="ru">Сон SteamOS ставит ВМ на паузу («SteamOS is sleeping»); будит щелчок, клавиша или кнопка геймпада</span></li>
+          <li><span lang="en">The guest's clock is set right after a resume and when the Mac wakes</span><span lang="ru">Часы гостя выставляются сразу после паузы и после сна Mac</span></li>
+          <li><span lang="en">Paused games show a dimmed frame and a card; a click resumes</span><span lang="ru">Игра на паузе показывает затемнённый кадр и карточку; щелчок продолжает</span></li>
+          <li><span lang="en">First sign-in with an on-screen QR code for the Steam app</span><span lang="ru">Первый вход в Steam по QR-коду на экране для мобильного приложения</span></li>
+          <li><span lang="en">Graphics fixes: a MoltenVK crash on M5 Macs, robust buffer access in shaders, sturdier virglrenderer error handling</span><span lang="ru">Исправления графики: падение MoltenVK на Mac с M5, безопасный доступ к буферам в шейдерах, устойчивее обработка ошибок в virglrenderer</span></li>
+          <li><span lang="en">Faster start and more useful crash reports</span><span lang="ru">Быстрее запуск и полезнее отчёты о сбоях</span></li>
         </ul>
         <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
 <pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
