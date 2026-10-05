@@ -30,6 +30,10 @@
 # 9. invalid_usage.c: VK_NULL_HANDLE set layouts in a pipeline layout (independent sets, from Venus) and
 #    rasterizationSamples 8 (not supported by Apple GPUs); then a pipeline whose MSL does not compile, whose
 #    MSL must be logged as "[mvk-msl] " lines on stderr.
+# 10. vertex_input.c: vertex input layouts Metal's always-on vertex descriptor validation aborts on (zero
+#    strides, static/dynamic/per instance/zero divisor, attributes past the stride, attributes of undescribed
+#    bindings, with and without geometry shader emulation), one process per case; points check the
+#    elements read.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -127,3 +131,7 @@ else
 	cat "$msl_log"
 	exit 1
 fi
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/vertex_input.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/vertex_input"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/vertex_input" "$gspv"

@@ -237,6 +237,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         pipelines (rasterSampleCount), images and render pass attachments, with a warning"
 	echo "  0025 = steamac: the MSL of a failed shader library compile is written to stderr as '[mvk-msl] '"
 	echo "         lines (first 40 lines, +-5 lines around each error location) for the launcher's reports"
+	echo "  0026 = steamac: vertex input checked like Metal's always-on vertex descriptor validation before"
+	echo "         pipeline creation (it aborted the VM: 'references a buffer ... that has no stride');"
+	echo "         attributes of undescribed bindings fail the pipeline (also with GS emulation)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
