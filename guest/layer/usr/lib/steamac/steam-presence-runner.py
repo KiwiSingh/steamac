@@ -11,7 +11,10 @@ import time
 def find_ipc(pipe=None):
     root = Path(f'/run/user/{os.getuid()}')
     roots = [Path(os.environ.get('XDG_RUNTIME_DIR', str(root))), root, root / 'nested_plasma']
-    suffixes = ['', 'app/dev.vencord.Vesktop', 'app/com.discordapp.Discord',
+    suffixes = ['', '.flatpak/dev.vencord.Vesktop/xdg-run',
+                '.flatpak/com.discordapp.Discord/xdg-run',
+                '.flatpak/com.discordapp.DiscordCanary/xdg-run',
+                'app/dev.vencord.Vesktop', 'app/com.discordapp.Discord',
                 'app/com.discordapp.DiscordCanary', 'snap.discord']
     name = f'discord-ipc-{pipe}' if pipe is not None else 'discord-ipc-*'
     for runtime in roots:
