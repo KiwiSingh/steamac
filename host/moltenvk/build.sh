@@ -253,6 +253,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0030 = steamac: small buffers (< 64 KiB) bound without argument buffers (push descriptors) with"
 	echo "         robustBufferAccess2 are bound themselves, not replaced by a 64 KiB copy of their CPU contents"
 	echo "         (shader writes were lost, GPU-written data not seen; vkd3d-proton root descriptors)"
+	echo "  0031 = steamac: the logged MSL of a failed compile leaves out SPIRV-Cross' helper templates (they"
+	echo "         filled the 40-line head) and logs each error context line once"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -296,6 +298,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0020 = steamac: texture buffer offsets of argument buffers read from the buffer size array at the"
 	echo "         texture's index (MoltenVK's aux buffer); robustImageAccess2 bounds of texture buffers with an"
 	echo "         offset use the view's width"
+	echo "  0021 = steamac: vertex/fragment entry points of multi-entry-point modules leave out the workgroup"
+	echo "         variables of the module's compute entry points ('variables in the threadgroup address space"
+	echo "         cannot be declared in a vertex function', also their zero initialization)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

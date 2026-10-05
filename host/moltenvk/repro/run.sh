@@ -42,6 +42,9 @@
 # 13. texel_buffer.c: texel buffer views at offsets that are not 16-byte aligned (single texel alignment, required by
 #    vkd3d-proton): uniform/storage texel buffers, arrays, variable-count arrays, copies and push descriptors, values
 #    read back; storage buffer array sizes written one element per update.
+# 14. multi_entry.c: modules with vertex, fragment and compute entry points (shaders/multi_entry/ linked with
+#    spirv-link, SPIR-V 1.0 and 1.6) whose compute entry point has workgroup variables (one zero-initialized):
+#    the vertex/fragment pipeline draws, the compute pipeline counts in workgroup memory.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -128,14 +131,18 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/invalid_usage.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/invalid_usage"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv"
-# The failing MSL is logged after the error: the first lines, and the lines around the error location.
+# The failing MSL is logged after the error: the first lines without SPIRV-Cross' helper templates, and the
+# lines around the error locations, each once (the two errors are on neighboring lines).
 msl_log=$work/msl-log.txt
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv" msl-log 2> "$msl_log"
-if grep -q '^\[mvk-msl\] #include <metal_stdlib>$' "$msl_log" && grep -q '^\[mvk-msl\] [0-9][0-9]*: .*double' "$msl_log"; then
-	echo "OK   failing MSL logged: $(grep -c '^\[mvk-msl\] ' "$msl_log") [mvk-msl] lines, error context:"
-	grep '^\[mvk-msl\] [0-9][0-9]*: ' "$msl_log"
+msl_context=$(grep '^\[mvk-msl\] [0-9][0-9]*: ' "$msl_log" || true)
+if grep -q '^\[mvk-msl\] #include <metal_stdlib>$' "$msl_log" && grep -q '^\[mvk-msl\] \.\.\. ([0-9]* lines of templates left out)$' "$msl_log" &&
+	! grep -q '^\[mvk-msl\] struct spvUnsafeArray' "$msl_log" && [ "$(printf '%s\n' "$msl_context" | grep -c 'double')" -eq 2 ] &&
+	[ -z "$(printf '%s\n' "$msl_context" | sed 's/: .*//' | sort | uniq -d)" ]; then
+	echo "OK   failing MSL logged: $(grep -c '^\[mvk-msl\] ' "$msl_log") [mvk-msl] lines, $(grep '^\[mvk-msl\] \.\.\. (' "$msl_log" | sed 's/^\[mvk-msl\] //' | tr '\n' ' ')error context (each line once):"
+	printf '%s\n' "$msl_context"
 else
-	echo "FAIL failing MSL not logged as [mvk-msl] lines:"
+	echo "FAIL failing MSL not logged as [mvk-msl] lines (head without templates, both error lines, each context line once):"
 	cat "$msl_log"
 	exit 1
 fi
@@ -155,3 +162,16 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/texel_buffer.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/texel_buffer"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/texel_buffer" "$gspv"
+
+mspv=$work/multi-entry-spv
+rm -rf "$mspv"
+mkdir -p "$mspv"
+for env in vulkan1.0 vulkan1.3; do
+	glslangValidator -V --quiet --target-env $env -e vs_main --source-entrypoint main "$here/shaders/multi_entry/vs.vert" -o "$mspv/vs.$env.spv"
+	glslangValidator -V --quiet --target-env $env -e fs_main --source-entrypoint main "$here/shaders/multi_entry/fs.frag" -o "$mspv/fs.$env.spv"
+	glslangValidator -V --quiet --target-env $env -e cs_main --source-entrypoint main "$here/shaders/multi_entry/cs.comp" -o "$mspv/cs.$env.spv"
+	spirv-link --target-env $env "$mspv/vs.$env.spv" "$mspv/fs.$env.spv" "$mspv/cs.$env.spv" -o "$mspv/multi_entry.$env.spv"
+done
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/multi_entry.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/multi_entry"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/multi_entry" "$mspv"

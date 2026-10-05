@@ -1,10 +1,14 @@
 #version 450
-// MSL that does not compile ("'double' is not supported in Metal"): MoltenVK logs the failing MSL as
-// "[mvk-msl] " lines after the error.
+// MSL that does not compile ("'double' is not supported in Metal", on two neighboring lines): MoltenVK logs
+// the failing MSL as "[mvk-msl] " lines after the error, without SPIRV-Cross' helper templates (the local
+// array makes it emit spvUnsafeArray), each context line once.
 layout(local_size_x = 1) in;
 layout(set = 0, binding = 0, std430) buffer Out { float o[]; };
 void main()
 {
-	double d = double(o[1]);
-	o[0] = float(d * d);
+	float t[4] = float[](o[3], o[4], o[5], o[6]);
+	o[7] = t[int(o[8])];
+	double a = double(o[1]);
+	double b = double(o[2]);
+	o[0] = float(a * b);
 }

@@ -1,0 +1,14 @@
+#version 450
+#extension GL_EXT_null_initializer : require
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer Out { uint o[]; };
+shared uint s_arr[512];
+shared uint s_count = {};
+void main()
+{
+	uint i = gl_LocalInvocationIndex;
+	s_arr[i] = i;
+	atomicAdd(s_count, 1u);
+	barrier();
+	if (i == 0u) { o[0] = s_count; o[1] = s_arr[63]; }
+}
