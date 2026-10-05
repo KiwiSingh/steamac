@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Mon, 5 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: refuse images over the device limits instead of
+ aborting in Metal
+
+A guest vkCreateImage with an extent over the device limits reaches
+MoltenVK, which hands it to Metal, and Metal's texture descriptor validation
+asserts ("MTLTextureDescriptor has width (1048576) greater than the maximum
+allowed size of 16384"): the whole VMM aborts, not just the guest context.
+
+Check the extent, array layers and mip levels against the physical device
+limits first and fail the creation (VK_ERROR_OUT_OF_DEVICE_MEMORY) with a
+log line.  Venus creates such an image synchronously (its memory
+requirements are not cached yet), so the application gets the error.
+---
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -91,6 +91,43 @@
+    return VK_SUCCESS;
+ }
+ 
++/* Metal asserts (aborting the whole VMM, not just this context) on a texture over its
++ * size limits, and MoltenVK passes the extent through.  An image the device limits do
++ * not allow is invalid usage; refuse it like a failed creation instead.
++ */
++static bool
++vkr_image_within_limits(const struct vkr_device *dev, const VkImageCreateInfo *info)
++{
++   const VkPhysicalDeviceLimits *limits = &dev->physical_device->properties.limits;
++   const VkExtent3D *e = &info->extent;
++   uint32_t max_dim;
++   switch (info->imageType) {
++   case VK_IMAGE_TYPE_1D:
++      max_dim = limits->maxImageDimension1D;
++      break;
++   case VK_IMAGE_TYPE_2D:
++      max_dim = (info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
++                   ? MIN2(limits->maxImageDimension2D, limits->maxImageDimensionCube)
++                   : limits->maxImageDimension2D;
++      break;
++   default:
++      max_dim = limits->maxImageDimension3D;
++      break;
++   }
++
++   const uint32_t largest = MAX3(e->width, e->height, e->depth);
++   const bool ok = e->width && e->height && e->depth && largest <= max_dim &&
++                   info->arrayLayers && info->arrayLayers <= limits->maxImageArrayLayers &&
++                   info->mipLevels && info->mipLevels <= util_logbase2(largest) + 1;
++   if (!ok) {
++      vkr_log("image %ux%ux%u (type %d, %u layers, %u levels) exceeds the device limits; "
++              "not created",
++              e->width, e->height, e->depth, info->imageType, info->arrayLayers,
++              info->mipLevels);
++   }
++   return ok;
++}
++
+ static void
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCreateImage *args)
+@@ -99,6 +136,11 @@
+ 
+    vkr_image_fix_create_info(dev, (VkImageCreateInfo *)args->pCreateInfo);
+ 
++   if (!vkr_image_within_limits(dev, args->pCreateInfo)) {
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return;
++   }
++
+    if (!dev->physical_device->EXT_image_drm_format_modifier) {
+       args->ret = vkr_image_fix_drm_format(dev, (VkImageCreateInfo *)args->pCreateInfo);
+       if (args->ret != VK_SUCCESS) {

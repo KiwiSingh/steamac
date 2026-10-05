@@ -1,0 +1,309 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Mon, 5 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: let the guest destroy objects whose creation failed;
+ report CS errors only on the thread that raised them
+
+Venus creates most objects asynchronously, so the guest destroys objects the
+host never created: Mesa frees a dma_buf-exportable VkDeviceMemory right after
+its blob export failed (mangoapp: "vkAllocateMemory failed ... export types
+0x200", "failed to look up object 39 of type 8", "vkFreeMemory resulted in CS
+error"), and applications destroy images, buffers, memory etc. the driver
+refused.  The lookup of the unknown id was fatal and killed the context.
+
+Every command now goes through vkr_dispatch_command, which peeks the command
+type: for vkDestroy* / vkFree* (not device or instance) an unknown id of the
+destroyed object type is logged ("object N of type T to destroy does not
+exist (its creation failed on the host); ignored") and decodes to no object,
+which every destroy dispatcher already skips (VK_NULL_HANDLE entries for
+vkFreeCommandBuffers / vkFreeDescriptorSets, which the spec allows).  Unknown
+ids of any other type, type mismatches and malformed streams stay fatal.
+
+The fatal flag is shared by the context and all its rings, and
+vn_dispatch_command logs "<command> resulted in CS error" on every thread
+that finishes a command after it was set.  A ring busy compiling a pipeline
+for tens of milliseconds was the usual bystander, so crash reports blamed
+vkCreateGraphicsPipelines for errors raised elsewhere (STEAMAC-G: no lookup
+failure or other error before the line).  The fatal setters now mark the
+raising thread (vkr_fatal_raised_here, reset per command), and other threads
+log "<command> stopped: the context went fatal on another thread" /
+"ring_submit_cmd: stopping, the context went fatal on another thread"
+instead.  vkr_context_destroy_resource, the one place that set the flag
+outside any command without a word, logs the resource and ring ("... (CS
+error)").
+---
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -51,6 +51,14 @@
+    atomic_fetch_add_explicit(&vkr_dispatch_count, 1, memory_order_relaxed);
+ }
+ 
++/* steamac: whether this thread made the context fatal during the command it is
++ * dispatching (see vkr_dispatch_command).  The fatal flag is shared by the context and
++ * all its rings, so without this every thread that finishes a command after another
++ * thread set it logs "<its command> resulted in CS error", and the first such line
++ * (the one crash reports pick) often names an innocent command.
++ */
++extern _Thread_local bool vkr_fatal_raised_here;
++
+ /* define a type-safe cast function */
+ #define VKR_DEFINE_OBJECT_CAST(vkr_type, vk_enum, vk_type)                               \
+    static inline struct vkr_##vkr_type *vkr_##vkr_type##_from_handle(vk_type handle)     \
+--- a/src/venus/vkr_cs.h
++++ b/src/venus/vkr_cs.h
+@@ -80,6 +80,14 @@
+ 
+    const uint8_t *cur;
+    const uint8_t *end;
++
++   /* steamac: set by vkr_dispatch_command for vkDestroy* / vkFree* commands to the type
++    * of the object they destroy.  Venus creates most objects asynchronously: the guest
++    * destroys an object whose creation failed on the host (the driver refused it, or the
++    * guest freed it right after a failed export), and that id is unknown here.  Such a
++    * lookup is not fatal: it yields no object, which the destroy dispatchers skip.
++    */
++   VkObjectType lenient_type;
+ };
+ 
+ static inline int
+@@ -101,6 +109,7 @@
+ vkr_cs_encoder_set_fatal(const struct vkr_cs_encoder *enc)
+ {
+    *enc->fatal_error = true;
++   vkr_fatal_raised_here = true;
+ }
+ 
+ void
+@@ -210,6 +219,7 @@
+ vkr_cs_decoder_set_fatal(const struct vkr_cs_decoder *dec)
+ {
+    *((struct vkr_cs_decoder *)dec)->fatal_error = true;
++   vkr_fatal_raised_here = true;
+ }
+ 
+ static inline bool
+@@ -314,10 +324,16 @@
+    obj = likely(entry) ? entry->data : NULL;
+    mtx_unlock(dec->object_mutex);
+    if (unlikely(!obj || obj->type != type)) {
+-      if (obj)
++      if (obj) {
+          vkr_log("object %" PRIu64 " has type %d, not %d", id, obj->type, type);
+-      else
++      } else if (type == dec->lenient_type) {
++         vkr_log("object %" PRIu64 " of type %d to destroy does not exist (its creation "
++                 "failed on the host); ignored",
++                 id, type);
++         return NULL;
++      } else {
+          vkr_log("failed to look up object %" PRIu64 " of type %d", id, type);
++      }
+       vkr_cs_decoder_set_fatal(dec);
+    }
+ 
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -132,6 +132,12 @@
+ bool
+ vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size);
+ 
++/* Dispatch the next command of dispatch->decoder (every vn_dispatch_command goes
++ * through this).
++ */
++void
++vkr_dispatch_command(struct vn_dispatch_context *dispatch);
++
+ bool
+ vkr_context_create_resource(struct vkr_context *ctx,
+                             uint32_t res_id,
+@@ -164,6 +170,7 @@
+ vkr_context_set_fatal(struct vkr_context *ctx)
+ {
+    ctx->cs_fatal_error = true;
++   vkr_fatal_raised_here = true;
+ }
+ 
+ static inline bool
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -68,9 +68,102 @@
+ static void
+ vkr_dispatch_debug_log(UNUSED struct vn_dispatch_context *dispatch, const char *msg)
+ {
+-   vkr_log(msg);
++   /* vn_dispatch_command logs "<command> resulted in CS error" whenever the shared fatal
++    * flag is set after the command, also when another thread set it meanwhile (a long
++    * vkCreateGraphicsPipelines is the usual bystander).  Only the thread that made the
++    * context fatal reports a CS error.
++    */
++   static const char cs_error[] = " resulted in CS error";
++   const size_t len = strlen(msg);
++   if (!vkr_fatal_raised_here && len > sizeof(cs_error) - 1 &&
++       !strcmp(msg + len - (sizeof(cs_error) - 1), cs_error)) {
++      vkr_log("%.*s stopped: the context went fatal on another thread",
++              (int)(len - (sizeof(cs_error) - 1)), msg);
++      return;
++   }
++
++   vkr_log("%s", msg);
+ }
+ 
++/* The object type a vkDestroy* / vkFree* command destroys (not the device or instance,
++ * which are never created asynchronously), or VK_OBJECT_TYPE_UNKNOWN.
++ */
++static VkObjectType
++vkr_command_destroy_type(VkCommandTypeEXT cmd_type)
++{
++   switch (cmd_type) {
++   case VK_COMMAND_TYPE_vkFreeMemory_EXT:
++      return VK_OBJECT_TYPE_DEVICE_MEMORY;
++   case VK_COMMAND_TYPE_vkDestroyBuffer_EXT:
++      return VK_OBJECT_TYPE_BUFFER;
++   case VK_COMMAND_TYPE_vkDestroyBufferView_EXT:
++      return VK_OBJECT_TYPE_BUFFER_VIEW;
++   case VK_COMMAND_TYPE_vkDestroyImage_EXT:
++      return VK_OBJECT_TYPE_IMAGE;
++   case VK_COMMAND_TYPE_vkDestroyImageView_EXT:
++      return VK_OBJECT_TYPE_IMAGE_VIEW;
++   case VK_COMMAND_TYPE_vkDestroySampler_EXT:
++      return VK_OBJECT_TYPE_SAMPLER;
++   case VK_COMMAND_TYPE_vkDestroySamplerYcbcrConversion_EXT:
++      return VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION;
++   case VK_COMMAND_TYPE_vkDestroyFence_EXT:
++      return VK_OBJECT_TYPE_FENCE;
++   case VK_COMMAND_TYPE_vkDestroySemaphore_EXT:
++      return VK_OBJECT_TYPE_SEMAPHORE;
++   case VK_COMMAND_TYPE_vkDestroyEvent_EXT:
++      return VK_OBJECT_TYPE_EVENT;
++   case VK_COMMAND_TYPE_vkDestroyQueryPool_EXT:
++      return VK_OBJECT_TYPE_QUERY_POOL;
++   case VK_COMMAND_TYPE_vkDestroyShaderModule_EXT:
++      return VK_OBJECT_TYPE_SHADER_MODULE;
++   case VK_COMMAND_TYPE_vkDestroyPipelineCache_EXT:
++      return VK_OBJECT_TYPE_PIPELINE_CACHE;
++   case VK_COMMAND_TYPE_vkDestroyPipelineLayout_EXT:
++      return VK_OBJECT_TYPE_PIPELINE_LAYOUT;
++   case VK_COMMAND_TYPE_vkDestroyPipeline_EXT:
++      return VK_OBJECT_TYPE_PIPELINE;
++   case VK_COMMAND_TYPE_vkDestroyDescriptorSetLayout_EXT:
++      return VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT;
++   case VK_COMMAND_TYPE_vkDestroyDescriptorPool_EXT:
++      return VK_OBJECT_TYPE_DESCRIPTOR_POOL;
++   case VK_COMMAND_TYPE_vkFreeDescriptorSets_EXT:
++      return VK_OBJECT_TYPE_DESCRIPTOR_SET;
++   case VK_COMMAND_TYPE_vkDestroyDescriptorUpdateTemplate_EXT:
++      return VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE;
++   case VK_COMMAND_TYPE_vkDestroyFramebuffer_EXT:
++      return VK_OBJECT_TYPE_FRAMEBUFFER;
++   case VK_COMMAND_TYPE_vkDestroyRenderPass_EXT:
++      return VK_OBJECT_TYPE_RENDER_PASS;
++   case VK_COMMAND_TYPE_vkDestroyCommandPool_EXT:
++      return VK_OBJECT_TYPE_COMMAND_POOL;
++   case VK_COMMAND_TYPE_vkFreeCommandBuffers_EXT:
++      return VK_OBJECT_TYPE_COMMAND_BUFFER;
++   case VK_COMMAND_TYPE_vkDestroyAccelerationStructureKHR_EXT:
++      return VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR;
++   default:
++      return VK_OBJECT_TYPE_UNKNOWN;
++   }
++}
++
++void
++vkr_dispatch_command(struct vn_dispatch_context *dispatch)
++{
++   struct vkr_cs_decoder *dec = (struct vkr_cs_decoder *)dispatch->decoder;
++
++   vkr_note_dispatch();
++   vkr_fatal_raised_here = false;
++
++   /* peek the command type; a short stream fails in vn_dispatch_command */
++   int32_t cmd_type = -1;
++   if ((size_t)(dec->end - dec->cur) >= sizeof(cmd_type))
++      memcpy(&cmd_type, dec->cur, sizeof(cmd_type));
++   dec->lenient_type = vkr_command_destroy_type((VkCommandTypeEXT)cmd_type);
++
++   vn_dispatch_command(dispatch);
++
++   dec->lenient_type = VK_OBJECT_TYPE_UNKNOWN;
++}
++
+ static void
+ vkr_context_init_dispatch(struct vkr_context *ctx)
+ {
+@@ -172,10 +265,11 @@
+    vkr_cs_decoder_set_buffer_stream(&ctx->decoder, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(&ctx->decoder)) {
+-      vkr_note_dispatch();
+-      vn_dispatch_command(&ctx->dispatch);
++      vkr_dispatch_command(&ctx->dispatch);
+       if (vkr_context_get_fatal(ctx)) {
+-         vkr_log("submit_cmd: vn_dispatch_command failed");
++         vkr_log(vkr_fatal_raised_here
++                    ? "submit_cmd: vn_dispatch_command failed"
++                    : "submit_cmd: stopping, the context went fatal on another thread");
+ 
+          vkr_cs_decoder_reset(&ctx->decoder);
+          return false;
+@@ -423,14 +517,21 @@
+    if (!res)
+       return;
+ 
+-   if (!vkr_cs_encoder_check_stream(&ctx->encoder, res))
++   /* these were silent; the fatal flag then surfaced as a CS error of whatever command
++    * a ring happened to be running
++    */
++   if (!vkr_cs_encoder_check_stream(&ctx->encoder, res)) {
++      vkr_log("resource %u destroyed while the context replies into it (CS error)", res_id);
+       vkr_context_set_fatal(ctx);
++   }
+ 
+    mtx_lock(&ctx->ring_mutex);
+    list_for_each_entry_safe (struct vkr_ring, ring, &ctx->rings, head) {
+       if (ring->resource == res ||
+           !vkr_cs_decoder_check_stream(&ring->decoder, res) ||
+           !vkr_cs_encoder_check_stream(&ring->encoder, res)) {
++         vkr_log("resource %u destroyed while ring %" PRIu64 " uses it (CS error)", res_id,
++                 ring->id);
+          vkr_context_set_fatal(ctx);
+ 
+          mtx_unlock(&ctx->ring_mutex);
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -21,6 +21,7 @@
+ struct vkr_renderer_state vkr_state;
+ 
+ atomic_uint_fast64_t vkr_dispatch_count;
++_Thread_local bool vkr_fatal_raised_here;
+ 
+ VIRGL_EXPORT uint64_t
+ virgl_steamac_cmd_count(void)
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -230,10 +230,11 @@
+    vkr_cs_decoder_set_buffer_stream(dec, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(dec)) {
+-      vkr_note_dispatch();
+-      vn_dispatch_command(&ring->dispatch);
++      vkr_dispatch_command(&ring->dispatch);
+       if (vkr_cs_decoder_get_fatal(dec)) {
+-         vkr_log("ring_submit_cmd: vn_dispatch_command failed");
++         vkr_log(vkr_fatal_raised_here
++                    ? "ring_submit_cmd: vn_dispatch_command failed"
++                    : "ring_submit_cmd: stopping, the context went fatal on another thread");
+ 
+          vkr_cs_decoder_reset(dec);
+          return false;
+--- a/src/venus/vkr_transport.c
++++ b/src/venus/vkr_transport.c
+@@ -80,8 +80,7 @@
+       }
+ 
+       while (vkr_cs_decoder_has_command(dec)) {
+-         vkr_note_dispatch();
+-         vn_dispatch_command(dispatch);
++         vkr_dispatch_command(dispatch);
+          if (vkr_context_get_fatal(ctx))
+             break;
+       }

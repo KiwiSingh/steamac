@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Mon, 5 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: import host memory with another memory type when the
+ requested one cannot hold it
+
+With dma_buf emulated, host visible and exportable allocations are shm
+imported as host memory, which fails for memory types the driver cannot back
+with host memory: the lazily allocated (Metal memoryless) type, and with a
+MoltenVK lacking PR #2834 every device-local-only type (mangoapp: "host
+memory import is unsupported for memory type 0", "vkAllocateMemory failed:
+VkResult -1000072003 ... export types 0x200").  The allocation is
+asynchronous: depending on timing the guest sees its blob export fail and
+frees the memory, or sees success and goes on to use memory that does not
+exist (both killed the context).
+
+Import into the first type that accepts host memory and has the requested
+properties apart from lazy allocation, as the shm resource import already
+does; the guest keeps its memory type.  Only if there is none the allocation
+fails as before.
+---
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -521,8 +521,33 @@
+       uint32_t type_bits;
+       args->ret = vkr_get_host_pointer_memory_type_bits(dev, shm->ptr, &type_bits);
+       if (args->ret == VK_SUCCESS && !(type_bits & (1u << mem_type_index))) {
+-         vkr_log("host memory import is unsupported for memory type %u", mem_type_index);
+-         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         /* Some types cannot hold host memory: lazily allocated ones (Metal memoryless),
++          * and every device-local-only type with a MoltenVK lacking PR #2834.  A type
++          * with the same properties (apart from lazy allocation) that can is just as
++          * good.  Only the driver memory type changes; the guest keeps seeing the memory
++          * type it asked for.
++          */
++         const VkMemoryPropertyFlags want =
++            property_flags & ~VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
++         const VkPhysicalDeviceMemoryProperties *props = &physical_dev->memory_properties;
++         uint32_t substitute = UINT32_MAX;
++         for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
++            if ((type_bits & (1u << i)) &&
++                (props->memoryTypes[i].propertyFlags & want) == want) {
++               substitute = i;
++               break;
++            }
++         }
++         if (substitute != UINT32_MAX) {
++            alloc_info->memoryTypeIndex = substitute;
++            vkr_log("host memory import is unsupported for memory type %u; allocated "
++                    "with memory type %u",
++                    mem_type_index, substitute);
++         } else {
++            vkr_log("host memory import is unsupported for memory type %u",
++                    mem_type_index);
++            args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         }
+       }
+       if (args->ret != VK_SUCCESS) {
+          vkr_shm_free(shm);
