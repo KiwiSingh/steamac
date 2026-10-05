@@ -1,354 +1,149 @@
-> **KiwiSingh fork:** selectable external SSD storage, experimental KosmicKrisp / DX12 integration, and controller identity changes. See [fork setup and validation status](docs/fork-setup.md). The upstream documentation below describes the original MoltenVK build.
+# Steamac — SteamOS on Apple Silicon
 
-# steamac — официальный ARM64 SteamOS (образ Steam Frame) в ВМ на Apple Silicon
+Run Valve’s ARM64 SteamOS in a lightweight virtual machine on your Mac, with accelerated graphics through Metal. No Parallels Desktop subscription is required.
 
-На macOS 15 (Sequoia) настоящий SteamOS от Valve для Steam Frame запускается в лёгкой ВМ на
-Hypervisor.framework (libkrun) с GPU-ускорением через Venus.
+This is **[KiwiSingh’s fork](https://github.com/KiwiSingh/steamac)** of **[fxgl/steamac](https://github.com/fxgl/steamac)**. The original project provides the launcher, VM integration, SteamOS provisioning, and much of the graphics stack. This fork adds selectable external SSD storage, controller identity and mapping fixes, and an experimental alternative Vulkan driver.
 
-```
-игра (DX9/10/11) ─ DXVK (Proton 11, x86 через FEX) ─ Vulkan
-   └─ гостевой Mesa Venus ─ virtio-gpu (blob, 16K-выравнивание)
-        └─ libkrun ─ virglrenderer (Venus) ─ MoltenVK ─ Metal
-```
+**MoltenVK is the default.** KosmicKrisp remains experimental: it rendered the Steam updater in testing, but failed to display the main Steam interface reliably. It is not a recommended gameplay path.
 
-Vulkan на Metal — MoltenVK из форка UTM (геометрические шейдеры, robustness2) +
-`VK_EXT_depth_clip_enable` (PR #2712) + наши исправления. KosmicKrisp (Mesa Vulkan-on-Metal) не
-подходит: он требует Metal 4 / macOS 26.
+## What has been tested
 
-## Требования
+- SteamOS disk creation and Steam updates on an external SSD.
+- Steam’s setup and main interface through MoltenVK.
+- A Bluetooth Sony DualSense, recognized by Steam as a **PS5 Controller**, with corrected face buttons, analog/digital triggers, stick axes, stick clicks, and PS button.
+- **Digimon Story: Time Stranger:** the fork’s owner reports successful gameplay on an Apple M3 Mac and confirms the corrected controller mapping works. This is one user’s result, not a benchmark or a guarantee for other Macs or games.
 
-- Mac на Apple Silicon, macOS 15+, ~150 ГБ свободного места (образ диска разреженный).
-- Xcode 26+ (полный: его `actool` собирает иконку приложения из Icon Composer-документа), Homebrew, rustup.
-- OrbStack (или Docker с arm64 и `--privileged`): ядро, Mesa и образ диска собираются в Linux-контейнерах.
-- Homebrew-пакеты: `meson ninja pkg-config dtc xz lld libepoxy sshpass`.
+Broad DirectX 12 compatibility, ray tracing, and other games remain unverified. The source-built DX12 capability check is diagnostic evidence, not proof of game compatibility. Games whose anti-cheat blocks virtual machines may not work.
 
-## Сборка и запуск
+## Install a release
 
-```sh
-./build.sh          # всё: MoltenVK, virglrenderer, libkrun, лаунчер, ядро, Mesa, диск
-./run.sh            # окно с SteamOS
-```
+Download the launcher from **[this fork’s Releases](https://github.com/KiwiSingh/steamac/releases)**. Read the release notes for signing status and the exact bundled components. The first fork release is [`v1.2.0-preview.1`](https://github.com/KiwiSingh/steamac/releases/tag/v1.2.0-preview.1). Early fork builds are prereleases and are ad-hoc signed, **not Apple-notarized**; downloaded builds may require approval in macOS **System Settings → Privacy & Security**, or you can build locally instead.
 
-Части по отдельности: `./build.sh host`, `./build.sh guest`, либо скрипты из таблицы ниже.
-Образ SteamOS скачивается с серверов Valve (подписанный RAUC-бандл), подпись и sha256 проверяются.
+1. Extract the app and place **FX Steam Launcher.app** in your Applications folder. An Applications folder on an external SSD also works.
+2. Launch it. Choose **Create New Disk…**, then **Choose SSD…** to select a mounted writable external SSD or a folder on it. **Location…** selects a custom image filename.
+3. Choose the home partition size and create the disk. The app downloads SteamOS from Valve, verifies its signed bundle, and creates the image. Docker is not required for this GUI workflow.
+4. Boot SteamOS, finish setup, sign in to Steam, and install a game you own. Connect your controller **before booting**.
 
-Параметры ВМ: `./run.sh --display 1920x1080 --cpus 10 --mem 24576` (полный список —
-`work/out/steamac-vm --help`).
+The disk is a sparse **image file**, not a write to the physical drive. The app does not erase your external SSD. Provisioning files and download caches stay beside the selected image. A disconnected drive is an error; it does not silently fall back to internal storage. Existing saved disk locations remain in use until you change them in Settings.
 
-Плавность кадров: `./run.sh --perf-stats` (или `STEAMAC_PERF_STATS=1`) каждые 5 с пишет в терминал
-интервалы кадров гостя и кадров на экране (p50/p95/p99/max, число интервалов > 25 и > 50 мс).
-Подтормаживания при первом появлении нового эффекта — это компиляция шейдеров Metal (~50–100 мс на
-пайплайн); результат кешируется Metal на диске, повторно эффект не тормозит, в том числе после
-перезапуска ВМ. Steam сам прогревает этот кеш (Shader Pre-Caching / fossilize_replay включены
-в SteamOS по умолчанию), делать ничего не нужно.
+For a desktop shortcut, launch the installed app directly or drag it into the Dock. The owner’s local `SteamOS.app` shortcut is specific to their machine and is not part of the portable release.
 
-Пока в фокусе игра (`focus game <appid>`), если гость 2 с не присылает GPU-команд (virtio-gpu
-control queue и Venus-кольца — счётчики `krun_gpu_get_activity`), поверх последнего кадра появляется
-карточка «Still working — loading or compiling shaders…» с загрузкой CPU ВМ; если вдобавок агент
-гостя перестал присылать heartbeat (> 5 с) — «SteamOS is not responding…» (это — при любом фокусе).
-Простаивающий интерфейс Steam GPU-команд не шлёт минутами и индикатор не вызывает. Исчезает с первой
-же GPU-командой или при уходе фокуса из игры; каждый случай пишется в лог (`stall: gpu idle 3.1 s
-(guest alive, …)`). С `--perf-stats` раз в 5 с добавляется строка `perf: gpu ctrl/s=… ring/s=…
-longest-idle=…`. Выключается в Settings > General.
+## Requirements
 
-| Клавиши в окне | |
-|---|---|
-| Ctrl+Cmd+F | полный экран |
-| Ctrl+Cmd+G | захватить / отпустить мышь вручную |
-| Ctrl+Cmd+P | Metal Performance HUD Apple (FPS, интервал кадров, время GPU, память) вкл/выкл; то же View → Show Metal Performance HUD и Settings > Display |
-| Ctrl+Option | отпустить захваченную мышь |
-| закрыть окно | выключение гостя (кнопка питания) |
+For this fork’s packaged launcher:
 
-Мышь (`--mouse auto`, по умолчанию): курсор SteamOS точно следует за курсором Mac. gamescope
-(игровой режим) не принимает абсолютные координаты, поэтому лаунчер ведёт его относительными
-сдвигами без ускорения. Когда в госте в фокусе игра (агент шлёт `focus game <appid>`), первый
-щелчок захватывает мышь (относительное движение для обзора мышью), Ctrl+Option отпускает; при
-возврате в Steam захват снимается сам. Меню **Mouse**:
-- **Capture Mouse in This Game** — авто-захват для текущей игры (сохраняется по appid);
-- **Auto-Capture Mouse in Games** — значение по умолчанию для всех игр;
-- **Capture / Release Mouse Now** — то же, что Ctrl+Cmd+G.
+- An Apple Silicon Mac running **macOS 26 or newer**.
+- A mounted writable external SSD with enough space for SteamOS, temporary download/provisioning files, and your games. Reserve at least about 25 GB for initial setup, plus game storage. A larger logical home partition does not reserve all of that space immediately.
+- Internet access and your own Steam account/game licenses.
 
-Эти и все остальные настройки — в окне **Settings** (см. ниже), домен `es.fxgam.steamac`
-(`defaults read es.fxgam.steamac`); при первом запуске они один раз копируются из прежнего домена
-`dev.steamac.vm`. Metal хранит кеш шейдеров по идентификатору приложения, поэтому после смены
-идентификатора первый запуск игр снова компилирует шейдеры (один «холодный» запуск).
-`--auto-capture on|off` переопределяет значение по умолчанию на один запуск.
-`--mouse tablet` — абсолютный планшет (для режима рабочего стола KDE, он включается и сам по
-`focus desktop`), `--mouse capture` — всегда захват по щелчку.
+The upstream launcher targets older macOS versions; this fork’s current launcher and optional KosmicKrisp build target macOS 26+. The tested host was an Apple M3 running macOS 27.2. Other configurations need testing.
 
-Доступ в гостя: `ssh -p 2222 steamos@127.0.0.1`, пароль `steamos` (меняется через
-`STEAMOS_PASSWORD=... scripts/build-image.sh disk`). Консоль hvc0 — в терминале, где запущен `run.sh`.
+## Controllers
 
-SSH включается и выключается одним переключателем: **Settings → Advanced → Enable SSH** (или
-`--ssh-port N` / `--no-ssh`). Лаунчер на каждой загрузке передаёт `steamac.ssh=0|1`: при 0 порт на
-Mac не открывается вовсе (gvproxy без проброса), а initramfs маскирует sshd в SteamOS. По умолчанию
-SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, порт 2222) и выключен в
-`FX Steam Launcher.app` (ключ `SteamacReleaseDefaults` в Info.plist, ставит `bundle.sh`). При
-включении лаунчер генерирует пароль пользователя `steamos` (20 символов, SecRandomCopyBytes),
-хранит его в связке ключей отдельно для каждого диска (по GUID его GPT) и на следующей загрузке
-передаёт гостю только хеш SHA-512 crypt (диск-«config payload», `steamac.config=1`; гость отвечает
-`config applied`). В настройках видны пользователь, пароль (Show/Copy), готовая строка
-`ssh -p … steamos@127.0.0.1`, статус «applied / will apply on next start» и **Regenerate Password**;
-у dev-лаунчера пароль генерируется только кнопкой (диски Docker-сборки сохраняют `steamos`). Диски,
-созданные в приложении, получают пароль только так — пароля по умолчанию у них нет. Из терминала:
-`steamac-vm --ssh-password <диск>` печатает пользователя, пароль и статус.
+The launcher bridges macOS GameController input into a Linux virtio-input device. It preserves the selected controller’s identity:
 
-## Окно настроек
+| Controller | Guest identity |
+| --- | --- |
+| DualSense | Sony `054c:0ce6` |
+| DualSense Edge, when identified by macOS | Sony `054c:0df2` |
+| DualShock profile | Sony `054c:09cc`, representative of a DualShock 4 |
+| Other supported extended gamepads | Reported name with Steamac’s virtual ID; no fabricated Xbox 360 identity |
 
-**FX Steam Launcher → Settings…** (Cmd+, — работает и когда клавиатура у гостя). У каждого поля
-подпись «applies now» (применяется сразу) или «applies on next start» (при следующем запуске ВМ).
-Если изменено что-то из второй группы, внизу появляется **Restart VM to apply**: гость штатно
-выключается кнопкой питания, супервизор запускает ВМ заново уже с новыми значениями (то же —
-пункт меню **Restart VM**). Флаги командной строки важнее сохранённых значений, но только на этот
-запуск: рядом с полем пишется «overridden by command line (--cpus 6)».
+At startup, the launcher waits briefly for macOS’s asynchronous controller discovery before fixing the guest device’s identity. A controller connected after boot, or a different model selected later, requires a **VM restart**. Reconnecting the same selected profile is supported.
 
-| Вкладка | Сразу | При следующем запуске |
-|---|---|---|
-| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться); отчёты о сбоях (`--no-crash-reports`, см. ниже); лог статистики кадров (`--perf-stats`) | полный экран при старте |
-| Display | гость следует за размером окна; Metal Performance HUD Apple в правом верхнем углу окна (Ctrl+Cmd+P, View → Show Metal Performance HUD) | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
-| Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
-| Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | виртуальный Xbox 360 pad (`--no-gamepad`) |
-| Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
-| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk… |
+Sony button/axis ordering matches Steam’s PS5 mapping. In particular, the right stick is separate from L2/R2. Generic controllers keep the semantic evdev layout. Settings → Controller offers controller selection, button swapping, and deadzone adjustment.
 
-Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
---selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
-`settings TAB`, `settings-dump PNG`, `set KEY VALUE` (как из окна), `restart`.
+This is **not USB/HID passthrough**. Rumble, adaptive triggers, gyro, touchpad, speaker/headphone output through the controller, and LED control are not implemented. DualSense Edge/DualShock identities are implemented but have not had the same physical runtime validation as DualSense.
 
-## FX Steam Launcher.app
+## Build from source
 
-`host/launcher/build.sh` (и `./build.sh host`) кроме `work/out/steamac-vm` собирает
-`work/out/FX Steam Launcher.app` (`host/launcher/bundle.sh`): `es.fxgam.steamac`, библиотеки
-(libkrun, libvirglrenderer, libMoltenVK, libepoxy) в `Contents/Frameworks` через `@rpath`,
-в `Contents/Resources` — gvproxy, ядро `Image`, `initramfs.cpio.gz`, `steamac-layer.img`, desync и
-CA Valve для создания диска (лицензии — в `Resources/licenses`), иконка: `host/launcher/AppIcon.icon`
-(документ Icon Composer) `actool` компилирует в `Assets.car` (Liquid Glass на macOS 26, готовые
-рендеры для macOS 15) и запасной `AppIcon.icns`;
-подпись ad-hoc с entitlements hypervisor + disable-library-validation. Приложение можно
-перенести в `/Applications`.
-
-Запуск из Finder (без аргументов) берёт ядро, initramfs и слой из бандла, а диск SteamOS — из
-Settings → Advanced → Disk image. По умолчанию:
-`~/Library/Application Support/es.fxgam.steamac/steamos.img`, иначе `work/out/steamos.img`
-репозитория (рядом с бандлом или там, где он был собран). Если диска нет — окно первого запуска:
-**Create New Disk…** (см. следующий раздел) или **Use Existing Disk…** (образ используется на
-месте и никогда не копируется; собирается и `scripts/build-image.sh`). Консоль гостя и лог лаунчера в этом режиме
-пишутся в `~/Library/Logs/es.fxgam.steamac/steamac-vm.log`, SIGUSR1-дампы кадра — туда же.
-`./run.sh` и `work/out/steamac-vm` работают как раньше (настройки из окна действуют и для них,
-если не заданы флагами).
-
-Если образ лежит на внешнем диске, при первом запуске из Finder macOS спрашивает «FX Steam
-Launcher хочет получить доступ к файлам на съёмном томе» — нужно разрешить (до ответа ВМ ждёт
-на открытии диска). Подпись ad-hoc, поэтому после пересборки бандла macOS может спросить снова.
-
-## Создание диска SteamOS без Docker (Creating the SteamOS disk without Docker)
-
-Пользователю приложения Docker не нужен: диск создаёт сам лаунчер — окно первого запуска
-**Create New Disk…** или **Settings → Advanced → Create New Disk…** (ветка stable/rc/beta/preview/main,
-размер home, место, пароль пользователя `steamos`; прогресс, Stop и Resume). То же без окна:
+Keep the checkout on your external SSD so the repository’s build output and caches stay there.
 
 ```sh
-work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache]
+git clone https://github.com/KiwiSingh/steamac.git
+cd steamac
+
+# Replace this with your own mounted external SSD.
+export STEAMAC_STORAGE_VOLUME="/Volumes/My External SSD"
+./build.sh
+
+# Launch the generated app, or use the development launcher:
+./run.sh
 ```
 
-1. `https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/<ветка>.json` → свежий
-   кандидат (`update_path`, `chunks_store_path`).
-2. Скачивается `.raucb` (~2 МБ); CMS-подпись проверяется Security.framework только против
-   закреплённого CA Valve `CN=steamdeck-images` (`scripts/keys/steamdeck-images.pem`, SHA-256 отпечаток
-   зашит в код); системное хранилище доверия не используется. Свой читатель squashfs (zstd из
-   закреплённого релиза zstd, `fetch-zstd.sh`) достаёт `manifest.raucm` и `rootfs.img.caibx`;
-   проверяются `compatible=steamos-aarch64`, версия и размер слота.
-3. Официальный desync (`fetch-desync.sh`, версия и sha256 закреплены) собирает 10-гигабайтный
-   `rootfs.img` из хранилищ чанков Valve (~4,4 ГБ данных); кеш чанков —
-   `~/Library/Caches/es.fxgam.steamac/desync`, частичный `<диск>.rootfs-tmp` остаётся, поэтому
-   Stop/Resume (или повтор команды после Ctrl+C) продолжает с места остановки.
-4. Разреженный файл диска: защитный MBR + GPT (основная и резервная, CRC32) ровно с именами,
-   порядком, типами, размерами и выравниванием `scripts/steps/40-disk.sh`, случайные PARTUUID.
-   За один проход `rootfs.img` хешируется (sha256 должен совпасть с подписанным манифестом) и
-   ненулевые блоки по 16 КиБ пишутся в rootfs-A и rootfs-B; остальные разделы — нули. Диск
-   появляется под своим именем только после всех проверок и никогда не перезаписывает файл.
-5. Рядом кладётся `<диск без .img>.provision.img` — cpio newc с `provision.env` (сборка, PARTUUID,
-   хеш пароля SHA-512 crypt, machine-id) и `rootfs.caibx` (формат — «Payload v1» в контракте
-   провижининга). Пока этот файл есть, лаунчер подключает его только для чтения (vdc) и добавляет
-   `steamac.provision=1`: initramfs форматирует esp/efi-X/var-X/home, делает fsid rootfs-B
-   уникальным, пишет partsets/bootconf/bootenv/var и сообщает `provision done` — после этого лаунчер
-   удаляет payload, следующие загрузки идут без него.
-
-Место: ~14 ГБ на томе диска на время создания (потом ~9 ГБ), ~6 ГБ кеша (удаляется после успеха,
-если не указан `--keep-cache`). Проверки: `work/out/steamac-vm --selftest-provision` — GPT против
-диска из Docker-сборки (`work/out/steamos.img` открывается только на чтение; `--reference-disk IMG`),
-CMS/squashfs против кеша `work/cache/rootfs`, cpio, SHA-512 crypt.
-
-## Дистрибутив (DMG)
-
-`host/launcher/dist.sh` делает из собранного `work/out/FX Steam Launcher.app` то, что выкладывается
-для скачивания: `work/out/dist/FX-Steam-Launcher-<версия>.dmg` (приложение + ссылка на
-`/Applications`). Копия бандла без ключа `SteamacBuildOut` (путь к этому дереву сборки)
-переподписывается Developer ID с hardened runtime и secure timestamp: сначала все вложенные Mach-O
-(`Frameworks/*.dylib`, вспомогательные программы в `Resources`), затем бандл с
-`steamac-vm.entitlements` (hypervisor, disable-library-validation и audio-input — без него hardened
-runtime молча запрещает микрофон). Приложение нотаризуется и стейплится, затем DMG подписывается,
-нотаризуется и стейплится — Gatekeeper пропускает его и офлайн (остаётся обычный вопрос
-«загружено из интернета» при первом запуске).
+Build prerequisites include full **Xcode 26+**, Homebrew, rustup, and Docker Desktop or OrbStack with privileged arm64 containers. The host scripts use packages including `meson ninja pkgconf dtc xz lld libepoxy vulkan-loader vulkan-headers`; individual components check additional prerequisites. Homebrew and Docker manage their own storage separately from the repository’s cache directories.
 
 ```sh
-host/launcher/build.sh      # свежий бандл
-host/launcher/dist.sh       # подпись, нотаризация, DMG
+./build.sh host     # host drivers, VM library, launcher and app
+./build.sh guest    # guest kernel, Mesa, initramfs, layer and disk
+./run.sh --display 1920x1080 --cpus 8 --mem 16384
 ```
 
-Один раз нужен профиль notarytool в связке ключей:
-`xcrun notarytool store-credentials steamac-notary --apple-id <Apple ID> --team-id V25VKGTW55
---password <app-specific password>`. Переменные: `STEAMAC_SIGN_IDENTITY` (по умолчанию
-единственная «Developer ID Application» в связке), `NOTARY_PROFILE` (по умолчанию `steamac-notary`);
-`--no-notarize` — только подпись, для локальной проверки (скачанную копию Gatekeeper не пустит).
+`STEAMAC_DISK_PATH` selects an existing image for `run.sh`. `STEAMAC_DISK_DIR` selects the Docker image-building destination. Paths may contain spaces. See [fork setup](docs/fork-setup.md) for storage checks and build details.
 
-## Отчёты о сбоях (Sentry)
+### Experimental KosmicKrisp
 
-Лаунчер отправляет отчёты о сбоях и немногие ошибки на собственный сервер Sentry разработчиков
-(`sentry.fxgam.es`, SDK sentry-cocoa 9.30.0 через SwiftPM). Включено по умолчанию; выключается
-галочкой **Send crash reports and diagnostics** — в Settings → General, в окне первого запуска и в
-окне Create SteamOS Disk (ссылка «What is sent» показывает список ниже). Выключено — SDK вообще не
-запускается, сетевых соединений нет (уже сохранённые отчёты остаются на диске и не отправляются).
-На один запуск: `--no-crash-reports` или `STEAMAC_SENTRY=0`.
+Build the default MoltenVK path first, then the experimental driver:
 
-Что отправляется:
+```sh
+./build.sh host
+STEAMAC_VULKAN_DRIVER=kosmickrisp ./build.sh host
+STEAMAC_VULKAN_DRIVER=kosmickrisp ./run.sh
+```
 
-- падения процесса-супервизора и процесса ВМ (сигнал/abort, необработанные исключения): причина,
-  стеки потоков, список загруженных библиотек. Сюда попадают assert'ы Metal/MoltenVK, abort'ы
-  libkrun/virglrenderer и паники Rust, вышедшие через C API libkrun. Отчёт о падении процесса ВМ
-  уходит при следующем запуске ВМ;
-- немногие ошибки (не чаще раза на отпечаток за процесс, общий лимит, повтор того же отпечатка — не
-  раньше чем через сутки, для ошибок компиляции шейдеров — 30 дней): гостевой GPU-контекст стал
-  фатальным/потеря устройства (vkr «fatal decoder state», «device lost»), ошибки компиляции
-  пайплайнов MoltenVK (`[mvk-error] … compile failed`) и vkr «pipeline … creation failed on host»,
-  паника Rust в libkrun (`thread … panicked at`), провал первичной настройки диска (`provision
-  failed`), провал создания диска, неожиданный выход ВМ (ненулевой код или сигнал, если выключение не
-  запрошено пользователем), «SteamOS is not responding» индикатора простоя;
-- в каждом событии — последние ~200 строк stderr лаунчера как breadcrumbs (строки `[steamac-vm]`,
-  `[mvk-*]`, предупреждения libkrun/virglrenderer, этапы загрузки) и теги: версия
-  (`es.fxgam.steamac@<CFBundleShortVersionString>+<git sha>`), окружение `release` (`.app`) или
-  `development`, macOS, модель Mac, GPU, vCPU/RAM, режим дисплея, UUID сборок libkrun /
-  virglrenderer / MoltenVK, `MVK_PATCH_REVISION`, версия ядра, BUILD_ID SteamOS и релиз слоя (из
-  строк initramfs), случайный ID установки.
+The app bundles the experimental ICD only when it has been built. Unknown or missing drivers are refused rather than silently replaced. Experimental guest presentation requires `MESA_VK_WSI_DEBUG=buffer` on both Steam and Gamescope services; see [the detailed status](docs/fork-setup.md). Leave MoltenVK selected for normal use.
 
-Не отправляется: консоль гостя (hvc0), имя пользователя и компьютера (`/Users/<имя>` → `~`, имя и
-hostname вырезаются), IP (`sendDefaultPii=false`, сервер не выводит IP), локаль/часовой пояс,
-аккаунт Steam, названия игр (только App ID), файлы. Супервизор пропускает свой stderr через канал
-(всё по-прежнему попадает в терминал/лог), поэтому видит и последние строки упавшего процесса ВМ.
+The graphics path is:
 
-Проверка: `--sentry-test-event` (тестовое событие из супервизора и процесса ВМ, процесс ВМ заодно
-отправляет отложенный отчёт о падении и выходит), `--sentry-test-crash abort|segv|metal|panic`
-(процесс ВМ падает: `abort()` внутри вызова C, `EXC_BAD_ACCESS` в `memset`, assert Metal, паника
-Rust в `krun_start_enter` из-за слишком длинной командной строки ядра — для `panic` нужны `--kernel`
-и, при необходимости, `--initrd`). Такие события идут с `environment=development` и тегом `test=true`.
-`STEAMAC_SENTRY_DEBUG=1` печатает отладочный лог SDK (ответы сервера).
+```text
+Game → Proton/DXVK or vkd3d-proton → guest Vulkan/Venus
+     → virtio-gpu → virglrenderer → Vulkan loader → MoltenVK → Metal
+```
 
-Символы: `build.sh` кладёт dSYM `steamac-vm` и библиотек бандла в `work/out/dSYMs` (libkrun,
-virglrenderer и MoltenVK собраны без DWARF — там только таблицы символов). `dist.sh` загружает их и
-бинарники приложения через `sentry-cli --url https://sentry.fxgam.es debug-files upload`, если заданы
-`SENTRY_AUTH_TOKEN`, `SENTRY_ORG` и `SENTRY_PROJECT`; иначе пишет, что загрузка пропущена.
+KosmicKrisp can replace the final Vulkan driver for experiments. Its native-texture/shared-memory fixes are retained, with GPU upload/readback regression checks.
 
-## Сообщить о проблеме (Report a Problem)
+## Useful controls and settings
 
-Если что-то не работает, отправьте отчёт разработчикам прямо из лаунчера: **Help → Report a Problem…**
-(или в меню приложения), кнопка **Report a Problem…** в Settings → General, ссылка **Report…** на
-карточке «SteamOS is not responding…» и кнопка **Report…** в окне «FX Steam Launcher stopped
-unexpectedly», которое появляется после неожиданного завершения ВМ (падение, ошибка). В диалоге:
-email (обязателен, запоминается на этом Mac — чтобы разработчики могли ответить), описание (что
-делали, чего ждали, что произошло) и галочки, что приложить:
+| Action | Shortcut |
+| --- | --- |
+| Settings | Command+, |
+| Full screen | Control+Command+F |
+| Capture/release mouse | Control+Command+G |
+| Release mouse capture | Control+Option |
+| Metal performance HUD | Control+Command+P |
 
-- **Include launcher logs** (включено) — сообщения лаунчера, libkrun, virglrenderer и MoltenVK за эту
-  сессию (последние ~2 МБ, оба процесса) и строки `perf:`/`stall:`; пути `/Users/<имя>` → `~`, имя
-  пользователя и компьютера, email и IP вырезаются;
-- **Include SteamOS logs (system journal, Steam/Proton logs)** (включено) — консоль гостя (hvc0) за
-  сессию и архив `steamos-logs.tar.gz`, который собирает гостевой агент: журнал systemd текущей загрузки
-  (`journalctl -b`, последние 5000 строк, плюс пользовательский журнал), `coredumpctl list`/`info`,
-  `dmesg`, `systemctl --failed`, `os-release`, `layer-release`, `/proc/cmdline`, `df`/`free`, хвосты
-  логов клиента Steam (`console_log`, `stderr`, `bootstrap_log`, `compat_log`, `connection_log`,
-  `webhelper`, `cef_log`, `steamui_*`) и Proton (`~/steam-*.log` от `PROTON_LOG=1`, `version` и
-  `config_info` префиксов в `compatdata`). Steam ID (`[U:1:…]`, 7656119…), имена аккаунтов и
-  персон Steam (из `loginusers.vdf`/`registry.vdf`) и email заменяются заглушками до упаковки;
-  `collect-notes.txt` в архиве перечисляет, что удалось прочитать;
-- **Include a screenshot of the VM window** (выключено по умолчанию: на картинке может быть имя
-  аккаунта Steam и друзья).
+Closing the VM window requests guest shutdown. Settings identify which changes require a restart. Sound is muted while the launcher is in the background by default; change that under General if needed.
 
-Всегда прикладываются `system-info.txt` (версии приложения и macOS, модель Mac, GPU, UUID сборок
-libkrun/virglrenderer/MoltenVK, ядро, BUILD_ID SteamOS, релиз слоя, размеры диска, параметры ВМ,
-заметки о сборе) и `settings.txt` (сохранённые настройки и переопределения из командной строки;
-пароль SSH лежит в связке ключей и никогда не попадает в отчёт, названия игр — тоже).
-**Show What Will Be Sent** собирает отчёт и открывает его папку в Finder — отправляется ровно её
-содержимое.
+The normal **2D Steam interface** is the default. Frame VR flags are only enabled by `STEAMAC_STEAM_VR_UI=1`, for experiments with a working VR compositor.
 
-Отчёт уходит как User Feedback в Sentry (`sentry.fxgam.es`, тот же проект): email, описание, связь с
-последним событием об ошибке этой сессии (если было) и файлы как вложения, одним конвертом напрямую
-на envelope-endpoint — так виден ответ сервера. Работает и при выключенных отчётах о сбоях (явное
-действие пользователя: SDK и обработчик падений при этом не запускаются). Вложения ограничены 20 МБ
-(сначала обрезаются старые части логов, потом выбрасываются скриншот и архив SteamOS); на ответ
-HTTP 413 лимит уменьшается вдвое и отчёт отправляется снова. После отправки показывается короткий
-Report ID (первые 8 знаков ID события). Не удалось отправить — папка остаётся в
-`~/Library/Logs/es.fxgam.steamac/reports/<дата>-<ID>/` (`report.json` с email и описанием плюс
-файлы); в диалоге **Retry** и **Reveal in Finder**, папку можно прислать почтой.
+SSH is off by default in the app. Enable it under **Settings → Advanced** when needed. The app generates a per-disk password stored in macOS Keychain; do not assume a shared default password. The development scripts have different SSH defaults.
 
-Как это устроено: супервизор всегда пропускает stderr обоих процессов через канал и пишет его в
-`/tmp/steamac-<pid>/launcher.log` (с временем, ротация по 4 МБ), процесс ВМ пишет консоль hvc0 в
-`console.log` рядом; каталог удаляется при выходе лаунчера. Гостевые логи запрашиваются по тому же
-порту `fx.progress` в обратную сторону: лаунчер пишет `collect-logs <id>`, агент (от пользователя
-сессии, только то, что тому доступно) отвечает `logs-begin <id> <размер>`, строками
-`logs <id> <base64>` и `logs-end <id> <sha256>` (или `logs-failed <id> <причина>`), лаунчер собирает
-архив и проверяет размер и SHA-256. Нет ответа за 20 с или агент не работает (нет heartbeat) —
-отчёт уходит без гостевых логов, с пометкой в `system-info.txt`.
+Crash reporting and **Help → Report a Problem** are inherited from upstream and use upstream infrastructure. Review the settings and disclosure before enabling or submitting reports; use this fork’s [GitHub issues](https://github.com/KiwiSingh/steamac/issues) for fork-specific problems. `--no-crash-reports` disables automatic reporting for one launch.
 
-Проверка: `--control-fifo PATH`, команды `report open`, `report fill EMAIL ТЕКСТ…` (событие с тегом
-`test=true`), `report include launcher|steamos|screenshot on|off`, `report preview`, `report send`,
-`report retry`, `report dsn DSN|default`, `report dump PNG`, `report close`; `STEAMAC_REPORT_DSN`
-подменяет DSN (путь отказа), `STEAMAC_SENTRY_DEBUG=1` печатает ответ сервера. Окно после падения:
-`--sentry-test-crash abort` с `STEAMAC_REPORT_DUMP=<каталог>` (PNG окна и диалога, затем закрывается
-само; `STEAMAC_REPORT_TEST_SEND=1` — заодно отправить тестовый отчёт).
+## Troubleshooting
 
-## Как это устроено
+- **No controller:** connect it before boot and restart the VM. Check the selected device in Settings → Controller.
+- **Wrong button/trigger behavior:** use a current fork build; early builds exposed PS5 IDs with a generic layout. Restore default controller swapping before diagnosing game-specific Steam Input remaps.
+- **Black screen on KosmicKrisp:** return to MoltenVK. The experimental driver’s browser-buffer presentation failure is unresolved.
+- **Download/validation stays near completion:** inspect Steam’s Downloads page. A shader-cache download can continue after the game is fully installed; in the tested session it completed without error. Do not delete game files just because the percentage pauses.
+- **Spoken “dummy output module” message:** SteamOS’s Speech Dispatcher fallback can play a test recording when menu narration requests speech without a working synthesizer. It is unrelated to headphone hardware. Turn off narration if unwanted; the owner’s local narration setting is not a global release default.
 
-| Каталог | Что внутри |
-|---|---|
-| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK), распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal |
-| `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров, пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков |
-| `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
-| `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, виртуальный Xbox 360 pad из GameController.framework, сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
-| `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
-| `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
-| `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos` |
-| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`) |
-| `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
+Logs live under `~/Library/Logs/es.fxgam.steamac/`. For a useful bug report, include the fork version, Mac model/macOS version, selected driver, game/Proton version, connection type, and relevant logs. Remove credentials and account details first.
 
-Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому
-официальные обновления Valve (RAUC + atomupd) ставятся в другой слот и откатываются штатно —
-проверено обновлением 20260922 → 20260928 и откатом.
+## Validation and release scope
 
-## Статус
+Controller mapping tests decode emitted input through the observed Steam PS5 layout, including stick/trigger isolation. Host Vulkan checks cover renderer initialization and shared-memory export; KosmicKrisp’s GPU test also checks optimal-texture uploads and readback. These checks complement, rather than replace, real-game testing.
 
-Проверено:
+```sh
+python3 scripts/test/fork-check.py
+scripts/test/controller-check.sh
+scripts/test/external-storage-check.sh "/Volumes/My External SSD"
+```
 
-- загрузка SteamOS до `graphical.target`, автологин, gamescope-сессия; сеть (DHCP через gvproxy,
-  скачивание обновления клиента Steam 583 МБ), SSH;
-- Venus в госте: `Virtio-GPU Venus (Apple M4 Max)`, Vulkan 1.4; рендер-тест (compute + clear/copy)
-  и вывод на экран через KMS совпадают с эталоном попиксельно;
-- все обязательные возможности DXVK из Proton 11 / DXVK 3.x видны в госте (geometryShader,
-  shaderCullDistance, depthClipEnable, robustness2 + nullDescriptor, maintenance5/6, …);
-- клавиатура, планшет, мышь и виртуальный Xbox 360 pad видны в SteamOS;
-- обновление A→B официальным OTA и откат;
-- GL через zink (glamor в Xwayland, glxgears ~60 FPS), интерфейс Steam (gamepad UI, CEF с GPU)
-  отрисовывается на экране ВМ;
-- вход в Steam, установка Proton 11.0-2 (ARM64) и FEX, запуск DX11-игры (Death's Door) через
-  DXVK → Venus → MoltenVK;
-- разрешение гостя следует за размером окна при постоянном DPI; быстрое выключение (2–4 с);
-- Heroes of Might and Magic: Olden Era (Unity, DX11) — 7 минут без ошибок (офлайн-проверка).
+Initial fork binaries reuse the upstream v1.1 guest kernel, initramfs, and patched MoltenVK library. Release notes identify any guest-layer repacking and the exact source revision. They do not include a personal SteamOS disk, Steam credentials, installed games, or the owner’s local wrapper paths.
 
-Подтормаживания при первом проходе — компиляция Metal (~50–100 мс на новый конвейер), повторно
-~1 мс. При перезагрузке после аварийного выключения initramfs проверяет и чинит FAT на esp/efi.
+## Credits and licensing
 
-## Ограничения
+Thanks to **fxgl** for Steamac, and the contributors to libkrun, UTM’s virglrenderer/MoltenVK forks, Mesa/Venus, FEX, Proton, DXVK, and vkd3d-proton. Steam and SteamOS are Valve products; this fork is not affiliated with or endorsed by Valve or Apple.
 
-- DirectX 12 (vkd3d-proton) не работает: MoltenVK не даёт нужных возможностей.
-- Звук: virtio-snd → CoreAudio (устройство по умолчанию или выбранное в настройках), задержка ≈65 мс на встроенных
-  динамиках; микрофон заявлен, но не проверен.
-- Античиты, которые блокируют ВМ, не пройдут.
-- `logicOp` недоступен (приватный Metal API в форке MoltenVK не собирается); zink выдаёт предупреждение.
+The repository currently has no top-level license file. Third-party components retain their own licenses; bundled license notices and source references must be preserved when redistributing them. No new repository-wide license is asserted by this fork.
