@@ -18,7 +18,7 @@ final class GamepadBridge {
     private var layout: Layout { device.ids.vendor == 0x054c ? .playstation : .standard }
     private var deviceButtons: [UInt16] { Self.buttons(for: layout) }
     static func buttons(for layout: Layout) -> [UInt16] {
-        layout == .playstation ? buttonCodes + [BTN.TL2, BTN.TR2, BTN.TOUCHPAD] : buttonCodes
+        layout == .playstation ? buttonCodes + [BTN.TL2, BTN.TR2, BTN.TOUCHPAD, BTN.MISC1] : buttonCodes
     }
 
     struct PadState: Equatable {
@@ -241,6 +241,9 @@ final class GamepadBridge {
     private func apply(_ next: PadState) {
         var events: [(UInt16, UInt16, Int32)] = []
         for c in deviceButtons where next.buttons[c] != state.buttons[c] {
+            if c == BTN.TOUCHPAD {
+                log("gamepad: touchpad button \(next.buttons[c]! ? "pressed" : "released")")
+            }
             events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))
         }
         for a in GamepadBridge.axisCodes where next.axes[a] != state.axes[a] {

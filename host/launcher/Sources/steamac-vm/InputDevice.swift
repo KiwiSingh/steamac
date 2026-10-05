@@ -250,9 +250,10 @@ enum InputDevices {
         let stick = AbsAxis(min: -32768, max: 32767, fuzz: 16, flat: 128)
         let trigger = AbsAxis(min: 0, max: 255)
         let hat = AbsAxis(min: -1, max: 1)
+        let version: UInt16 = layout == .playstation ? 0x0111 : 1
         return InputDevice(name: identity.name, serial: "steamac-gamepad",
             ids: krun_input_device_ids(bustype: identity.vendor == 0x1af4 ? BUS.VIRTUAL : BUS.USB,
-                                      vendor: identity.vendor, product: identity.product, version: 1),
+                                      vendor: identity.vendor, product: identity.product, version: version),
             capabilities: [EV.KEY: GamepadBridge.buttons(for: layout), EV.ABS: GamepadBridge.axisCodes],
             absInfo: [ABS.X: stick, ABS.Y: stick,
                       ABS.RX: layout == .playstation ? trigger : stick,

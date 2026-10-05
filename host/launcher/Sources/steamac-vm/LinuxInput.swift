@@ -50,8 +50,9 @@ enum BTN {
     static let MODE: UInt16 = 0x13c
     static let THUMBL: UInt16 = 0x13d
     static let THUMBR: UInt16 = 0x13e
-    // Extra PlayStation joystick button, after PS (b12): touchpad click (b13).
+    // Extra PlayStation joystick buttons, after PS (b12): touchpad click (b13) and mic mute (b14).
     static let TOUCHPAD: UInt16 = 0x2c0
+    static let MISC1: UInt16 = 0x2c1
 }
 
 enum BUS {
