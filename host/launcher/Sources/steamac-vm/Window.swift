@@ -381,15 +381,17 @@ final class WindowController: NSObject, NSWindowDelegate {
     // the cursor to the focused surface. So in `auto` mode the host pointer is mirrored with exact
     // relative deltas through the virtio mouse, after anchoring the guest cursor at the top-left
     // corner with one large negative delta whenever its position is unknown (pointer entered the
-    // picture, idle, after a capture). The absolute tablet is used only in `tablet` mode and in KDE
-    // desktop mode (`focus desktop`), where the compositor supports absolute pointers.
+    // picture, idle, after a capture). Plasma is nested inside this same Gamescope
+    // display, so desktop focus must use this path too. Sending tablet clicks to
+    // Gamescope leaves them at its stale cursor position (often a screen edge).
+    // Explicit tablet mode remains available for a direct desktop compositor.
 
     /// Idle time after which the guest cursor may have been moved by the guest (warps, a game's
     /// smaller surface clamping); the next motion re-anchors.
     static let reanchorAfterIdle: TimeInterval = 1.5
 
     private var usesTablet: Bool {
-        mouseMode == .tablet || (mouseMode == .auto && guestFocus == .desktop)
+        mouseMode == .tablet
     }
 
     /// "Name (appid)" when the guest told us the game's name.
@@ -550,13 +552,30 @@ extension WindowController {
     }
 
     private func inPicture(_ e: NSEvent) -> Bool {
-        view.fitRect.contains(view.convert(e.locationInWindow, from: nil))
+        pointerRect.contains(view.convert(e.locationInWindow, from: nil))
     }
 
-    /// Host pointer position in guest pixels (scanout size), clamped to the picture.
+    // steamos-nested-desktop starts KWin at 1280x800. Gamescope scales that
+    // surface into the scanout, adding bars when their aspect ratios differ.
+    // Relative input must address the surface, not the larger scanout: otherwise
+    // fullscreen clicks overshoot and clamp to the desktop's right/bottom edge.
+    private var pointerSize: (Int, Int) {
+        guestFocus == .desktop && !usesTablet ? (1280, 800) : scanoutSize
+    }
+
+    private var pointerRect: CGRect {
+        let (w, h) = pointerSize
+        return Renderer.fit(content: CGSize(width: w, height: h), in: view.fitRect)
+    }
+
+    /// Host pointer position in the focused surface's pixels.
     private func guestPoint(_ e: NSEvent) -> (Int, Int) {
-        let (ux, uy) = view.unitPoint(for: e)
-        let (w, h) = scanoutSize
+        let p = view.convert(e.locationInWindow, from: nil)
+        let f = pointerRect
+        guard f.width > 0, f.height > 0 else { return (0, 0) }
+        let ux = min(1, max(0, Double((p.x - f.minX) / f.width)))
+        let uy = min(1, max(0, 1 - Double((p.y - f.minY) / f.height)))
+        let (w, h) = pointerSize
         return (min(w - 1, max(0, Int(ux * Double(w)))), min(h - 1, max(0, Int(uy * Double(h)))))
     }
 
