@@ -259,7 +259,7 @@ private struct GeneralTab: View {
             Section {
                 Toggle(isOn: $settings.showOverlay) {
                     Label2(title: "Show boot and shutdown overlay",
-                           detail: "FX progress screen while SteamOS starts, restarts and shuts down.", now: true)
+                           detail: "Full-window FX progress while SteamOS starts, restarts and shuts down. Off, or after a click: a small progress pill.", now: true)
                 }
                 Toggle(isOn: $settings.showStallIndicator) {
                     Label2(title: "Show indicator when the GPU goes idle",

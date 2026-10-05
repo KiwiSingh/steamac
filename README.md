@@ -40,6 +40,20 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 перезапуска ВМ. Steam сам прогревает этот кеш (Shader Pre-Caching / fossilize_replay включены
 в SteamOS по умолчанию), делать ничего не нужно.
 
+Прогресс загрузки и выключения не пропадает до `ready`: первый клик или клавиша в окне сворачивает
+полноэкранный оверлей в плашку внизу по центру (этап, процент, полоска, строка деталей вроде
+`378 / 564 MB · 1.9 MB/s`; ввод проходит в гостя). Клик по плашке или View → Show Boot Progress
+разворачивает его обратно; с выключенным оверлеем (Settings > General) сразу показывается плашка.
+Заголовок окна до `ready` повторяет этап: «FX Steam Launcher — Downloading Steam update 70%»,
+«— Starting Steam…», «— Shutting down…». В лог: `overlay: collapsed to pill (click)` /
+`expanded from pill`. После `ready`, если в окне ≥ 3 с нет картинки (scanout выключен или после его
+установки/смены размера не пришло ни одного кадра) или показанный кадр ≥ 5 с чёрный (разреженная
+выборка 64 × 40 точек, яркость < 8/255 у ≥ 99,5 %, не чаще 4 раз в секунду, ~3 мкс), а фокус не в
+игре и гость не спит / не на паузе / не приостановлен, плашка пишет «Waiting for SteamOS to draw…»
+с причиной, heartbeat агента и CPU ВМ; исчезает с первым нечёрным кадром (`no-picture: shown after
+5.0 s (black picture …)` / `hidden after … (first non-black frame)`). Проверка:
+`work/out/steamac-vm --selftest-pill --selftest-out DIR`.
+
 Пока в фокусе игра (`focus game <appid>`), если гость 2 с не присылает GPU-команд (virtio-gpu
 control queue и Venus-кольца — счётчики `krun_gpu_get_activity`), поверх последнего кадра появляется
 карточка «Still working — loading or compiling shaders…» с загрузкой CPU ВМ; если вдобавок агент

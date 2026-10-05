@@ -30,6 +30,7 @@ struct Options {
     var displayMM: (Int, Int)?
     var selftestOverlay = false
     var selftestStall = false
+    var selftestPill = false
     var headless = false
     var logFile: String?
     var network = true
@@ -88,6 +89,7 @@ struct Options {
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-stall [--selftest-out DIR] [--display WxH]
+           steamac-vm --selftest-pill [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
            steamac-vm --create-disk PATH [--branch stable|rc|beta|preview|main] [--home-gib N]
@@ -174,6 +176,9 @@ struct Options {
                            input and write window captures at several progress points
       --selftest-stall     drive the GPU-idle indicator with synthetic GPU counters and heartbeats
                            and write window captures (indicator shown / hidden / not responding)
+      --selftest-pill      collapse the boot overlay into the progress pill by a click (live download
+                           progress, window title, expand / collapse, fade at ready), then drive the
+                           no-picture guard with synthetic scanout states; window captures + checks
       --selftest-settings  open the Settings window and write a PNG of every tab to --selftest-out
       --selftest-provision unit tests of the disk creator: GPT writer vs the layout of --reference-disk
                            (default work/out/steamos.img, opened read-only), squashfs + CMS verification of
@@ -286,6 +291,7 @@ struct Options {
             case "--selftest-out": o.selftestOut = try value(a)
             case "--selftest-overlay": o.selftestOverlay = true
             case "--selftest-stall": o.selftestStall = true
+            case "--selftest-pill": o.selftestPill = true
             case "--selftest-settings": o.selftestSettings = true
             case "--selftest-provision": o.selftestProvision = true
             case "--reference-disk": o.referenceDisk = try value(a)
@@ -323,7 +329,8 @@ struct Options {
     }
 
     var isSelftest: Bool {
-        selftestDisplay || selftestOverlay || selftestStall || selftestSettings || selftestProvision || createDisk != nil
+        selftestDisplay || selftestOverlay || selftestStall || selftestPill || selftestSettings || selftestProvision
+            || createDisk != nil
             || showSSHPassword != nil
     }
 

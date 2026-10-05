@@ -34,6 +34,11 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// "Still working" card shown when the guest GPU goes idle (StallMonitor), above the overlay.
     let stallView: StallIndicatorView
     private var stall: StallMonitor?
+    /// Compact boot / shutdown progress while the full overlay is not up before `ready`, and the
+    /// no-picture guard's report after it (bottom centre, above the GPU-idle card).
+    let pill: ProgressPillView
+    private var noPicture: NoPictureGuard?
+    private var noPictureReport: NoPictureGuard.Report?
     /// "Game paused" (GamePause confirmed a frozen game), above everything else.
     let pauseView: PauseOverlayView
     /// App id shown as paused (nil = not paused).
@@ -52,7 +57,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// Same for keys (macOS key codes) that woke the guest.
     private var swallowedKeys = Set<UInt16>()
     private var progress: BootProgress?
-    private var overlayDismissed = false
+    /// The user collapsed the boot / shutdown overlay into the pill (first click / key, menu);
+    /// a new shutdown or the menu expands it again.
+    private var overlayCollapsed = false
 
     private var pressedKeys = Set<UInt16>()
     private var tabletButtons = Set<UInt16>()
@@ -90,6 +97,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
         overlay = OverlayView(frame: rect)
         stallView = StallIndicatorView(frame: rect)
+        pill = ProgressPillView(frame: rect)
         pauseView = PauseOverlayView(frame: rect)
         sleepView = PauseOverlayView(frame: rect, style: .sleeping)
         resumeChip = ResumeChipView(frame: rect)
@@ -110,6 +118,14 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.addSubview(overlay)
         stallView.frame = view.bounds
         view.addSubview(stallView)
+        pill.frame = view.bounds
+        view.addSubview(pill)
+        pill.onClick = { [weak self] in self?.expandPill() }
+        pill.clickable = { [weak self] in self.map { $0.bootOrShutdown && !$0.captured } ?? false }
+        overlay.onVisibilityChange = { [weak self] _ in
+            self?.updateStallGate()
+            self?.updatePill()
+        }
         pauseView.frame = view.bounds
         view.addSubview(pauseView)
         sleepView.frame = view.bounds
@@ -125,7 +141,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         subscriptions.append(settings.$showOverlay.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] on in
             guard let self else { return }
             if !on { self.overlay.hide() }
-            else if let p = self.progress, p.state.phase != .running, !self.overlayDismissed { self.overlay.show() }
+            else if self.bootOrShutdown, !self.overlayCollapsed { self.overlay.show() }
         })
         subscriptions.append(settings.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
             guard let self else { return }
@@ -233,20 +249,38 @@ final class WindowController: NSObject, NSWindowDelegate {
     func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
 
     func setStatus(_ status: String?) {
-        window.title = status.map { "\(baseTitle) — \($0)" } ?? baseTitle
+        let title = status.map { "\(baseTitle) — \($0)" } ?? baseTitle
+        if window.title != title { window.title = title }
     }
 
+    /// Before `ready` and during shutdown / reboot the title mirrors the progress
+    /// ("Downloading Steam update 70%", "Starting Steam…", "Shutting down…").
     private func updateTitle() {
         if guestAsleep {
             setStatus("sleeping — click to wake")
         } else if pausedGame != nil {
             setStatus("paused")
+        } else if let s = progress.flatMap({ WindowController.progressStatus($0.state) }) {
+            setStatus(captured ? "\(s) — mouse captured, Ctrl+Option releases" : s)
         } else if captured {
             setStatus("mouse captured — Ctrl+Option releases")
         } else if inputs != nil && clickCaptures {
             setStatus("click to capture the mouse")
         } else {
             setStatus(nil)
+        }
+    }
+
+    /// Window-title status for a boot / shutdown progress state; nil once Steam is ready.
+    static func progressStatus(_ s: ProgressState) -> String? {
+        let ellipsized = s.title.hasSuffix("…") || s.title.hasSuffix(".") ? s.title : s.title + "…"
+        switch s.phase {
+        case .running: return nil
+        case .shutdown: return ellipsized
+        case .boot:
+            guard !s.indeterminate, s.fraction > 0 else { return ellipsized }
+            let t = s.title.hasSuffix("…") ? String(s.title.dropLast()) : s.title
+            return "\(t) \(Int((s.fraction * 100).rounded(.down)))%"
         }
     }
 
@@ -260,6 +294,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             pauseView.hide()
         }
         updateTitle()
+        updateNoPictureGate()
     }
 
     /// SuspendController: the guest went to sleep (VM paused) / woke up. "Game paused" gives way
@@ -273,6 +308,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             sleepView.hide()
         }
         updateTitle()
+        updateNoPictureGate()
     }
 
     /// First click / key while the guest sleeps: wake it (the event itself is swallowed).
@@ -283,13 +319,15 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     // MARK: overlay
 
-    /// Boot overlay follows `progress`: hides on `ready` (or when the user clicks / presses a key,
-    /// or after 15 minutes), comes back for shutdown/reboot — unless Settings > General turned it off.
+    /// Boot / shutdown progress always stays on screen until `ready`: the full overlay, or the
+    /// compact pill once the user clicked / pressed a key in the window (or after 15 minutes, or
+    /// with Settings > General's overlay off). Clicking the pill or View > Show Boot Progress
+    /// expands it again; a shutdown / reboot starts with the full overlay again.
     func attach(progress: BootProgress) {
         self.progress = progress
         overlay.update(progress.state)
         let previous = progress.onChange
-        progress.onChange = { [weak self] s in previous?(s); self?.overlay.update(s) }
+        progress.onChange = { [weak self] s in previous?(s); self?.progressChanged(s) }
         let previousFocus = progress.onFocus
         progress.onFocus = { [weak self] f in previousFocus?(f); self?.guestFocusChanged(f) }
         let previousReady = progress.onReady
@@ -297,20 +335,78 @@ final class WindowController: NSObject, NSWindowDelegate {
         let previousShutdown = progress.onShutdown
         progress.onShutdown = { [weak self] reboot in
             previousShutdown?(reboot)
-            self?.overlayDismissed = false
-            if self?.settings.showOverlay ?? false { self?.overlay.show() }
-            self?.pauseView.hide(animated: false)
+            guard let self else { return }
+            self.overlayCollapsed = false
+            if self.settings.showOverlay { self.overlay.show() }
+            self.pauseView.hide(animated: false)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in
             guard let self, let p = self.progress, p.state.phase == .boot, self.overlay.shown else { return }
-            log("overlay: still booting after 15 min, hiding the overlay")
-            self.overlay.hide()
+            self.collapseOverlay("still booting after 15 min")
+        }
+        updatePill()
+        updateTitle()
+    }
+
+    private func progressChanged(_ s: ProgressState) {
+        overlay.update(s)
+        updatePill()
+        updateTitle()
+        updateNoPictureGate()
+    }
+
+    /// Booting or shutting down (not `ready` yet, or no longer).
+    private var bootOrShutdown: Bool { progress.map { $0.state.phase != .running } ?? false }
+
+    /// The pill shows the boot / shutdown progress whenever the full overlay is not up, else the
+    /// no-picture guard's report (after `ready`); hidden (fading) otherwise.
+    private func updatePill() {
+        let content: ProgressPillView.Content?
+        if overlay.shown {
+            content = nil
+        } else if let p = progress?.state, p.phase != .running {
+            content = ProgressPillView.Content(p)
+        } else if let r = noPictureReport {
+            content = ProgressPillView.Content(title: r.title, detail: r.detail, fraction: nil)
+        } else {
+            content = nil
+        }
+        if let content {
+            pill.update(content)
+            pill.show()
+        } else {
+            pill.hide()
         }
     }
 
-    /// Menu "Show Boot Overlay".
+    /// Full overlay → pill (the progress stays on screen; input goes through).
+    private func collapseOverlay(_ why: String) {
+        guard overlay.shown else { return }
+        if bootOrShutdown {
+            overlayCollapsed = true
+            log("overlay: collapsed to pill (\(why))")
+        }
+        overlay.hide()
+    }
+
+    /// Click on the pill: back to the full overlay.
+    private func expandPill() {
+        guard bootOrShutdown, !overlay.shown else { return }
+        overlayCollapsed = false
+        log("overlay: expanded from pill (click)")
+        overlay.show()
+    }
+
+    /// Menu "Show Boot Progress": expand the pill / collapse the overlay (after `ready`: show / hide
+    /// the overlay).
     func toggleOverlay() {
-        if overlay.shown { overlay.hide() } else { overlay.show() }
+        if overlay.shown {
+            collapseOverlay("menu")
+        } else {
+            if bootOrShutdown { log("overlay: expanded from pill (menu)") }
+            overlayCollapsed = false
+            overlay.show()
+        }
     }
 
     /// Menu "Show Metal Performance HUD" / Ctrl+Cmd+P: flips the setting (persisted, Settings > Display).
@@ -330,7 +426,6 @@ final class WindowController: NSObject, NSWindowDelegate {
         self.stall = stall
         stall.enabled = settings.showStallIndicator
         stall.gameFocused = focusedGame != nil
-        overlay.onVisibilityChange = { [weak self] _ in self?.updateStallGate() }
         if let progress {
             let previous = progress.onChange
             progress.onChange = { [weak self] s in previous?(s); self?.updateStallGate() }
@@ -347,19 +442,46 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func updateStallGate() {
         guard let stall else { return }
-        stall.suppressed = overlay.shown || (progress.map { $0.state.phase != .running } ?? false)
+        stall.suppressed = overlay.shown || bootOrShutdown
     }
 
-    /// The user interacted with the guest: a visible overlay gets out of the way (input still goes through).
-    private func userInput() {
-        guard overlay.shown, !overlayDismissed else { return }
-        overlayDismissed = true
-        overlay.hide()
+    /// "Waiting for SteamOS to draw…" in the pill after `ready` (never during game focus, sleep,
+    /// a paused game or a paused VM; `vmPaused` is set by the owner).
+    func attach(noPicture: NoPictureGuard) {
+        self.noPicture = noPicture
+        if let progress {
+            let previousAlive = progress.onAlive
+            progress.onAlive = { [weak noPicture] ms, load in previousAlive?(ms, load); noPicture?.alive() }
+            noPicture.lastKnown = { [weak progress] in
+                progress.flatMap { $0.state.phase == .running ? $0.state.detail : nil }
+            }
+        }
+        noPicture.onChange = { [weak self] report in
+            self?.noPictureReport = report
+            self?.updatePill()
+        }
+        updateNoPictureGate()
+        noPicture.start()
+    }
+
+    private func updateNoPictureGate() {
+        guard let noPicture else { return }
+        noPicture.ready = progress.map { $0.state.phase == .running } ?? false
+        noPicture.gameFocused = focusedGame != nil
+        noPicture.gamePaused = pausedGame != nil
+        noPicture.asleep = guestAsleep
+    }
+
+    /// The user interacted with the guest: a visible overlay gets out of the way (input still goes
+    /// through); before `ready` the progress stays on screen as the pill.
+    private func userInput(_ what: String) {
+        guard overlay.shown else { return }
+        collapseOverlay(what)
     }
 
     /// Read back the next presented drawable; `composite` = drawable with the overlay, the
-    /// GPU-idle indicator, the "Game paused" / "SteamOS is sleeping" cards and the "Resuming…"
-    /// chip on top, at 2x.
+    /// GPU-idle indicator, the progress pill, the "Game paused" / "SteamOS is sleeping" cards and
+    /// the "Resuming…" chip on top, at 2x.
     func captureWindow(_ done: @escaping (_ drawable: CGImage?, _ composite: CGImage?) -> Void) {
         view.renderer.captureNextDraw = { [weak self] bytes, w, h in
             DispatchQueue.main.async {
@@ -367,6 +489,7 @@ final class WindowController: NSObject, NSWindowDelegate {
                 guard let self else { return done(drawable, nil) }
                 var composite = self.overlay.renderImage(scale: 2, under: drawable)
                 composite = self.stallView.renderImage(scale: 2, under: composite)
+                composite = self.pill.renderLayerImage(scale: 2, under: composite)
                 for v in [self.pauseView, self.sleepView, self.resumeChip] as [NSView] {
                     composite = v.renderLayerImage(scale: 2, under: composite)
                 }
@@ -412,7 +535,7 @@ final class WindowController: NSObject, NSWindowDelegate {
 
         switch e.type {
         case .keyDown:
-            userInput()
+            userInput("key")
             if mods.contains([.control, .command]) {
                 switch Int(e.keyCode) {
                 case kVK_ANSI_F: toggleFullScreen(); return true
@@ -507,10 +630,14 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     func guestFocusChanged(_ f: GuestFocus) {
         // The agent ends with the gamescope session: no heartbeats in desktop mode.
-        if f == .desktop { stall?.heartbeatsEnded() }
+        if f == .desktop {
+            stall?.heartbeatsEnded()
+            noPicture?.heartbeatsEnded()
+        }
         guard f != guestFocus else { return }
         guestFocus = f
         stall?.gameFocused = focusedGame != nil
+        updateNoPictureGate()
         log("input: guest focus \(f)")
         guestCursor = nil
         // Back in Steam / desktop (or a game without auto-capture): give the pointer back.
@@ -607,6 +734,7 @@ extension WindowController {
         NSCursor.hide()
         log("input: mouse captured")
         updateTitle()
+        window.invalidateCursorRects(for: pill)
     }
 
     func releasePointer() {
@@ -619,6 +747,7 @@ extension WindowController {
         guestCursor = nil
         log("input: mouse released")
         updateTitle()
+        window.invalidateCursorRects(for: pill)
     }
 
     private func releaseButtons() {
@@ -732,7 +861,7 @@ extension WindowController {
             return
         }
         if !down && swallowedButtons.remove(b) != nil { return }
-        if down { userInput() }
+        if down { userInput("click") }
         if captured {
             if down ? mouseButtons.insert(b).inserted : mouseButtons.remove(b) != nil {
                 inputs.mouse.send([(EV.KEY, b, down ? 1 : 0)])
@@ -828,7 +957,7 @@ enum MainMenu {
         viewItem.submenu = viewMenu
         viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
         viewMenu.addItem(item("Grab Pointer (Ctrl+Cmd+G; Ctrl+Option releases)", grab, target))
-        viewMenu.addItem(item("Show Boot Overlay", overlay, target))
+        viewMenu.addItem(item("Show Boot Progress", overlay, target))
         // Ticked by the target's validateMenuItem (follows Settings > Display and Ctrl+Cmd+P).
         viewMenu.addItem(item("Show Metal Performance HUD (Ctrl+Cmd+P)", metalHUD, target))
         let help = NSMenu(title: "Help")

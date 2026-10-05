@@ -190,6 +190,50 @@ final class Scanout {
             return (Data(bytes: b.ptr, count: b.size), b.width, b.height, b.format)
         }
     }
+
+    /// What the window can show, for NoPictureGuard (main thread, a few times a second).
+    struct Probe {
+        var enabled: Bool
+        /// A frame was presented since the last scanout set / resize.
+        var hasPicture: Bool
+        var presented: UInt64
+        /// Fraction of sample points darker than `darkLuma` in the latest frame; nil = not sampled
+        /// (no frame, or none newer than the caller has seen).
+        var dark: Double?
+    }
+
+    static let sampleColumns = 64
+    static let sampleRows = 40
+    /// Rec. 709 luma below this (0...255) counts as black.
+    static let darkLuma = 8
+
+    /// Scanout state, plus the darkness of the latest frame if one newer than `seen` (a
+    /// `presented` value) arrived. The GPU thread never writes into the last presented frame.
+    func probe(sampleIfNewerThan seen: UInt64) -> Probe {
+        locked {
+            var p = Probe(enabled: enabled, hasPicture: lastPresented != nil, presented: presented, dark: nil)
+            if let i = lastPresented, presented != seen { p.dark = Scanout.darkFraction(buffers[i]) }
+            return p
+        }
+    }
+
+    /// Sparse black test: luma at a `sampleColumns`×`sampleRows` grid of pixel centres (2560 reads,
+    /// a few microseconds); the fraction of them below `darkLuma`.
+    static func darkFraction(_ b: FrameBuffer) -> Double {
+        guard let (r, g, bl) = ScanoutFormat.rgbOffsets(b.format), b.width > 0, b.height > 0 else { return 0 }
+        let px = UnsafeRawPointer(b.ptr).assumingMemoryBound(to: UInt8.self)
+        let limit = darkLuma * 256
+        var dark = 0
+        for j in 0..<sampleRows {
+            let row = px + ((2 * j + 1) * b.height / (2 * sampleRows)) * b.stride
+            for i in 0..<sampleColumns {
+                let p = row + ((2 * i + 1) * b.width / (2 * sampleColumns)) * 4
+                // Rec. 709 weights in 1/256 units.
+                if 54 * Int(p[r]) + 183 * Int(p[g]) + 19 * Int(p[bl]) < limit { dark += 1 }
+            }
+        }
+        return Double(dark) / Double(sampleColumns * sampleRows)
+    }
 }
 
 /// Receives notifications from libkrun's GPU thread. Implementations must be cheap and non-blocking.

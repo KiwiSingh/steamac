@@ -40,6 +40,7 @@ CrashReporting.runTests(&options)
 if options.selftestDisplay { SelfTest.run(options) }
 if options.selftestOverlay { OverlaySelfTest.run(options) }
 if options.selftestStall { StallSelfTest.run(options) }
+if options.selftestPill { PillSelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
 if options.selftestProvision { ProvisionSelfTest.run(options) }
 if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
@@ -314,7 +315,9 @@ do {
                 if let drawable { try PNG.write(drawable, to: base + "-window.png") }
                 if let composite { try PNG.write(composite, to: base + "-overlay.png") }
                 log("window dumped to \(base)-window.png, \(base)-overlay.png, \(base)-screen.png"
-                    + " (overlay \(wc.overlay.shown ? "shown" : "hidden"), Metal HUD \(settings.metalHUD ? "on" : "off"))")
+                    + " (overlay \(wc.overlay.shown ? "shown" : "hidden"), pill "
+                    + (wc.pill.shown ? "\"\(wc.pill.content.title)\" / \"\(wc.pill.content.detail)\" \(wc.pill.content.percentText)" : "hidden")
+                    + ", title \"\(wc.window.title)\", Metal HUD \(settings.metalHUD ? "on" : "off"))")
             } catch {
                 log("window dump failed: \(error)")
             }
@@ -379,6 +382,9 @@ do {
     let stall = StallMonitor(view: wc.stallView, sample: gpuCounters)
     stall.onNotResponding = { CrashReporting.stallNotResponding(seconds: $0) }
     wc.attach(stall: stall)
+    // After `ready`: "Waiting for SteamOS to draw…" when the window shows no / a black picture.
+    let noPicture = NoPictureGuard { presenter.scanout.probe(sampleIfNewerThan: $0) }
+    wc.attach(noPicture: noPicture)
     // Settings > General "Pause the game" in the background; no GPU-idle card while frozen.
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
@@ -388,6 +394,7 @@ do {
     suspender.onShutdown = { lifecycle.requestShutdown() }
     // Suspended or asleep: the Mac may sleep.
     suspender.onPausedChange = { paused in
+        noPicture.vmPaused = paused
         if paused {
             activity.map(ProcessInfo.processInfo.endActivity)
             activity = nil
