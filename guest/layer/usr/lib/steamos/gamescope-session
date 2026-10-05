@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Derived from Valve Corporation's deckard-steamvr-session (MIT)
 # steamac: gamescope session for the libkrun VM. Replaces the Frame's
 # /usr/lib/steamos/gamescope-session (deckard-steamvr-session), which runs
 # gamescope with --backend openvr as a SteamVR overlay. Here gamescope owns the

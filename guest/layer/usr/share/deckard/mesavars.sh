@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Derived from Valve Corporation's deckard-steamvr-session (MIT)
 # steamac: replaces the Frame's /usr/share/deckard/mesavars.sh
 # (EnvironmentFile of gamescope-session.service and steam.service).
 # The VM has no Adreno: Vulkan is Mesa Venus (libvulkan_virtio.so, added by the

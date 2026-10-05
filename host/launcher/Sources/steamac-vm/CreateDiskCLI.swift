@@ -3,8 +3,19 @@ import Foundation
 
 /// `steamac-vm --create-disk PATH`: DiskCreator without UI (same code as "Create New Disk…").
 /// Progress goes to stderr; SIGINT/SIGTERM cancel (downloaded chunks stay cached for a re-run).
+/// Downloads nothing until Valve's license is accepted (SteamOSLicense, `--accept-eula`).
 enum CreateDiskCLI {
     static func run(_ o: Options, settings: LauncherSettings) -> Never {
+        if SteamOSLicense.acceptedAt(settings) == nil {
+            guard o.acceptLicense else {
+                log("create-disk: \(SteamOSLicense.summary)\n"
+                    + "  End User License Agreement for SteamOS and Steam Client Back-Up Image: \(SteamOSLicense.eulaURL.absoluteString)\n"
+                    + "  Steam Subscriber Agreement: \(SteamOSLicense.ssaURL.absoluteString)\n"
+                    + "Read both and run again with --accept-eula to accept them.")
+                exit(2)
+            }
+            SteamOSLicense.accept(settings, via: "--accept-eula")
+        }
         let creator = DiskCreator()
         var request = DiskCreator.Request(path: o.createDisk!)
         request.branch = o.createBranch ?? settings.steamosBranch

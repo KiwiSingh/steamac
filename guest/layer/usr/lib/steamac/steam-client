@@ -1,0 +1,97 @@
+#!/bin/bash
+# steamac: prepare the OS's stock RUNSTEAM.sh for the selected Steam client.
+# The Frame client retains the unmodified stock script; Deck and sign-in modes
+# omit only the two Frame-specific arguments from a per-user copy.
+set -euo pipefail
+
+steamroot="${HOME}/.local/share/Steam"
+stock=/usr/share/deckard/RUNSTEAM.sh
+signin_marker="${XDG_RUNTIME_DIR}/steamac-steam-signin"
+
+account_remembered() {
+    grep -Eqs '"(Allow)?AutoLogin"[[:space:]]+"1"' "$steamroot/config/loginusers.vdf"
+}
+
+if [[ ${1:-} == --watch ]]; then
+    [[ -f $signin_marker && ${2:-} =~ ^[0-9]+$ ]] || exit 0
+    mainpid=$2
+    # The launcher replaces itself with Steam; stop watching when that PID exits.
+    (
+        while kill -0 "$mainpid" 2>/dev/null; do
+            if account_remembered; then
+                sleep 5 # let Steam finish writing its config
+                kill -0 "$mainpid" 2>/dev/null || exit 0
+                echo 'steamac: Steam account remembered: restarting Steam with the Steam Frame client' >&2
+                exec systemctl --user --no-block restart steam.service
+            fi
+            sleep 3
+        done
+    ) </dev/null >/dev/null &
+    exit 0
+fi
+[[ $# == 0 ]] || { echo 'usage: steam-client [--watch MAINPID]' >&2; exit 2; }
+rm -f "$signin_marker"
+
+client=""
+read -r -a cmdline < /proc/cmdline || true
+for word in "${cmdline[@]}"; do
+    case "$word" in steamac.steam_client=*) client=${word#steamac.steam_client=} ;; esac
+done
+branch=""
+branch_source="steamac.steam_client=$client"
+case "$client" in
+    deck) branch=steamdeck_stable ;;
+    deckbeta) branch=steamdeck_publicbeta ;;
+    frame|"") ;;
+    *) echo "steamac: ignoring unknown steamac.steam_client='$client'" >&2 ;;
+esac
+branch_conf=/etc/steamac/steam-client-branch
+if [[ -z $branch && -r $branch_conf ]]; then
+    read -r configured_branch _ < "$branch_conf" || true
+    if [[ ${configured_branch:-} =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        branch=$configured_branch
+        branch_source=$branch_conf
+    else
+        echo "steamac: ignoring invalid branch '${configured_branch:-}' in $branch_conf" >&2
+    fi
+fi
+
+signin=0
+if [[ -z $branch ]] && ! account_remembered; then
+    if curl -fsS -m 5 -o /dev/null --head https://client-update.steamstatic.com/steam_client_steamdeck_stable_linuxarm64; then
+        echo 'steamac: no remembered Steam account: sign-in mode (Steam Deck client, on-screen QR code)'
+        signin=1
+    else
+        echo 'steamac: no remembered Steam account, but client-update.steamstatic.com is unreachable: Frame client' >&2
+    fi
+fi
+
+# Replace the stock unit's cp -u result even if Steam unpacked a newer copy.
+cp -f "$stock" "$steamroot/RUNSTEAM.sh"
+if [[ -n $branch || $signin == 1 ]]; then
+    # Never modify the OS original. Refuse to guess if a future OS update changes
+    # the argument layout: the copy remains stock, and the error is visible.
+    for flag in -deckard -vrgamepadui; do
+        count=$(grep -Ec "^[[:space:]]*${flag}[[:space:]]*$" "$stock" || true)
+        if [[ $count != 1 ]]; then
+            echo "steamac: expected exactly one '$flag' argument line in $stock (found $count); using stock flags" >&2
+            exit 0
+        fi
+    done
+    copy=$(mktemp "$steamroot/.RUNSTEAM.sh.XXXXXX")
+    trap 'rm -f "$copy"' EXIT
+    grep -Ev '^[[:space:]]*-(deckard|vrgamepadui)[[:space:]]*$' "$stock" > "$copy"
+    cat "$copy" > "$steamroot/RUNSTEAM.sh"
+fi
+
+if [[ -n $branch ]]; then
+    beta_file="$steamroot/package/beta"
+    current=$(head -n1 "$beta_file" 2>/dev/null || true)
+    if [[ $current != "$branch" ]]; then
+        echo "steamac: Steam client branch '${current:-<none>}' -> '$branch' ($branch_source)"
+        mkdir -p "$steamroot/package"
+        printf '%s\n' "$branch" > "$beta_file"
+    fi
+elif [[ $signin == 1 ]]; then
+    : > "$signin_marker"
+fi

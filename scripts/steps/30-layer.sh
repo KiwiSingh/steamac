@@ -43,10 +43,17 @@ grep -q 'fx-progress-agent sleep suspend$' "$ST/usr/lib/systemd/system/systemd-s
 # Sanity: the pieces the initramfs and the A/B flow depend on.
 for f in usr/bin/splctl usr/lib/rauc/post-install.sh usr/lib/steamac/kernelsetup.sh \
          usr/lib/steamac/rauc-shims/steamos-chroot usr/lib/steamac/steam-gfx-env \
-         usr/lib/steamos/gamescope-session; do
+         usr/lib/steamac/steam-client usr/lib/steamos/gamescope-session; do
     [[ -x $ST/$f ]] || { echo "[layer] $f missing or not executable" >&2; exit 1; }
     bash -n "$ST/$f"
 done
+[[ -f $ST/usr/lib/systemd/user/steam.service.d/50-steamac.conf ]] \
+    || { echo "[layer] steam.service drop-in missing" >&2; exit 1; }
+[[ ! -e $ST/usr/lib/systemd/user/steam.service && ! -e $ST/usr/share/deckard/RUNSTEAM.sh ]] \
+    || { echo "[layer] proprietary stock Steam files must not be overlaid" >&2; exit 1; }
+grep -q 'ExecStartPre=/usr/lib/steamac/steam-client' "$ST/usr/lib/systemd/user/steam.service.d/50-steamac.conf" \
+    && grep -q 'ExecStartPost=/usr/lib/steamac/steam-client --watch' "$ST/usr/lib/systemd/user/steam.service.d/50-steamac.conf" \
+    || { echo "[layer] steam.service client setup or watcher missing" >&2; exit 1; }
 ls "$ST"/usr/lib/steamac/masks.d/*.list >/dev/null
 
 # layer-release: content hash (excluding itself) so a boot log identifies the layer.

@@ -1,0 +1,44 @@
+FX Steam Launcher (steamac)
+Copyright 2026 FX GAMES FZ LLC
+
+Licensed under the Apache License, Version 2.0 (LICENSE), except for the parts listed below.
+Patches keep the copyright of their authors as recorded in each patch; FX GAMES FZ LLC's own
+changes in a patch are licensed under the license of the project the patch applies to.
+
+GPL-2.0-only (LICENSES/GPL-2.0-only.txt) - Linux kernel derivatives:
+  guest/kernel/patches/
+  guest/kernel/config/, guest/kernel/config-steamac
+  (the build and test scripts in guest/kernel/ are Apache-2.0)
+
+MIT (LICENSES/MIT.txt) - patches for MIT-licensed projects, so they can go upstream:
+  host/virglrenderer/patches/   (virglrenderer)
+  guest/mesa/                   (Mesa)
+  Copyright 2026 FX GAMES FZ LLC and the patch authors
+
+MIT (LICENSES/MIT.txt) - derived from Valve Corporation's deckard-steamvr-session package
+(SteamOS for Steam Frame; MIT according to its package metadata):
+  guest/layer/usr/lib/steamos/gamescope-session
+  guest/layer/usr/lib/systemd/user/gamescope-session.service
+  guest/layer/usr/lib/systemd/user/gamescope-session.target
+  guest/layer/usr/share/deckard/mesavars.sh
+  Copyright (c) Valve Corporation; changes Copyright 2026 FX GAMES FZ LLC
+
+Not covered by any license of this project:
+  scripts/keys/steamdeck-images.pem - Valve's public RAUC CA certificate, included only to
+    verify the signature of SteamOS images downloaded from Valve.
+  docs/media/ - screenshots and video of SteamOS, Steam and games: the depicted software and
+    artwork belong to Valve Corporation and the respective game publishers.
+
+SteamOS itself is not part of this project and is not distributed with it: the app downloads
+Valve's signed image from Valve's servers after the user accepts Valve's End User License
+Agreement for SteamOS and Steam Client Back-Up Image and the Steam Subscriber Agreement.
+
+Third-party software distributed in the app (FX Steam Launcher.app/Contents/Resources/licenses):
+libkrun, virglrenderer, MoltenVK, libepoxy, gvproxy, desync, zstd, sentry-cocoa, the Linux
+kernel, busybox, dosfstools, e2fsprogs, btrfs-progs, Mesa and their dependencies, each under its
+own license. Complete corresponding source for the GPL components of each release is attached
+to that release on GitHub (FX-Steam-Launcher-<version>-gpl-sources.tar).
+
+Steam, the Steam logo, SteamOS, Steam Deck and Steam Frame are trademarks and/or registered
+trademarks of Valve Corporation in the U.S. and/or other countries. This project is not
+affiliated with, endorsed by or sponsored by Valve Corporation.

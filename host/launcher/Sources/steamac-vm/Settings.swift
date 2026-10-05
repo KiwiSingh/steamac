@@ -75,7 +75,7 @@ final class LauncherSettings: ObservableObject {
     }
 
     /// Steam client SteamOS starts (kernel cmdline `steamac.steam_client=`, read by the layer's
-    /// RUNSTEAM.sh on every Steam start).
+    /// /usr/lib/steamac/steam-client on every Steam start).
     enum SteamClient: String, CaseIterable, Identifiable {
         /// Valve's Steam Frame client beta with -deckard -vrgamepadui (stock); the Steam Deck
         /// client is used for sign-in until an account is remembered (sign-in mode).

@@ -5,7 +5,7 @@
 #                                       dependencies (libepoxy), install names @rpath/<name>
 #   Contents/Resources/                 gvproxy, Image, initramfs.cpio.gz, steamac-layer.img,
 #                                       desync + steamdeck-images.pem (Valve RAUC CA) for
-#                                       "Create New Disk…", licenses/ (desync, zstd),
+#                                       "Create New Disk…", generated licenses/ notices,
 #                                       Assets.car + AppIcon.icns (app icon, see below)
 # The SteamOS disk is not bundled (Settings > Advanced "Disk image" / "Create New Disk…"). Ad-hoc
 # signed with the hypervisor + disable-library-validation entitlements. Built in a temp dir,
@@ -22,11 +22,12 @@ APP="$OUT/$NAME.app"
 STAGE="$OUT/.bundle.$$"
 TMP="$STAGE/$NAME.app"
 
-ZSTD_LICENSE="$HERE/Sources/CZstd/zstd/LICENSE"
-for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy host/bin/desync host/share/desync/LICENSE; do
+for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy host/bin/desync; do
     [[ -f "$OUT/$f" ]] || { echo "bundle.sh: missing $OUT/$f" >&2; exit 1; }
 done
-[[ -f "$ZSTD_LICENSE" ]] || { echo "bundle.sh: missing $ZSTD_LICENSE (run fetch-zstd.sh)" >&2; exit 1; }
+"$HERE/licenses.sh"  # fail before modifying the existing app if a notice is unavailable
+[[ -f "$OUT/licenses/THIRD-PARTY-NOTICES.txt" ]] || { echo 'bundle.sh: missing notices index' >&2; exit 1; }
+
 
 rm -rf "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
@@ -101,8 +102,7 @@ cp "$OUT/host/bin/desync" "$TMP/Contents/Resources/desync"
 chmod 755 "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"
 cp "$ROOT/scripts/keys/steamdeck-images.pem" "$TMP/Contents/Resources/steamdeck-images.pem"
 mkdir -p "$TMP/Contents/Resources/licenses"
-cp "$OUT/host/share/desync/LICENSE" "$TMP/Contents/Resources/licenses/desync-LICENSE"
-cp "$ZSTD_LICENSE" "$TMP/Contents/Resources/licenses/zstd-LICENSE"
+cp -R "$OUT/licenses/." "$TMP/Contents/Resources/licenses/"
 
 # App icon: AppIcon.icon (Icon Composer document) compiled by Xcode 26's actool into Assets.car
 # (layered Liquid Glass icon for macOS 26, pre-rendered squircle renditions for macOS 15) and an

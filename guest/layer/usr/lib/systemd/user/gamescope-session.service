@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Derived from Valve Corporation's deckard-steamvr-session (MIT)
 # steamac: full replacement of the stock deckard-steamvr-session unit.
 # Differences from stock: no PartOf=steamvr.service (SteamVR is masked in the
 # VM), optional /etc/steamac/gamescope-session.conf overrides, and the steamac

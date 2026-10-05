@@ -3,8 +3,9 @@ import SwiftUI
 
 /// "Create SteamOS Disk" window (first-run sheet and Settings > Advanced "Create New Disk…"):
 /// branch, home size, location, password and the Steam client (a launcher setting, applies to
-/// every start), then DiskCreator with progress, cancel and resume (a cancelled or failed run
-/// keeps the downloaded chunks; Create again continues from there).
+/// every start), Valve's license (SteamOSLicense: Create stays disabled until it is accepted),
+/// then DiskCreator with progress, cancel and resume (a cancelled or failed run keeps the
+/// downloaded chunks; Create again continues from there).
 final class CreateDiskModel: ObservableObject {
     @Published var path: String
     @Published var branch: String
@@ -16,6 +17,8 @@ final class CreateDiskModel: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var interrupted = false
     @Published private(set) var result: DiskCreator.Result?
+    /// The checkbox; starts checked once the current agreement was accepted (SteamOSLicense).
+    @Published var licenseAccepted: Bool
     let settings: LauncherSettings
     var onFinish: ((DiskCreator.Result) -> Void)?
     private var creator: DiskCreator?
@@ -23,6 +26,7 @@ final class CreateDiskModel: ObservableObject {
     init(settings: LauncherSettings) {
         self.settings = settings
         branch = settings.steamosBranch
+        licenseAccepted = SteamOSLicense.acceptedAt(settings) != nil
         path = CreateDiskModel.freePath(DiskCreator.defaultPath)
     }
 
@@ -47,7 +51,8 @@ final class CreateDiskModel: ObservableObject {
     }
 
     func start() {
-        guard !running else { return }
+        guard !running, licenseAccepted else { return }
+        SteamOSLicense.accept(settings, via: "Create SteamOS Disk window")
         settings.steamosBranch = branch
         error = nil
         interrupted = false
@@ -135,6 +140,22 @@ private struct CreateDiskView: View {
                 Section {
                     CrashReportsToggle(settings: model.settings, checkbox: true)
                 }
+                Section {
+                    Toggle(isOn: $model.licenseAccepted) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("I accept Valve's SteamOS license and the Steam Subscriber Agreement")
+                            Text(SteamOSLicense.summary)
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 12) {
+                                Link("SteamOS End User License Agreement", destination: SteamOSLicense.eulaURL)
+                                Link("Steam Subscriber Agreement", destination: SteamOSLicense.ssaURL)
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                }
+                .disabled(model.running || model.result != nil)
                 if model.running || model.status != nil || model.error != nil {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
@@ -158,12 +179,12 @@ private struct CreateDiskView: View {
                     Button("Cancel") { close() }.keyboardShortcut(.cancelAction)
                     Button(model.interrupted ? "Resume" : "Create") { model.start() }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(model.pathExists || model.result != nil)
+                        .disabled(model.pathExists || model.result != nil || !model.licenseAccepted)
                 }
             }
             .padding([.horizontal, .bottom], 20)
         }
-        .frame(width: 560, height: 660)
+        .frame(width: 560, height: 740)
     }
 
     private func choose() {

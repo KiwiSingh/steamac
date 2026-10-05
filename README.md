@@ -219,8 +219,16 @@ Launcher хочет получить доступ к файлам на съём�
 размер home, место, пароль пользователя `steamos`; прогресс, Stop и Resume). То же без окна:
 
 ```sh
-work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache]
+work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache] [--accept-eula]
 ```
+
+Ничего не скачивается, пока пользователь не принял условия Valve: «End User License Agreement for
+SteamOS and Steam Client Back-Up Image» (тот же текст, что на странице образа Steam Frame,
+`https://store.steampowered.com/steamos/download/?ver=steamframe`: только личное использование, без
+распространения) и Steam Subscriber Agreement. В окне это флажок со ссылками на оба текста — без
+него Create недоступна; в командной строке — `--accept-eula`, без него `--create-disk` печатает
+ссылки и завершается с кодом 2. Принятие (дата и URL соглашения) хранится в домене настроек и
+действует, пока URL соглашения в коде (`SteamOSLicense.eulaURL`) не изменится.
 
 1. `https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/<ветка>.json` → свежий
    кандидат (`update_path`, `chunks_store_path`).
@@ -473,3 +481,19 @@ Report ID (первые 8 знаков ID события). Не удалось �
   динамиках; микрофон заявлен, но не проверен.
 - Античиты, которые блокируют ВМ, не пройдут.
 - `logicOp` недоступен (приватный Metal API в форке MoltenVK не собирается); zink выдаёт предупреждение.
+
+## Лицензия (License)
+
+Код проекта — Apache License 2.0 (`LICENSE`), © 2026 FX GAMES FZ LLC. Исключения перечислены в
+`NOTICE`: патчи и конфигурация ядра Linux — GPL-2.0-only, патчи для virglrenderer и Mesa — MIT
+(как у этих проектов), четыре файла сессии gamescope, производные от пакета Valve
+`deckard-steamvr-session`, — MIT © Valve Corporation; сертификат CA Valve и скриншоты в `docs/media`
+лицензией проекта не покрываются. Тексты лицензий — в `LICENSES/`.
+
+SteamOS в проект не входит и с ним не распространяется: приложение скачивает подписанный образ
+с серверов Valve после того, как пользователь принял лицензию Valve (см. «Создание диска SteamOS
+без Docker»).
+
+Steam, логотип Steam, SteamOS, Steam Deck и Steam Frame — товарные знаки и/или зарегистрированные
+товарные знаки Valve Corporation в США и/или других странах. Проект не связан с Valve Corporation и
+не одобрен ею.

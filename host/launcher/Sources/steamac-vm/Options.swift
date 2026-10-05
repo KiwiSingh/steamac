@@ -67,6 +67,8 @@ struct Options {
     var createHomeGiB = DiskLayout.defaultHomeGiB
     var createPassword: String?
     var keepCache = false
+    /// --accept-eula: accept Valve's SteamOS EULA + Steam Subscriber Agreement (SteamOSLicense).
+    var acceptLicense = false
     var selftestProvision = false
     var referenceDisk: String?
     /// --ssh-password DISK: print the disk's generated guest password (GuestPassword) and exit.
@@ -93,7 +95,7 @@ struct Options {
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
            steamac-vm --create-disk PATH [--branch stable|rc|beta|preview|main] [--home-gib N]
-                      [--password PW] [--keep-cache]
+                      [--password PW] [--keep-cache] [--accept-eula]
            steamac-vm --ssh-password DISK
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
@@ -156,6 +158,10 @@ struct Options {
       --password PW        password of the guest user steamos (default: steamos for this dev launcher,
                            none in the release .app; "" = none)
       --keep-cache         keep the bundle and chunk cache after success
+      --accept-eula        accept Valve's End User License Agreement for SteamOS and Steam Client Back-Up
+                           Image (https://store.steampowered.com/steamos/download/?ver=steamframe) and the
+                           Steam Subscriber Agreement; required unless they were already accepted (Create
+                           SteamOS Disk window or an earlier --accept-eula), remembered afterwards
 
     SSH: --ssh-password DISK prints user, generated password and state (pending / applied) of DISK
     (the password Settings > Advanced shows; it exists once SSH was enabled for that disk).
@@ -300,6 +306,7 @@ struct Options {
             case "--home-gib": o.createHomeGiB = try int(a)
             case "--password": o.createPassword = try value(a)
             case "--keep-cache": o.keepCache = true
+            case "--accept-eula": o.acceptLicense = true
             case "--ssh-password": o.showSSHPassword = try value(a)
             case "--resize-selftest":
                 let v = try value(a)

@@ -61,6 +61,9 @@ fi
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")
 DMG_NAME="FX-Steam-Launcher-$version.dmg"
 mkdir -p "$DIST"
+GPL_SOURCES="$DIST/FX-Steam-Launcher-$version-gpl-sources.tar"
+"$ROOT/scripts/gpl-sources.sh"
+[[ -f $GPL_SOURCES ]] || die "source archive does not match app version $version"
 WORK="$DIST/.work.$$"
 rm -rf "$WORK"
 trap 'rm -rf "$WORK"' EXIT
@@ -138,6 +141,7 @@ rm -rf "$DIST/$NAME.app" "$DIST/$DMG_NAME"
 mv "$APP" "$DIST/$NAME.app"
 mv "$WORK/$DMG_NAME" "$DIST/$DMG_NAME"
 echo "built $DIST/$DMG_NAME ($(du -h "$DIST/$DMG_NAME" | cut -f1), sha256 $(shasum -a 256 "$DIST/$DMG_NAME" | cut -d' ' -f1))"
+echo "GPL sources: $GPL_SOURCES ($(du -h "$GPL_SOURCES" | cut -f1), sha256 $(shasum -a 256 "$GPL_SOURCES" | cut -d' ' -f1))"
 [[ $notarize == 1 ]] || echo "NOT notarized (--no-notarize): Gatekeeper blocks this DMG once downloaded"
 
 # Debug files for symbolicated crash reports (CrashReporting.swift). Never a hardcoded token.

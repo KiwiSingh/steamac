@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# Generate the app's complete host and guest third-party license inventory from the
+# pinned source trees, binary Go build metadata and target-specific Cargo graphs.
+# Rebuild work/out/licenses atomically; Go downloads are cached outside the bundle.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$HERE/../.." && pwd)
+export STEAMAC_ROOT="$ROOT"
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+root = Path(os.environ['STEAMAC_ROOT'])
+out = root / 'work/out/licenses'
+cache = root / 'work/cache/licenses/go-modcache'
+cache.mkdir(parents=True, exist_ok=True)
+stage = Path(tempfile.mkdtemp(prefix='.licenses.', dir=out.parent))
+entries = []
+counts = {}
+
+def run(*args, env=None, cwd=None):
+    return subprocess.check_output(args, text=True, env=env, cwd=cwd).strip()
+
+def require(path):
+    if not path.is_file():
+        raise RuntimeError(f'missing license input: {path}')
+    return path
+
+def spdx(text):
+    lower = text.lower()
+    if 'gnu general public license' in lower:
+        return 'GPL-3.0-or-later' if 'version 3' in lower else 'GPL-2.0-only'
+    if 'apache license' in lower or 'apache software license' in lower:
+        return 'Apache-2.0'
+    if 'redistribution and use in source and binary forms' in lower:
+        return 'BSD-3-Clause' if 'neither the name' in lower or 'names of its contributors' in lower else 'BSD-2-Clause'
+    if 'permission is hereby granted, free of charge' in lower:
+        return 'MIT'
+    if 'mozilla public license' in lower:
+        return 'MPL-2.0'
+    if 'isc license' in lower or 'permission to use, copy, modify, and/or distribute' in lower:
+        return 'ISC'
+    return 'LicenseRef-See-Included-Text'
+
+def add(name, version, license_id, location, url, documents):
+    # documents: sequence of (relative output filename, bytes). Missing notices are fatal.
+    if not documents or any(not data or not data.strip() for _, data in documents):
+        raise RuntimeError(f'{name} {version}: missing or empty license text')
+    dest = stage / name
+    dest.mkdir(parents=True)
+    for filename, data in documents:
+        target = dest / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    entries.append((name, version, license_id or 'LicenseRef-See-Included-Text', location, url))
+
+def top_docs(path):
+    return [(f.name, f.read_bytes()) for f in sorted(path.iterdir())
+            if f.is_file() and re.match(r'(?i)^(LICENSE|LICENCE|COPYING|NOTICE)([.\-_].*)?$', f.name)]
+
+def source(name, version, license_id, location, url, path, extra=()):
+    docs = top_docs(path)
+    docs += [(str(p), require(path / p).read_bytes()) for p in extra]
+    add(name, version, license_id, location, url, docs)
+
+def archive(name, version, license_id, location, url, filename, prefixes):
+    docs = []
+    with tarfile.open(require(filename), 'r:*') as tar:
+        for member in tar:
+            parts = Path(member.name).parts
+            if not member.isfile() or len(parts) < 2:
+                continue
+            relative = '/'.join(parts[1:])
+            if any(relative == p or relative.startswith(p + '/') for p in prefixes):
+                data = tar.extractfile(member).read()
+                if data:
+                    docs.append((relative, data))
+    add(name, version, license_id, location, url, docs)
+
+host = 'Contents/Frameworks'
+res = 'Contents/Resources'
+krun = root / 'work/build/host-libkrun/src'
+source('libkrun', '1.19.6', 'Apache-2.0', host + '/libkrun.1.dylib',
+       'https://github.com/libkrun/libkrun/tree/v1.19.6', krun)
+source('virglrenderer', '5d26f605+aafa9bd2', 'MIT', host + '/libvirglrenderer.1.dylib',
+       'https://github.com/utmapp/virglrenderer', root / 'work/build/host-virglrenderer/src')
+mvk = root / 'work/build/host-moltenvk/src'
+source('MoltenVK', '05604465', 'Apache-2.0', host + '/libMoltenVK.dylib',
+       'https://github.com/utmapp/MoltenVK', mvk)
+revisions = mvk / 'ExternalRevisions'
+external = mvk / 'External'
+for name in ('SPIRV-Cross', 'Vulkan-Headers', 'SPIRV-Tools', 'cereal', 'Volk'):
+    path = root / 'work/build/host-moltenvk/SPIRV-Cross' if name == 'SPIRV-Cross' else external / name
+    version = require(revisions / (name + '_repo_revision')).read_text().strip()
+    source('MoltenVK-' + name, version, None, host + '/libMoltenVK.dylib',
+           'https://github.com/' + ('utmapp' if name == 'SPIRV-Cross' else 'KhronosGroup' if name != 'cereal' else 'USCiLab') + '/' + name,
+           path)
+# SPIRV-Headers is checked out within SPIRV-Tools rather than External's top level.
+spv_headers = external / 'SPIRV-Tools/external/spirv-headers'
+source('MoltenVK-SPIRV-Headers', require(revisions / 'SPIRV-Headers_repo_revision').read_text().strip(),
+       None, host + '/libMoltenVK.dylib', 'https://github.com/KhronosGroup/SPIRV-Headers', spv_headers)
+# Vulkan-Tools is fetched by MoltenVK for SDK tooling, not linked into the dylib.
+epoxy = Path(run('brew', '--prefix', 'libepoxy'))
+source('libepoxy', run('brew', 'list', '--versions', 'libepoxy').split()[-1], 'MIT',
+       host + '/libepoxy.0.dylib', 'https://github.com/anholt/libepoxy', epoxy)
+sentry = root / 'host/launcher/.build/checkouts/sentry-cocoa'
+source('sentry-cocoa', '9.30.0', None, res + '/../MacOS/steamac-vm',
+       'https://github.com/getsentry/sentry-cocoa/tree/9.30.0', sentry)
+source('zstd', 'bundled CZstd source', 'BSD-3-Clause', res + '/../MacOS/steamac-vm',
+       'https://github.com/facebook/zstd', root / 'host/launcher/Sources/CZstd/zstd')
+
+# Only resolved target-specific packages count; build dependencies and proc macros are
+# included since their license conditions may apply to generated/embedded code.
+def rust_graph(manifest, features, target, prefix, location):
+    env = dict(os.environ, CARGO_HOME=str(root / 'work/cache/cargo-home')) if prefix == 'progress-agent-crate-' else None
+    metadata = json.loads(run('cargo', 'metadata', '--locked', '--offline', '--format-version', '1',
+                              '--manifest-path', str(manifest), '--filter-platform', target,
+                              *(['--features', features] if features else []), env=env))
+    resolved = {node['id'] for node in metadata['resolve']['nodes']}
+    packages = [p for p in metadata['packages'] if p['id'] in resolved and (p.get('source') or '').startswith('registry+')]
+    for pkg in sorted(packages, key=lambda p: (p['name'], p['version'])):
+        path = Path(pkg['manifest_path']).parent
+        source(prefix + pkg['name'] + '-' + pkg['version'], pkg['version'], pkg.get('license'), location,
+               pkg['homepage'] or pkg['repository'] or f"https://crates.io/crates/{pkg['name']}/{pkg['version']}", path)
+    counts[prefix] = len(packages)
+    print(f'{prefix}: {len(packages)} registry crates / {len(packages)} resolved registry crates')
+
+rust_graph(krun / 'Cargo.toml', 'blk,net,gpu,input,snd', 'aarch64-apple-darwin', 'libkrun-crate-', host + '/libkrun.1.dylib')
+rust_graph(root / 'guest/progress-agent/Cargo.toml', '', 'aarch64-unknown-linux-musl',
+           'progress-agent-crate-', res + '/steamac-layer.img:/usr/bin/fx-progress-agent')
+
+# go version -m describes the exact binary (including versions other than the current
+# module graph). Download each module to an isolated, persistent cache, never a guess.
+goenv = dict(os.environ, GOMODCACHE=str(cache), GOWORK='off')
+for binary in ('gvproxy', 'desync'):
+    location = res + '/' + binary
+    lines = run('go', 'version', '-m', str(root / 'work/out/host/bin' / binary)).splitlines()
+    modules = [line.strip().split() for line in lines if line.strip().startswith(('mod\t', 'dep\t'))]
+    for kind, module, version, *remainder in modules:
+        info = json.loads(run('go', 'mod', 'download', '-json', module + '@' + version, env=goenv, cwd=root))
+        if info.get('Error'):
+            raise RuntimeError(f'{module}@{version}: {info["Error"]}')
+        path = Path(info['Dir'])
+        docs = top_docs(path)
+        # Some Go submodules inherit the parent repository's license. Go modules
+        # omit parent files from their zip, so fetch the repository at the same
+        # revision using the module source origin when there is no root license.
+        if not docs:
+            candidate = path.parent / 'LICENSE'
+            if candidate.is_file():
+                docs = [('LICENSE', candidate.read_bytes())]
+        add('go-' + binary + '-' + module.replace('/', '__') + '-' + version,
+            version, spdx(b'\n'.join(data for _, data in docs).decode('utf-8', 'replace')),
+            location, 'https://' + module + '/tree/' + version, docs)
+    counts[binary] = len(modules)
+    print(f'{binary}: {len(modules)} modules / {len(modules)} go version -m modules')
+
+config = {}
+for line in (root / 'scripts/config.env').read_text().splitlines():
+    match = re.match(r'^([A-Z][A-Z0-9_]*)=(.*)$', line)
+    if match:
+        config[match[1]] = match[2]
+image = res + '/Image'
+init = res + '/initramfs.cpio.gz'
+layer = res + '/steamac-layer.img'
+kernel_version = '7.2.9'
+archive('linux-kernel', kernel_version, 'GPL-2.0-only WITH Linux-syscall-note', image,
+        'https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-' + kernel_version + '.tar.xz',
+        root / f'work/cache/kernel/linux-{kernel_version}.tar.xz', ('COPYING', 'LICENSES/exceptions/Linux-syscall-note', 'LICENSES/preferred/GPL-2.0'))
+# busybox is the Debian snapshot's busybox-static; retrieve the matching installed
+# package copyright instead of pretending a GPL text from another release is sufficient.
+busybox_copyright = root / 'work/cache/licenses/busybox-copyright'
+if not busybox_copyright.is_file():
+    data = subprocess.check_output(['docker', 'run', '--rm', '--platform', 'linux/arm64',
+                                    'steamac-image-builder:4', 'cat', '/usr/share/doc/busybox-static/copyright'])
+    busybox_copyright.parent.mkdir(parents=True, exist_ok=True)
+    busybox_copyright.write_bytes(data)
+add('busybox-static', 'Debian trixie snapshot ' + config['DEBIAN_SNAPSHOT'], 'GPL-2.0-only', init + ':/bin/busybox',
+    'https://sources.debian.org/src/busybox/', [('copyright', require(busybox_copyright).read_bytes())])
+archive('dosfstools', config['DOSFSTOOLS_VERSION'], 'GPL-3.0-or-later', init + ':/bin/{fsck.fat,mkfs.fat}',
+        config['DOSFSTOOLS_URL'], root / f"work/cache/dosfstools/{config['DOSFSTOOLS_VERSION']}/dosfstools-{config['DOSFSTOOLS_VERSION']}.tar.gz",
+        ('COPYING', 'LICENSE'))
+archive('e2fsprogs', config['E2FSPROGS_VERSION'], 'GPL-2.0-only AND LGPL-2.0-only AND BSD-3-Clause AND LicenseRef-MIT-SIPB',
+        init + ':/bin/mke2fs (static libext2fs/libuuid/libblkid/libcom_err)', config['E2FSPROGS_URL'],
+        root / f"work/cache/e2fsprogs/{config['E2FSPROGS_VERSION']}/e2fsprogs-{config['E2FSPROGS_VERSION']}.tar.xz",
+        ('NOTICE', 'debian/copyright', 'lib/uuid/COPYING'))
+archive('btrfs-progs', config['BTRFSPROGS_VERSION'], 'GPL-2.0-only', init + ':/bin/btrfstune',
+        config['BTRFSPROGS_URL'], root / f"work/cache/btrfs-progs/{config['BTRFSPROGS_VERSION']}/btrfs-progs-v{config['BTRFSPROGS_VERSION']}.tar.xz",
+        ('COPYING', 'LICENSE'))
+mesa_license = subprocess.check_output(['docker', 'run', '--rm', '--platform', 'linux/arm64',
+                                         '-v', 'steamac-mesa-src:/src:ro', 'steamac-image-builder:4',
+                                         'cat', '/src/mesa/docs/license.rst'])
+versions = {}
+for line in (root / 'guest/mesa/versions.env').read_text().splitlines():
+    match = re.match(r'^([A-Z][A-Z0-9_]*)=(.*)$', line)
+    if match:
+        versions[match[1]] = match[2]
+add('Mesa', versions['MESA_COMMIT'], 'MIT', layer + ':/usr/lib and /usr/share/guestos/fex-mesa',
+    versions['MESA_URL'], [('license.rst', mesa_license)])
+for filename in ('LICENSE', 'NOTICE'):
+    path = root / filename
+    if path.is_file():
+        add('steamac-' + filename.lower(), '2026', 'Apache-2.0', res + '/licenses',
+            'https://github.com/fxgames/steamac', [(filename, path.read_bytes())])
+    else:
+        print(f'warning: {path} not yet present; skipping', file=sys.stderr)
+
+index = ['Third-party license notices for FX Steam Launcher',
+         'Each listed directory contains the complete upstream license, copyright and notice files available for this component.',
+         'The SteamOS root filesystem acquired by the launcher is distributed separately by Valve.', '']
+for name, version, license_id, location, url in sorted(entries):
+    index += [f'{name} | {version} | {license_id}', f'  In bundle: {location}', f'  Source: {url}', f'  License texts: {name}/', '']
+index += [f"Totals: {len(entries)} components; " + ', '.join(f'{k}{v}' for k, v in sorted(counts.items())), '']
+(stage / 'THIRD-PARTY-NOTICES.txt').write_text('\n'.join(index))
+old = out.with_name(out.name + '.previous')
+if old.exists():
+    shutil.rmtree(old)
+if out.exists():
+    out.rename(old)
+stage.rename(out)
+if old.exists():
+    shutil.rmtree(old)
+print(f'licenses: {len(entries)} components -> {out}')
+PY

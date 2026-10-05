@@ -3,7 +3,7 @@ name = "fx-progress-agent"
 version = "1.0.0"
 edition = "2021"
 description = "steamac guest agent: reports SteamOS session / Steam client start progress and shutdown to the FX Steam Launcher overlay over the virtio-console port fx.progress"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
