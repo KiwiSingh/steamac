@@ -33,9 +33,10 @@
 #   MOLTENVK.txt                              provenance + enabled features
 # The dylib is first staged in work/build/host-moltenvk/stage and verified there: the probe in
 # probe/ (fails when a feature steamac depends on is missing) and the repros in repro/ (all of
-# gamescope 3.16.28's cs_*.comp pipelines + a pixel check; zink-style geometry shaders + pixel
-# checks; draws with a VK_NULL_HANDLE pipeline bound). Only then is it installed, by temp file +
-# rename (a running VM may have the old dylib mapped).
+# gamescope 3.16.28's cs_*.comp pipelines + a pixel check, also with robustBufferAccess2; zink-style
+# geometry shaders + pixel checks; draws with a VK_NULL_HANDLE pipeline bound; robustBufferAccess2
+# bounds; null set layouts and unsupported sample counts; ... see repro/run.sh). Only then is it
+# installed, by temp file + rename (a running VM may have the old dylib mapped).
 set -eu
 
 MVK_REPO=https://github.com/utmapp/MoltenVK.git
@@ -230,6 +231,12 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         from the residency set) after the queues' in-flight command buffers complete"
 	echo "         (semaphores signal before completion; DXVK frees chunks then: InvalidResource);"
 	echo "         batched: one empty marker command buffer per queue per 2 ms of destroys"
+	echo "  0023 = steamac: VK_NULL_HANDLE set layouts in pipeline layouts (independent sets, sent through"
+	echo "         Venus) act as empty set layouts (MVKPipelineLayout::Create dereferenced them: SIGSEGV)"
+	echo "  0024 = steamac: unsupported sample counts (8 on Apple GPUs) become the largest supported count in"
+	echo "         pipelines (rasterSampleCount), images and render pass attachments, with a warning"
+	echo "  0025 = steamac: the MSL of a failed shader library compile is written to stderr as '[mvk-msl] '"
+	echo "         lines (first 40 lines, +-5 lines around each error location) for the launcher's reports"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -261,6 +268,11 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         implicit position for stream-output-only GS, EmitStreamVertex stream 0)"
 	echo "  0017 = steamac: gl_WorkGroupSize declared for zero-initialized workgroup memory (DXVK compute"
 	echo "         shaders: 'use of undeclared identifier gl_WorkGroupSize')"
+	echo "  0018 = steamac: robustBufferAccess2 loads select against a zero of the logical type (packed and"
+	echo "         row-major matrices unpacked first: gamescope u_ctm[]; structs 'S{}'; arrays through a"
+	echo "         zeroed temporary), texture atomic_store() without '.x' and with the value first,"
+	echo "         bounds use the ArrayStride of the array type and the offset of a runtime array, and"
+	echo "         every use of a bounds-checked access chain is checked (read-modify-write stores)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

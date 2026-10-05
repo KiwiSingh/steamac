@@ -1,0 +1,10 @@
+#version 450
+// MSL that does not compile ("'double' is not supported in Metal"): MoltenVK logs the failing MSL as
+// "[mvk-msl] " lines after the error.
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Out { float o[]; };
+void main()
+{
+	double d = double(o[1]);
+	o[0] = float(d * d);
+}

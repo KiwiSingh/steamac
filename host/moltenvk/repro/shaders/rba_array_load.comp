@@ -1,0 +1,13 @@
+#version 450
+// robustBufferAccess2 load of a whole array from a buffer: arrays cannot be selected against a zero value,
+// the load goes to a temporary that is zeroed when out of bounds.
+layout(local_size_x = 1) in;
+struct S { float a[4]; };
+layout(set = 0, binding = 0, std430) readonly buffer In { S s[]; };
+layout(set = 0, binding = 1, std430) buffer Out { vec4 o[]; };
+layout(push_constant) uniform PC { uint idx; };
+void main()
+{
+	float a[4] = s[idx].a;
+	o[0] = vec4(a[0], a[1], a[2], a[3]);
+}

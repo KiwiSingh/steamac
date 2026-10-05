@@ -1,0 +1,13 @@
+#version 450
+#extension GL_KHR_memory_scope_semantics : require
+// Storage texel buffer atomic store (OpAtomicStore on an image texel pointer, DXVK typed UAVs). MSL texture
+// atomic_store() returns void and takes the value first: SPIRV-Cross emitted 'u0.atomic_store(3u, 0u).x'
+// ("member reference base type 'void' is not a structure or union").
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 3, r32ui) uniform uimageBuffer u0;
+layout(push_constant) uniform PC { uint idx; uint val; };
+void main()
+{
+	imageAtomicStore(u0, 3, val, gl_ScopeDevice, 0, gl_SemanticsRelaxed);
+	imageAtomicStore(u0, int(idx), val + 1u, gl_ScopeDevice, 0, gl_SemanticsRelaxed);
+}

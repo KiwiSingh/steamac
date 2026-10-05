@@ -6,7 +6,9 @@
 # 1. gamescope_cs.c: fetches gamescope 3.16.28 (pinned), compiles src/shaders/cs_*.comp with
 #    glslang like gamescope's meson build (glslangValidator -V) and creates every pipeline
 #    variant; cs_composite_blit must write the expected pixels from s_samplers[0] and from
-#    the Y'CbCr (NV12) array s_ycbcr_samplers[0]. Metal argument buffers stay on (default).
+#    the Y'CbCr (NV12) array s_ycbcr_samplers[0]. Metal argument buffers stay on (default). Run twice:
+#    as gamescope creates its device, and with robustBufferAccess + robustBufferAccess2 (bounds-checked
+#    MSL; the packed mat3x4 u_ctm[] select of the composite shaders failed to compile).
 # 2. geometry.c: shaders/ (zink-style passthrough geometry shader with gl_PrimitiveIDIn,
 #    list and strip draws) and draws/dispatches with a VK_NULL_HANDLE pipeline bound (what
 #    Venus replays when host pipeline creation failed).
@@ -22,6 +24,12 @@
 #    specialization-constant workgroup sizes), read back after a dispatch dirtied the memory.
 # 7. free_after_signal.c: memory freed after a timeline semaphore signalled while the command buffer
 #    that signalled it still runs (DXVK; Heroes Olden Era device loss).
+# 8. robust_access.c: robustBufferAccess2 MSL (texel buffer atomic store, struct/packed matrix/array
+#    loads, read-modify-write, runtime array after a header) with limited buffer ranges: in-bounds data,
+#    out-of-bounds zeros, out-of-bounds stores discarded.
+# 9. invalid_usage.c: VK_NULL_HANDLE set layouts in a pipeline layout (independent sets, from Venus) and
+#    rasterizationSamples 8 (not supported by Apple GPUs); then a pipeline whose MSL does not compile, whose
+#    MSL must be logged as "[mvk-msl] " lines on stderr.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -62,6 +70,7 @@ done
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/gamescope_cs.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/gamescope_cs"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv" robust2
 
 gspv=$work/geometry-spv
 rm -rf "$gspv"
@@ -99,3 +108,22 @@ glslangValidator -V --quiet -x "$here/shaders/busy.comp" -o "$work/busy.comp.inc
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$work" -I"$inc" "$here/free_after_signal.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/free_after_signal"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/free_after_signal"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/robust_access.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/robust_access"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/robust_access" "$gspv"
+
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/invalid_usage.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/invalid_usage"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv"
+# The failing MSL is logged after the error: the first lines, and the lines around the error location.
+msl_log=$work/msl-log.txt
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv" msl-log 2> "$msl_log"
+if grep -q '^\[mvk-msl\] #include <metal_stdlib>$' "$msl_log" && grep -q '^\[mvk-msl\] [0-9][0-9]*: .*double' "$msl_log"; then
+	echo "OK   failing MSL logged: $(grep -c '^\[mvk-msl\] ' "$msl_log") [mvk-msl] lines, error context:"
+	grep '^\[mvk-msl\] [0-9][0-9]*: ' "$msl_log"
+else
+	echo "FAIL failing MSL not logged as [mvk-msl] lines:"
+	cat "$msl_log"
+	exit 1
+fi

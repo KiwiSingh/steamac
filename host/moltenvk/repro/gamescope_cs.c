@@ -12,7 +12,11 @@
  *   - layer 0 from s_ycbcr_samplers[0]: a uniform NV12 image (Y=235, Cb=Cr=128 -> white)
  * The LUT bindings are null descriptors (gamescope's "no LUT" state, VK_EXT_robustness2).
  *
- *   gamescope_cs <dir with cs_*.spv>
+ *   gamescope_cs <dir with cs_*.spv> [robust2]
+ *
+ * robust2 also enables robustBufferAccess and VK_EXT_robustness2 robustBufferAccess2 (bounds-checked
+ * buffer accesses in the MSL; DXVK enables them, and gamescope's composite shaders failed to compile with
+ * them: the robust select of the packed mat3x4 u_ctm[] element).
  *
  * Exits non-zero if any pipeline fails to compile or a pixel is wrong.
  */
@@ -204,10 +208,13 @@ static void pattern(int x, int y, uint8_t px[4])
 
 int main(int argc, char **argv)
 {
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s <dir with cs_*.spv>\n", argv[0]);
+	if (argc != 2 && !(argc == 3 && !strcmp(argv[2], "robust2"))) {
+		fprintf(stderr, "usage: %s <dir with cs_*.spv> [robust2]\n", argv[0]);
 		return 2;
 	}
+	VkBool32 robust2 = argc == 3;
+	if (robust2)
+		printf("robustBufferAccess + robustBufferAccess2 enabled\n");
 
 	VkApplicationInfo app = {
 		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -222,6 +229,7 @@ int main(int argc, char **argv)
 
 	VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+		.robustBufferAccess2 = robust2,
 		.nullDescriptor = VK_TRUE,
 	};
 	VkPhysicalDeviceVulkan12Features v12 = {
@@ -234,7 +242,11 @@ int main(int argc, char **argv)
 		.pNext = &v12,
 		.samplerYcbcrConversion = VK_TRUE,
 	};
-	VkPhysicalDeviceFeatures2 f2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v11 };
+	VkPhysicalDeviceFeatures2 f2 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &v11,
+		.features = { .robustBufferAccess = robust2 },
+	};
 	const char *exts[] = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME };
 	float prio = 1.0f;
 	VkDeviceQueueCreateInfo qci = {

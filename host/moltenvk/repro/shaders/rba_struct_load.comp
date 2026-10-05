@@ -1,0 +1,18 @@
+#version 450
+// robustBufferAccess2 load of a struct from a runtime array (Slang's _MatrixStorage_float4x4_ColMajor*
+// matrix wrappers): the out-of-bounds value was 'MatStorage(0)' ("no matching conversion for
+// functional-style cast from 'int'"), and the bound used a 4-byte stride instead of the 64-byte ArrayStride.
+layout(local_size_x = 1) in;
+struct MatStorage { vec4 data[4]; };
+layout(set = 0, binding = 0, std430) readonly buffer In { MatStorage bones[]; } cb;
+layout(set = 0, binding = 1, std430) buffer Out { vec4 o[]; };
+layout(push_constant) uniform PC { uint idx; };
+void main()
+{
+	MatStorage m = cb.bones[idx];
+	mat4 b = mat4(m.data[0], m.data[1], m.data[2], m.data[3]);
+	o[0] = b[0];
+	o[1] = b[1];
+	o[2] = b[2];
+	o[3] = b[3];
+}

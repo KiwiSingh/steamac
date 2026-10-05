@@ -1,0 +1,85 @@
+; robustBufferAccess2: a read-modify-write through ONE access chain (as optimized SPIR-V and DXVK emit it)
+; must discard the out-of-bounds store: the bounds check was only applied to the first use of the access
+; chain (the load), the store went to the clamped last element. And a runtime array after a header is
+; bounded by (size - offset) / stride. glslang output of (with %24 folded into %21):
+;   #version 450
+;   layout(local_size_x = 1) in;
+;   layout(set = 0, binding = 0, std430) readonly buffer In { uint head; float f[]; } inb;
+;   layout(set = 0, binding = 1, std430) buffer Out { vec4 o[]; };
+;   layout(set = 0, binding = 4, std430) buffer Rmw { uint r[]; };
+;   layout(push_constant) uniform PC { uint idx; };
+;   void main()
+;   {
+;   	r[idx] += 1u;
+;   	o[0] = vec4(inb.f[idx], 0.0, 0.0, 0.0);
+;   }
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %4 "main"
+               OpExecutionMode %4 LocalSize 1 1 1
+               OpDecorate %7 ArrayStride 4
+               OpDecorate %8 BufferBlock
+               OpMemberDecorate %8 0 Offset 0
+               OpDecorate %10 Binding 4
+               OpDecorate %10 DescriptorSet 0
+               OpDecorate %13 Block
+               OpMemberDecorate %13 0 Offset 0
+               OpDecorate %27 ArrayStride 16
+               OpDecorate %28 BufferBlock
+               OpMemberDecorate %28 0 Offset 0
+               OpDecorate %30 Binding 1
+               OpDecorate %30 DescriptorSet 0
+               OpDecorate %31 ArrayStride 4
+               OpDecorate %32 BufferBlock
+               OpMemberDecorate %32 0 NonWritable
+               OpMemberDecorate %32 0 Offset 0
+               OpMemberDecorate %32 1 NonWritable
+               OpMemberDecorate %32 1 Offset 4
+               OpDecorate %34 NonWritable
+               OpDecorate %34 Binding 0
+               OpDecorate %34 DescriptorSet 0
+          %2 = OpTypeVoid
+          %3 = OpTypeFunction %2
+          %6 = OpTypeInt 32 0
+          %7 = OpTypeRuntimeArray %6
+          %8 = OpTypeStruct %7
+          %9 = OpTypePointer Uniform %8
+         %10 = OpVariable %9 Uniform
+         %11 = OpTypeInt 32 1
+         %12 = OpConstant %11 0
+         %13 = OpTypeStruct %6
+         %14 = OpTypePointer PushConstant %13
+         %15 = OpVariable %14 PushConstant
+         %16 = OpTypePointer PushConstant %6
+         %19 = OpConstant %6 1
+         %20 = OpTypePointer Uniform %6
+         %25 = OpTypeFloat 32
+         %26 = OpTypeVector %25 4
+         %27 = OpTypeRuntimeArray %26
+         %28 = OpTypeStruct %27
+         %29 = OpTypePointer Uniform %28
+         %30 = OpVariable %29 Uniform
+         %31 = OpTypeRuntimeArray %25
+         %32 = OpTypeStruct %6 %31
+         %33 = OpTypePointer Uniform %32
+         %34 = OpVariable %33 Uniform
+         %35 = OpConstant %11 1
+         %38 = OpTypePointer Uniform %25
+         %41 = OpConstant %25 0
+         %43 = OpTypePointer Uniform %26
+          %4 = OpFunction %2 None %3
+          %5 = OpLabel
+         %17 = OpAccessChain %16 %15 %12
+         %18 = OpLoad %6 %17
+         %21 = OpAccessChain %20 %10 %12 %18
+         %22 = OpLoad %6 %21
+         %23 = OpIAdd %6 %22 %19
+               OpStore %21 %23
+         %39 = OpAccessChain %38 %34 %35 %18
+         %40 = OpLoad %25 %39
+         %42 = OpCompositeConstruct %26 %40 %41 %41 %41
+         %44 = OpAccessChain %43 %30 %12 %12
+               OpStore %44 %42
+               OpReturn
+               OpFunctionEnd

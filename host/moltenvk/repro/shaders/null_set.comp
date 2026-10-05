@@ -1,0 +1,9 @@
+#version 450
+// Uses only set 1: the pipeline layout has VK_NULL_HANDLE for set 0 (graphics pipeline library style
+// independent sets, sent through Venus).
+layout(local_size_x = 1) in;
+layout(set = 1, binding = 0, std430) buffer Out { uint o[]; };
+void main()
+{
+	o[0] = 42u;
+}

@@ -1,0 +1,15 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+// robustBufferAccess2 load of a packed matrix from an array in a scalar block (gamescope's composite shaders:
+// 'vec4(color, 1) * u_ctm[colorspaceLayerIdx]'): the select mixed the packed_float3x4 element with
+// float3x4(0) ("incompatible operand types"). Column-major and row-major (transposed) storage.
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 2, scalar) uniform U { vec2 pad; mat3x4 ctm[4]; };
+layout(set = 0, binding = 5, scalar, row_major) uniform R { vec2 rpad; mat3x4 rm[4]; };
+layout(set = 0, binding = 1, std430) buffer Out { vec4 o[]; };
+layout(push_constant) uniform PC { uint idx; };
+void main()
+{
+	o[0] = vec4(vec4(1.0, 2.0, 3.0, 4.0) * ctm[idx], 0.0);
+	o[1] = vec4(vec4(1.0, 2.0, 3.0, 4.0) * rm[idx], 0.0);
+}
