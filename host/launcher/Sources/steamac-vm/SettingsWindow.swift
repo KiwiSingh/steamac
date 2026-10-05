@@ -600,6 +600,9 @@ private struct PadTestView: View {
                     HStack(spacing: 4) {
                         Dot("View", pad.buttonOptions?.isPressed ?? false); Dot("Home", pad.buttonHome?.isPressed ?? false)
                         Dot("Menu", pad.buttonMenu.isPressed)
+                        if let touchpad = GamepadBridge.touchpadButton(of: pad) {
+                            Dot("Touchpad", touchpad.isPressed)
+                        }
                     }
                 }
                 VStack(spacing: 2) {

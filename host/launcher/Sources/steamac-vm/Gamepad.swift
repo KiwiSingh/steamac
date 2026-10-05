@@ -18,7 +18,7 @@ final class GamepadBridge {
     private var layout: Layout { device.ids.vendor == 0x054c ? .playstation : .standard }
     private var deviceButtons: [UInt16] { Self.buttons(for: layout) }
     static func buttons(for layout: Layout) -> [UInt16] {
-        layout == .playstation ? buttonCodes + [BTN.TL2, BTN.TR2] : buttonCodes
+        layout == .playstation ? buttonCodes + [BTN.TL2, BTN.TR2, BTN.TOUCHPAD] : buttonCodes
     }
 
     struct PadState: Equatable {
@@ -125,7 +125,10 @@ final class GamepadBridge {
             }
         }
         if next === controller { return }
-        controller?.extendedGamepad?.valueChangedHandler = nil
+        if let old = controller?.extendedGamepad {
+            Self.touchpadButton(of: old)?.valueChangedHandler = nil
+            old.valueChangedHandler = nil
+        }
         controller = next
         // Release everything the previous controller held.
         apply(PadState(buttons: Dictionary(uniqueKeysWithValues: deviceButtons.map { ($0, false) }),
@@ -139,6 +142,10 @@ final class GamepadBridge {
         pad.buttonHome?.preferredSystemGestureState = .disabled
         pad.buttonOptions?.preferredSystemGestureState = .disabled
         pad.buttonMenu.preferredSystemGestureState = .disabled
+        Self.touchpadButton(of: pad)?.preferredSystemGestureState = .disabled
+        Self.touchpadButton(of: pad)?.valueChangedHandler = { [weak self] _, _, _ in
+            self?.refresh()
+        }
         pad.valueChangedHandler = { [weak self] pad, _ in self?.update(from: pad) }
         update(from: pad)
     }
@@ -165,6 +172,12 @@ final class GamepadBridge {
         return (x * scale, y * scale)
     }
 
+    static func touchpadButton(of pad: GCExtendedGamepad) -> GCControllerButtonInput? {
+        if let sony = pad as? GCDualSenseGamepad { return sony.touchpadButton }
+        if let sony = pad as? GCDualShockGamepad { return sony.touchpadButton }
+        return nil
+    }
+
     static func read(_ p: GCExtendedGamepad, swapABXY: Bool, deadzone: Float, layout: Layout = .standard) -> PadState {
         var s = PadState()
         let (south, east) = swapABXY ? (p.buttonB, p.buttonA) : (p.buttonA, p.buttonB)
@@ -177,6 +190,7 @@ final class GamepadBridge {
             s.buttons[BTN.EAST] = south.isPressed
             s.buttons[BTN.NORTH] = east.isPressed
             s.buttons[BTN.WEST] = north.isPressed
+            s.buttons[BTN.TOUCHPAD] = touchpadButton(of: p)?.isPressed ?? false
             s.buttons[BTN.TL2] = p.leftTrigger.isPressed
             s.buttons[BTN.TR2] = p.rightTrigger.isPressed
         } else {
