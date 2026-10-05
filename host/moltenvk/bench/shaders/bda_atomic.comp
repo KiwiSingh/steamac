@@ -1,0 +1,23 @@
+#version 450
+// Atomics on vector components through a buffer device address (vkd3d-proton's region counter pattern):
+// 16 atomicAdd per invocation on .x of gathered elements. Did not compile before SPIRV-Cross 0019.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430) buffer data_t {
+	uvec4 v[];
+};
+
+layout(push_constant) uniform pc_t {
+	data_t p;
+	uint mask;
+};
+
+void main()
+{
+	uint id = gl_GlobalInvocationID.x;
+	for (uint k = 0u; k < 16u; k++)
+		atomicAdd(p.v[(id + k * 4099u) & mask].x, 1u);
+}

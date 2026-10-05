@@ -1,4 +1,4 @@
-From 1a9606f688211bf77d3f2811a90bb572688878d6 Mon Sep 17 00:00:00 2001
+From d618f69f0c5a6b6beac5a7917a6cfd0216f82e97 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Mon, 5 Oct 2026 20:50:00 +0300
 Subject: [PATCH 28/28] Transform feedback queries
@@ -35,7 +35,7 @@ DXVK's D3D11 stream-output statistics queries failed.
  11 files changed, 212 insertions(+), 15 deletions(-)
 
 diff --git a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
-index acaa913..fda147f 100644
+index acaa913..20cb2b5 100644
 --- a/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
 +++ b/MoltenVK/MoltenVK/Commands/MVKCmdDraw.mm
 @@ -21,6 +21,7 @@
@@ -57,8 +57,8 @@ index acaa913..fda147f 100644
 +		state.bindBuffer(mtlScanEncoder, cmdEncoder->_xfbQueryPool->getResultsMTLBuffer(),
 +						 MVKTransformFeedbackQueryPool::getResultOffset(cmdEncoder->_xfbQuery), 3);
 +	} else {
-+		const MVKMTLBufferAllocation* noQuery = cmdEncoder->getTempMTLBuffer(2 * sizeof(uint64_t), true);
-+		state.bindBuffer(mtlScanEncoder, noQuery->_mtlBuffer, noQuery->_offset, 3);
++		// Not accessed with vertsPerPrim 0, but every buffer argument must be bound.
++		state.bindBuffer(mtlScanEncoder, session->_mtlBuffer, session->_offset, 3);
 +	}
 +	state.bindStructBytes(mtlScanEncoder, &vertsPerPrim, 4);
  	NSUInteger tgSize = std::min<NSUInteger>(1024, mtlScanState.maxTotalThreadsPerThreadgroup);

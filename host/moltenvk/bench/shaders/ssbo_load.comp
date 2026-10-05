@@ -1,0 +1,22 @@
+#version 450
+// Reference for bda_load.comp: the same accesses through a storage buffer descriptor (SSBO components go
+// through a scalar pointer in MSL; unchanged by our patches).
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) buffer data_t {
+	uvec4 v[];
+};
+
+layout(push_constant) uniform pc_t {
+	uvec2 unused;	// Same layout as bda_load.comp's pointer
+	uint mask;
+};
+
+void main()
+{
+	uint id = gl_GlobalInvocationID.x;
+	uint sum = 0u;
+	for (uint k = 0u; k < 256u; k++)
+		sum += v[(id + k * 4099u) & mask].y;
+	v[id & mask].w = sum;
+}
