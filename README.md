@@ -157,3 +157,9 @@ Choose **Switch to Desktop** in Steam, then **Return to Gaming Mode** on the Pla
 Discover-installed apps such as Chromium and Vesktop use Flatpak. Builds before `v1.2.3-preview.1` could show a loading icon and then exit with `bwrap: Can't mount proc on /newroot/proc: Operation not permitted`. The new guest layer mounts an intact procfs at `/run/steamac/proc`, allowing application sandboxes to create their own procfs while SteamOS keeps its synthesized `/proc/cmdline`. It preserves Flatpak’s sandbox rather than disabling it.
 
 Upgrade the app while SteamOS is shut down, then reboot your existing image. No SteamOS download or game reinstall is needed. The fix has been tested on the owner’s Steam Frame image; other image revisions and every Flatpak application remain unverified. Local account/password changes are personal VM state and are not bundled in releases.
+
+### Steam presence with Vesktop
+
+For an existing, configured [steam-presence](https://github.com/JustTemmie/steam-presence) installation, run `steamac-install-steam-presence /path/to/steam-presence` inside SteamOS as your desktop user. This opt-in command enables its user service. Discord or Vesktop must be running with Rich Presence enabled; Steam must report an active game for a game status to appear.
+
+The runner waits for Discord IPC and searches both Gaming Mode and the isolated Desktop Mode runtime, including Vesktop's Flatpak directory. It retries if the process exits during a session change. Configuration and API keys stay in your personal installation; the launcher does not bundle them or install steam-presence automatically. Keep the project directory in a permanent location because the service references it directly.

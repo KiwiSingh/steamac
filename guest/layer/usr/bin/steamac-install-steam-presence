@@ -1,0 +1,32 @@
+#!/bin/sh
+# Opt-in: install startup for an already configured steam-presence checkout.
+set -eu
+if [ "$(id -u)" = 0 ]; then
+    echo 'Run as your SteamOS desktop user, without sudo.' >&2
+    exit 1
+fi
+project=$(realpath "${1:?Usage: steamac-install-steam-presence PROJECT_DIRECTORY}")
+[ -f "$project/config.json" ] && [ -f "$project/main.py" ] && [ -x "$project/venv/bin/python" ]
+case "$project" in *'"'*|*'%'*|*'\'*) echo 'Unsupported characters in project path.' >&2; exit 1;; esac
+runner=${STEAMAC_PRESENCE_RUNNER:-/usr/lib/steamac/steam-presence-runner.py}
+local_runner="$HOME/.local/lib/steamac/steam-presence-runner.py"
+mkdir -p "$(dirname "$local_runner")" "$HOME/.config/systemd/user"
+if [ "$(realpath "$runner")" != "$(realpath -m "$local_runner")" ]; then
+    cp "$runner" "$local_runner"
+fi
+cat > "$HOME/.config/systemd/user/steam-presence.service" <<EOF
+[Unit]
+Description=Steam presence with Steamac desktop Discord discovery
+[Service]
+ExecStart="$project/venv/bin/python" -u "$local_runner" "$project"
+Restart=always
+RestartSec=10
+Nice=19
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths="$project"
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now steam-presence.service
