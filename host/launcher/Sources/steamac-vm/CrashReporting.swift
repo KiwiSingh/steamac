@@ -331,6 +331,8 @@ enum CrashReporting {
             "gpu": MTLCreateSystemDefaultDevice()?.name ?? "none",
             "vm_cpus": String(options.cpus),
             "vm_mem_mib": String(options.memMiB),
+            "vm_cpus_auto": String(options.cpusSource == .auto),
+            "vm_mem_auto": String(options.memSource == .auto),
             "build_kind": buildKind.rawValue,
         ]
         if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacMVKPatchRevision") as? String { t["mvk_patch"] = rev }
@@ -409,7 +411,8 @@ enum CrashReporting {
         try? FileManager.default.removeItem(atPath: dir + "/sentry-tags.json")
         let run = locked { tags["run"] } ?? String(format: "%08x", arc4random())
         env[runIdEnv] = run
-        setTags(["run": run, "boot": String(boot), "vm_cpus": String(o.cpus), "vm_mem_mib": String(o.memMiB)])
+        setTags(["run": run, "boot": String(boot), "vm_cpus": String(o.cpus), "vm_mem_mib": String(o.memMiB),
+                 "vm_cpus_auto": String(o.cpusSource == .auto), "vm_mem_auto": String(o.memSource == .auto)])
         memoryWatch.reset()
         followSetting()
     }
@@ -609,7 +612,8 @@ enum CrashReporting {
     /// SDK sent it and any crash report left by an earlier VM process). `--sentry-test-crash
     /// MODE`: the VM process crashes right away (abort | segv | metal), dies by SIGKILL (kill: a
     /// "VM process killed" report) or SIGTERM (term: none), logs a sample shader compile failure
-    /// (shader), or (panic) boots with a kernel command line longer than libkrun's 2048-byte
+    /// (shader) or a guest GPU teardown then one real device loss (gpu-teardown: one report, the
+    /// device loss), or (panic) boots with a kernel command line longer than libkrun's 2048-byte
     /// limit: `Cmdline::insert_str().unwrap()` panics inside krun_start_enter, and a panic cannot
     /// unwind out of the extern "C" function, so Rust aborts the process.
     static func runTests(_ options: inout Options) {
@@ -699,6 +703,27 @@ enum CrashReporting {
         }
         log("selftest-settings: scrub check: \(checked.joined(separator: ", ")) names: "
             + (failures.isEmpty ? "all redacted" : failures.joined(separator: "; ")))
+        return failures
+    }
+
+    /// Settings self-test: a guest process's GPU teardown (STEAMAC-G) and the bystander lines after
+    /// it produce no finding, also after a pause or the VM process's end; each real fatal line one.
+    static func scannerSelfCheck() -> [String] {
+        var failures: [String] = []
+        var scanner = LineScanner()
+        var found = LineScanner.teardownSample.flatMap { scanner.feed($0) }
+        found += scanner.flushPending()
+        if !found.isEmpty { failures.append("scanner: teardown reported: \(found.map(\.message))") }
+        for line in LineScanner.fatalSample {
+            var s = LineScanner()
+            let f = (LineScanner.teardownSample + [line]).flatMap { s.feed($0) } + s.flushPending()
+            if f.count != 1 || f.first?.kind != .gpuContextFatal || f.first?.message.hasSuffix(line) != true {
+                failures.append("scanner: \(f.count) findings for \(line)")
+            }
+        }
+        log("selftest-settings: scanner check: \(LineScanner.teardownSample.count) teardown lines → no report, "
+            + "\(LineScanner.fatalSample.count) fatal lines → one report each: "
+            + (failures.isEmpty ? "ok" : failures.joined(separator: "; ")))
         return failures
     }
 
@@ -847,9 +872,8 @@ enum CrashReporting {
 /// Error patterns in the supervisor's stderr stream (both processes). Multi-line messages
 /// (MoltenVK compile errors, Rust panics) collect their continuation lines first. virglrenderer's
 /// "pipeline N creation failed on host" is no report of its own (a breadcrumb only): the
-/// MoltenVK error before it carries the details. A resource destroyed while its context still
-/// uses it waits for the next lines: when the context itself goes right after, that was a guest
-/// process exiting, not a lost device (see `destroyCandidate`).
+/// MoltenVK error before it carries the details. Neither are a guest process's teardown
+/// (`isTeardown`) and the lines of other threads that stop after it (`isBystander`).
 private struct LineScanner {
     struct Finding {
         let kind: CrashReporting.Kind
@@ -865,34 +889,14 @@ private struct LineScanner {
 
     private var pending: (kind: CrashReporting.Kind, header: String, lines: [String], msl: [String])?
     private var multiSerial: Int?
-    /// virglrenderer (patch 0010) logs "resource N destroyed while ring R uses it (CS error)" /
-    /// "… while the context replies into it (CS error)" and makes the context fatal. A guest
-    /// process that exits frees its ring buffers before its context goes ("vkr: destroying
-    /// context N"): Steam's gldriverquery probe does that on every start. So the line waits;
-    /// "destroying context" within `teardownLines` lines drops it, any other sign of the fatal
-    /// state, more lines or a pause (flushPending) report it.
-    private var destroyCandidate: (line: String, serial: Int, lines: Int)?
-    private static let teardownLines = 12
-    /// Newest open message (multi-line or waiting); CrashReporting reports it after a pause.
-    var pendingSerial: Int? { [multiSerial, destroyCandidate?.serial].compactMap { $0 }.max() }
+    /// Newest multi-line message still open; CrashReporting reports it after a pause.
+    var pendingSerial: Int? { multiSerial }
     private var serial = 0
     /// Last launcher error line (`[steamac-vm] error: …`), for VM exit reports.
     private(set) var lastError: String?
 
     mutating func feed(_ line: String) -> [Finding] {
         var out: [Finding] = []
-        if var c = destroyCandidate {
-            if line.contains("vkr: destroying context") {
-                destroyCandidate = nil   // the owning guest process exited
-            } else if line.contains("went fatal") || (Self.isGPUFatal(line) && !Self.isDestroyCSError(line))
-                        || c.lines >= Self.teardownLines {
-                destroyCandidate = nil
-                out.append(gpuFatal(c.line))
-            } else {
-                c.lines += 1
-                destroyCandidate = c
-            }
-        }
         if var p = pending {
             if p.kind == .pipelineCompile && line.hasPrefix(Self.mslPrefix) {
                 if p.msl.count < 120 { p.msl.append(String(line.dropFirst(Self.mslPrefix.count))) }
@@ -916,11 +920,8 @@ private struct LineScanner {
         } else if line.contains("failed assertion") || line.contains("panicked at") || line.hasPrefix("Fatal error: ") {
             lastError = String(line.prefix(300))
         }
-        if Self.isDestroyCSError(line) {
-            if destroyCandidate == nil {
-                serial += 1
-                destroyCandidate = (line, serial, 0)
-            }
+        if Self.isTeardown(line) || Self.isBystander(line) {
+            // breadcrumb only
         } else if Self.isGPUFatal(line) {
             out.append(gpuFatal(line))
         } else if line.hasPrefix("[mvk-error]") && line.contains("compile failed") {
@@ -931,17 +932,11 @@ private struct LineScanner {
         return out
     }
 
-    /// The open messages — a multi-line message still collecting lines, a destroyed-resource CS
-    /// error still waiting for its context — (the VM process ended), or only the one `serial`
-    /// names (a pause after it).
+    /// The open multi-line message (the VM process ended), or only if `serial` names it (a pause
+    /// after it).
     mutating func flushPending(serial only: Int? = nil) -> [Finding] {
-        var out: [Finding] = []
-        if let c = destroyCandidate, only == nil || only == c.serial {
-            destroyCandidate = nil
-            out.append(gpuFatal(c.line))
-        }
-        if pending != nil, only == nil || only == multiSerial { out.append(finish()) }
-        return out
+        guard pending != nil, only == nil || only == multiSerial else { return [] }
+        return [finish()]
     }
 
     private static func isGPUFatal(_ line: String) -> Bool {
@@ -950,9 +945,50 @@ private struct LineScanner {
             || line.contains("VK_ERROR_DEVICE_LOST")
     }
 
-    private static func isDestroyCSError(_ line: String) -> Bool {
+    /// virglrenderer (patch 0010): "resource N destroyed while ring R uses it (CS error)" /
+    /// "… destroyed while the context replies into it (CS error)". Only a guest process tearing
+    /// down frees a ring's or reply buffer's resource while the context still uses it: Steam's
+    /// gldriverquery / d3ddriverquery probes on every start, a game exiting, fossilize_replay
+    /// killed when the user skips Steam's shader processing (STEAMAC-G, 2026-10-05 16:09:54).
+    /// The context dies with its process; nothing is lost for anyone else.
+    static func isTeardown(_ line: String) -> Bool {
         line.contains("CS error")
             && (line.contains(" destroyed while ring ") || line.contains(" destroyed while the context replies into it"))
+    }
+
+    /// virglrenderer (patch 0010): another thread of a context that went fatal stops
+    /// ("<command> stopped: the context went fatal on another thread", "…submit_cmd: stopping,
+    /// the context went fatal on another thread"); the thread that raised it logs its own line.
+    static func isBystander(_ line: String) -> Bool {
+        line.contains("went fatal on another thread")
+    }
+
+    /// STEAMAC-G 2026-10-05 16:09:54: the user skipped Steam's shader processing (fossilize_replay
+    /// killed), then a pipeline compile of the same context stopped; earlier, the driver probes
+    /// exiting at Steam start. None of it is a report.
+    static let teardownSample: [String] = [
+        "vkr: resource 122 destroyed while ring 187651012771488 uses it (CS error)",
+        "server: socket disconnected",
+        "vkr: destroying context 17 (gldriverquery) with a valid instance",
+        "vkr: destroying device with valid objects",
+        "vkr: resource 416 destroyed while ring 187650921533472 uses it (CS error)",
+        "vkr: resource 429 destroyed while ring 281472897937072 uses it (CS error)",
+        "vkr: resource 77 destroyed while the context replies into it (CS error)",
+        "vkr: vkCreateGraphicsPipelines stopped: the context went fatal on another thread",
+        "vkr: ring_submit_cmd: stopping, the context went fatal on another thread",
+    ].map(LineScanner.virglLine)
+
+    /// Lines that stay reports (one each).
+    static let fatalSample: [String] = [
+        "[mvk-error] VK_ERROR_OUT_OF_DEVICE_MEMORY: Lost VkDevice after MTLCommandBuffer \"vkQueueSubmit MTLCommandBuffer on Queue 0-0\" "
+            + "execution failed (code 8): Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)",
+        LineScanner.virglLine("vkr: vkFreeMemory resulted in CS error"),
+        LineScanner.virglLine("vkr: ring_submit_cmd: vn_dispatch_command failed"),
+        LineScanner.virglLine("vkr: fatal decoder state"),
+    ]
+
+    static func virglLine(_ text: String) -> String {
+        "[2026-10-05T16:09:54.208470Z WARN  krun_rutabaga_gfx::virgl_renderer] virglrenderer: " + text
     }
 
     private func gpuFatal(_ line: String) -> Finding {
@@ -1245,8 +1281,10 @@ private final class MemoryWatch: @unchecked Sendable {
 }
 
 /// `--sentry-test-crash MODE` (VM process): crash inside C / Metal / libkrun code, die by a signal
-/// (kill: SIGKILL, term: SIGTERM, no report), or (shader) log a MoltenVK shader compile failure
-/// with its MSL source and vkr's pipeline line, then exit normally.
+/// (kill: SIGKILL, term: SIGTERM, no report), (shader) log a MoltenVK shader compile failure
+/// with its MSL source and vkr's pipeline line, or (gpu-teardown) log STEAMAC-G's guest process
+/// teardown, wait past the supervisor's pause flush, then log an out-of-memory device loss: the
+/// teardown must stay breadcrumbs, the device loss is the run's only report. Then exit normally.
 private enum TestCrash {
     static func run(_ mode: String) -> Never {
         switch mode {
@@ -1256,6 +1294,16 @@ private enum TestCrash {
             signal(SIGTERM, SIG_DFL)
             kill(getpid(), SIGTERM)
             Thread.sleep(forTimeInterval: 1)
+        case "gpu-teardown":
+            func emit(_ lines: [String]) {
+                let text = lines.joined(separator: "\n") + "\n"
+                text.withCString { _ = write(STDERR_FILENO, $0, strlen($0)) }
+            }
+            emit(LineScanner.teardownSample)
+            Thread.sleep(forTimeInterval: 4.5)   // past the 3 s pause after which open messages are reported
+            emit([LineScanner.fatalSample[0] + " (sentry test)"])
+            Thread.sleep(forTimeInterval: 0.5)
+            exit(0)
         case "shader":
             let source = (1...60).map { "[mvk-msl] // sentry test MSL line \($0)" }
                 + ["[mvk-msl] ... (60 lines total)", "[mvk-msl] 12: // sentry test MSL line 12"]

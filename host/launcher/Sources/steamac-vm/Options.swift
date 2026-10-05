@@ -21,8 +21,11 @@ struct Options {
     var initrd: String?
     var cmdline = "console=hvc0 loglevel=4 rootwait"
     var disks: [DiskSpec] = []
-    var cpus = 8
-    var memMiB = 16384
+    /// Settings > Advanced, --cpus / --mem, else automatic for this Mac (VMSizing; applySettings).
+    var cpus = VMSizing.autoCPUs(.current)
+    var memMiB = VMSizing.autoMemMiB(.current)
+    var cpusSource = VMSizing.Source.auto
+    var memSource = VMSizing.Source.auto
     var displayWidth = 1280
     var displayHeight = 800
     var refreshRate = 60
@@ -107,8 +110,10 @@ struct Options {
       --initrd PATH        initramfs
       --cmdline STR        kernel command line (default: "console=hvc0 loglevel=4 rootwait")
       --disk PATH[:ro]     raw virtio-blk disk; repeatable, order = vda, vdb, ...
-      --cpus N             vCPUs (default 8)
-      --mem MiB            guest RAM (default 16384)
+      --cpus N             vCPUs (default: Settings > Advanced, automatic = this Mac's performance
+                           cores, 2..8)
+      --mem MiB            guest RAM (default: Settings > Advanced, automatic = half this Mac's RAM,
+                           4096..16384; the GPU's memory comes from the same RAM)
       --display WxH        initial virtio-gpu display size (default 1280x800); afterwards the guest
                            display follows the window: content size in points = guest pixels (even,
                            min 800x500, max 4094), applied when a resize / fullscreen switch ends
@@ -289,8 +294,8 @@ struct Options {
             case "--sentry-test-event": o.sentryTestEvent = true
             case "--sentry-test-crash":
                 let v = try value(a)
-                guard ["abort", "segv", "metal", "panic", "kill", "term", "shader"].contains(v) else {
-                    throw OptionError("--sentry-test-crash: abort, segv, metal, panic, kill, term or shader")
+                guard ["abort", "segv", "metal", "panic", "kill", "term", "shader", "gpu-teardown"].contains(v) else {
+                    throw OptionError("--sentry-test-crash: abort, segv, metal, panic, kill, term, shader or gpu-teardown")
                 }
                 o.sentryTestCrash = v
             case "--selftest-display": o.selftestDisplay = true
@@ -365,8 +370,26 @@ struct Options {
     mutating func applySettings(_ s: LauncherSettings) -> [LauncherSettings.Key: String] {
         var ov: [LauncherSettings.Key: String] = [:]
         func given(_ flag: String) -> Bool { explicit.contains(flag) }
-        if given("--cpus") { ov[.cpus] = "--cpus \(cpus)" } else { cpus = min(255, max(1, s.cpus)) }
-        if given("--mem") { ov[.memMiB] = "--mem \(memMiB)" } else { memMiB = max(1024, s.memMiB) }
+        if given("--cpus") {
+            ov[.cpus] = "--cpus \(cpus)"
+            cpusSource = .flag
+        } else if s.cpus > 0 {
+            cpus = min(255, s.cpus)
+            cpusSource = .settings
+        } else {
+            cpus = VMSizing.autoCPUs(.current)
+            cpusSource = .auto
+        }
+        if given("--mem") {
+            ov[.memMiB] = "--mem \(memMiB)"
+            memSource = .flag
+        } else if s.memMiB > 0 {
+            memMiB = max(1024, s.memMiB)
+            memSource = .settings
+        } else {
+            memMiB = VMSizing.autoMemMiB(.current)
+            memSource = .auto
+        }
         if given("--no-ssh") {
             ov[.sshEnabled] = "--no-ssh"
             ov[.sshPort] = "--no-ssh"

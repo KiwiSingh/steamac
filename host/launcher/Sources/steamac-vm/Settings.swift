@@ -201,8 +201,9 @@ final class LauncherSettings: ObservableObject {
     @Published var soundMute = false { didSet { save(.soundMute, soundMute) } }
     @Published var soundLatency = Latency.normal { didSet { save(.soundLatency, soundLatency.rawValue) } }
     // Advanced
-    @Published var cpus = 8 { didSet { save(.cpus, cpus) } }
-    @Published var memMiB = 16384 { didSet { save(.memMiB, memMiB) } }
+    /// 0 = automatic (VMSizing: this Mac's performance cores / half its RAM); the key is then absent.
+    @Published var cpus = 0 { didSet { saveSize(.cpus, cpus) } }
+    @Published var memMiB = 0 { didSet { saveSize(.memMiB, memMiB) } }
     /// SSH into the guest (gvproxy forward + guest sshd; `steamac.ssh=0|1`). Off by default in
     /// release bundles (Info.plist SteamacReleaseDefaults), on for the dev launcher.
     @Published var sshEnabled = !AppBundle.releaseDefaults { didSet { save(.sshEnabled, sshEnabled) } }
@@ -289,6 +290,12 @@ final class LauncherSettings: ObservableObject {
         defaults.set(value, forKey: key.rawValue)
     }
 
+    /// vCPUs / memory: automatic (0) removes the key, so the size keeps following the Mac.
+    private func saveSize(_ key: Key, _ value: Int) {
+        guard !loading else { return }
+        if value <= 0 { defaults.removeObject(forKey: key.rawValue) } else { defaults.set(value, forKey: key.rawValue) }
+    }
+
     /// Control FIFO `set KEY VALUE`: change a setting exactly as the Settings window does (same
     /// property setters: persisted, live-applied). Returns false for an unknown key / bad value.
     func set(_ name: String, _ text: String) -> Bool {
@@ -329,8 +336,8 @@ final class LauncherSettings: ObservableObject {
         case .soundVolume: guard let d else { return false }; soundVolume = d
         case .soundMute: guard let b else { return false }; soundMute = b
         case .soundLatency: guard let v = Latency(rawValue: text) else { return false }; soundLatency = v
-        case .cpus: guard let i else { return false }; cpus = i
-        case .memMiB: guard let i else { return false }; memMiB = i
+        case .cpus: guard let n = text == "auto" ? 0 : i, n >= 0 else { return false }; cpus = n
+        case .memMiB: guard let n = text == "auto" ? 0 : i, n >= 0 else { return false }; memMiB = n
         case .sshEnabled: guard let b else { return false }; sshEnabled = b
         case .sshPort: guard let i else { return false }; sshPort = i
         case .network: guard let b else { return false }; network = b

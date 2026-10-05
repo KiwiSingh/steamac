@@ -783,6 +783,9 @@ private struct AdvancedTab: View {
     @StateObject private var password = GuestPasswordModel()
     static let maxCPUs = ProcessInfo.processInfo.activeProcessorCount
     static let maxGiB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) - 4)
+    static let host = VMSizing.Host.current
+    static let autoCPUs = VMSizing.autoCPUs(host)
+    static let autoGiB = VMSizing.autoMemMiB(host) / 1024
 
     /// The disk the next start boots (its generated SSH password is shown): Settings value, else
     /// the running VM's disk, else the default location.
@@ -802,20 +805,47 @@ private struct AdvancedTab: View {
     var body: some View {
         Form {
             Section {
-                Stepper(value: intBinding($settings.cpus, 1...AdvancedTab.maxCPUs), in: 1...AdvancedTab.maxCPUs) {
-                    HStack {
-                        Label2(title: "Virtual CPUs", now: false, key: .cpus)
-                        Spacer()
-                        Text("\(settings.cpus)").monospacedDigit()
+                Picker(selection: Binding(get: { settings.cpus == 0 },
+                                          set: { settings.cpus = $0 ? 0 : min(AdvancedTab.maxCPUs, AdvancedTab.autoCPUs) })) {
+                    Text("Automatic (\(AdvancedTab.autoCPUs) for this Mac)").tag(true)
+                    Text("Custom").tag(false)
+                } label: {
+                    Label2(title: "Virtual CPUs", detail: "Automatic: one per performance core of this Mac (2 to 8).",
+                           now: false, key: .cpus)
+                }
+                if settings.cpus > 0 {
+                    Stepper(value: intBinding($settings.cpus, 1...AdvancedTab.maxCPUs), in: 1...AdvancedTab.maxCPUs) {
+                        HStack {
+                            Text("Custom vCPUs")
+                            Spacer()
+                            Text("\(settings.cpus)").monospacedDigit()
+                        }
+                    }
+                    if let warning = VMSizing.cpuWarning(cpus: settings.cpus, host: AdvancedTab.host) {
+                        SizeWarning(text: warning)
                     }
                 }
-                Stepper(value: Binding(get: { settings.memMiB / 1024 },
-                                       set: { settings.memMiB = min(AdvancedTab.maxGiB, max(2, $0)) * 1024 }),
-                        in: 2...AdvancedTab.maxGiB) {
-                    HStack {
-                        Label2(title: "Memory", now: false, key: .memMiB)
-                        Spacer()
-                        Text("\(settings.memMiB / 1024) GB").monospacedDigit()
+                Picker(selection: Binding(get: { settings.memMiB == 0 },
+                                          set: { settings.memMiB = $0 ? 0 : min(AdvancedTab.maxGiB, AdvancedTab.autoGiB) * 1024 })) {
+                    Text("Automatic (\(AdvancedTab.autoGiB) GB for this Mac)").tag(true)
+                    Text("Custom").tag(false)
+                } label: {
+                    Label2(title: "Memory", detail: "Automatic: half of this Mac's RAM (4 to 16 GB). The Mac's GPU memory "
+                           + "comes from the same RAM, so the rest stays with macOS and the games' graphics.",
+                           now: false, key: .memMiB)
+                }
+                if settings.memMiB > 0 {
+                    Stepper(value: Binding(get: { settings.memMiB / 1024 },
+                                           set: { settings.memMiB = min(AdvancedTab.maxGiB, max(2, $0)) * 1024 }),
+                            in: 2...AdvancedTab.maxGiB) {
+                        HStack {
+                            Text("Custom memory")
+                            Spacer()
+                            Text("\(settings.memMiB / 1024) GB").monospacedDigit()
+                        }
+                    }
+                    if let warning = VMSizing.memWarning(memMiB: settings.memMiB, host: AdvancedTab.host) {
+                        SizeWarning(text: warning)
                     }
                 }
             }
@@ -927,6 +957,15 @@ private struct AdvancedTab: View {
             panel.directoryURL = URL(fileURLWithPath: (settings.diskImage as NSString).deletingLastPathComponent)
         }
         if panel.runModal() == .OK, let url = panel.url { settings.diskImage = url.path }
+    }
+}
+
+/// Advanced tab: an inline warning under a custom VM size.
+private struct SizeWarning: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "exclamationmark.triangle")
+            .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
     }
 }
 

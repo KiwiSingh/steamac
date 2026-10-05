@@ -362,7 +362,8 @@ final class ReportBundle: @unchecked Sendable {
             add("kernel", (CrashReporting.kernelVersion(image: o.kernel) ?? "?") + " (\(o.kernel))")
             add("initramfs", o.initrd)
             for (i, d) in o.disks.enumerated() { add("disk \(i)", ReportBundle.diskInfo(d.path) + (d.readOnly ? " (ro)" : "")) }
-            add("vm", "cpus \(o.cpus), memory \(o.memMiB) MiB, display \(o.displayWidth)x\(o.displayHeight)@\(o.refreshRate)"
+            add("vm", "cpus \(o.cpus) (\(o.cpusSource.rawValue)), memory \(o.memMiB) MiB (\(o.memSource.rawValue)), "
+                + "display \(o.displayWidth)x\(o.displayHeight)@\(o.refreshRate)"
                 + (o.headless ? " headless" : o.fullscreen ? " fullscreen" : " windowed")
                 + ", mouse \(o.mouseMode.rawValue), network \(o.network ? "on" : "off"), sound \(o.sound ? "on" : "off"), gamepad \(o.gamepad ? "on" : "off")")
             add("cmdline", o.cmdline)

@@ -5,9 +5,12 @@ import SwiftUI
 /// DIR/settings-<tab>.png for every tab (command-line overrides of this run are shown as in a
 /// real run), then DIR/settings-create-disk.png of the "Create New Disk…" window,
 /// DIR/settings-first-run.png of the first-run alert, DIR/settings-what-is-sent.png (the crash
-/// reports popover), DIR/settings-display-presets.png (window size popup open; screen capture)
-/// and DIR/settings-display-custom.png (Custom… fields), and check that each capture has content.
-/// Also checks that crash-report scrubbing redacts the user, host, computer and Bonjour names.
+/// reports popover), DIR/settings-display-presets.png (window size popup open; screen capture),
+/// DIR/settings-display-custom.png (Custom… fields) and DIR/settings-advanced-custom.png (custom VM
+/// size with its warnings), and check that each capture has content.
+/// Also checks that crash-report scrubbing redacts the user, host, computer and Bonjour names,
+/// that a guest process's GPU teardown is no crash report (LineScanner), and the automatic VM size
+/// (VMSizing) on simulated Macs.
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
         let settings = LauncherSettings.shared
@@ -24,7 +27,7 @@ enum SettingsSelfTest {
         let dir = o.selftestOut ?? "."
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         // Crash-report scrubbing: the user, host, computer and Bonjour names never leave the Mac.
-        var failures = CrashReporting.scrubSelfCheck()
+        var failures = CrashReporting.scrubSelfCheck() + CrashReporting.scannerSelfCheck() + VMSizing.selfCheck()
         var tabs = SettingsWindowController.Tab.allCases[...]
 
         func capture(_ name: String, _ rep: NSBitmapImageRep?) {
@@ -212,6 +215,23 @@ enum SettingsSelfTest {
             }
         }
 
+        /// Advanced tab with a custom VM size above this Mac's limits (all cores, all the RAM the
+        /// stepper allows): both orange warnings (settings-advanced-custom.png). Restored afterwards.
+        func advancedCustom(then done: @escaping () -> Void) {
+            let saved = (settings.cpus, settings.memMiB)
+            settings.cpus = ProcessInfo.processInfo.activeProcessorCount
+            settings.memMiB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) - 4) * 1024
+            let host = VMSizing.Host.current
+            log("selftest-settings: advanced custom: \(settings.cpus) vCPUs (warning: \(VMSizing.cpuWarning(cpus: settings.cpus, host: host) != nil)), "
+                + "\(settings.memMiB) MiB (warning: \(VMSizing.memWarning(memMiB: settings.memMiB, host: host) != nil))")
+            sw.show(tab: .advanced)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                capture("advanced-custom", sw.snapshot())
+                (settings.cpus, settings.memMiB) = saved
+                done()
+            }
+        }
+
         func next() {
             guard let tab = tabs.popFirst() else {
                 CreateDiskWindowController.show(settings: settings)
@@ -237,7 +257,7 @@ enum SettingsSelfTest {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                             capture("what-is-sent", SettingsWindowController.snapshot(w))
                             w.orderOut(nil)
-                            displayPresets { backgroundMute(then: finish) }
+                            displayPresets { advancedCustom { backgroundMute(then: finish) } }
                         }
                     }
                 }
