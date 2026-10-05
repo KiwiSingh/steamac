@@ -351,8 +351,8 @@
       <ol class="settings-tabs" role="tablist" aria-label="Settings tabs">
         <li><button type="button" role="tab" data-tab="general" aria-selected="true">
           <b>General</b>
-          <span lang="en">Close the window to shut down or suspend SteamOS in memory (Ctrl+Cmd+S); boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; Report a Problem with the logs you choose.</span>
-          <span lang="ru">Закрытие окна выключает SteamOS или приостанавливает её в памяти (Ctrl+Cmd+S); оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; Report a Problem с выбранными логами.</span>
+          <span lang="en">Close the window to shut down or suspend SteamOS in memory (Ctrl+Cmd+S); boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; update check at startup; Report a Problem with the logs you choose.</span>
+          <span lang="ru">Закрытие окна выключает SteamOS или приостанавливает её в памяти (Ctrl+Cmd+S); оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; проверка обновлений при запуске; Report a Problem с выбранными логами.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="display" aria-selected="false">
           <b>Display</b>
@@ -376,8 +376,8 @@
         </button></li>
         <li><button type="button" role="tab" data-tab="advanced" aria-selected="false">
           <b>Advanced</b>
-          <span lang="en">vCPUs and memory; SSH into SteamOS with one switch (off by default, a generated password per disk); network; the Steam client (Steam Frame, Steam Deck or Steam Deck beta); the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
-          <span lang="ru">vCPU и память; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; клиент Steam (Steam Frame, Steam Deck или Steam Deck beta); диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
+          <span lang="en">vCPUs and memory sized for your Mac automatically, or custom with a warning when you over-commit; SSH into SteamOS with one switch (off by default, a generated password per disk); network; the Steam client (Steam Frame, Steam Deck or Steam Deck beta); the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
+          <span lang="ru">vCPU и память подбираются под ваш Mac автоматически или задаются вручную — с предупреждением, если это слишком много; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; клиент Steam (Steam Frame, Steam Deck или Steam Deck beta); диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
         </button></li>
       </ol>
 
@@ -426,14 +426,12 @@
       </div>
 
       <div class="get-card">
-        <h3><span lang="en">New in 1.3 and 1.3.1</span><span lang="ru">Новое в 1.3 и 1.3.1</span></h3>
+        <h3><span lang="en">New in 1.4</span><span lang="ru">Новое в 1.4</span></h3>
         <ul class="news">
-          <li><span lang="en">1.3.1: boot progress and the moment Steam is ready are recognized in any Steam language, with a byte-count fallback for Steam's own download</span><span lang="ru">1.3.1: прогресс загрузки и момент готовности Steam распознаются на любом языке Steam, а загрузка самого Steam показывается по объёму скачанного</span></li>
-          <li><span lang="en">Pick the Steam client: Steam Frame (default — the ARM64 client games are tested with), Steam Deck or Steam Deck beta; at first run, in Create New Disk or in Settings → Advanced</span><span lang="ru">Выбор клиента Steam: Steam Frame (по умолчанию — ARM64-клиент, на котором проверяются игры), Steam Deck или Steam Deck beta; при первом запуске, в Create New Disk или в Settings → Advanced</span></li>
-          <li><span lang="en">Boot progress stays until Steam is ready: a click shrinks it into a progress pill, the window title shows the stage, and it covers first-start setup and Steam's own download</span><span lang="ru">Прогресс загрузки не пропадает, пока Steam не готов: щелчок сворачивает его в плашку, заголовок окна показывает этап, и он остаётся на время первой настройки и загрузки самого Steam</span></li>
-          <li><span lang="en">Steam starts through steamac's own launcher script; Valve's RUNSTEAM.sh is no longer modified or shipped</span><span lang="ru">Steam запускается собственным скриптом steamac; RUNSTEAM.sh от Valve больше не изменяется и не поставляется</span></li>
-          <li><span lang="en">Creating a disk asks you to accept Valve's SteamOS license and the Steam Subscriber Agreement</span><span lang="ru">Перед созданием диска нужно принять лицензию SteamOS и Steam Subscriber Agreement от Valve</span></li>
-          <li><span lang="en">Open source under Apache-2.0 (kernel patches GPL-2.0, Mesa and virglrenderer patches MIT); third-party notices inside the app, GPL sources attached to every release</span><span lang="ru">Открытый код под Apache-2.0 (патчи ядра — GPL-2.0, патчи Mesa и virglrenderer — MIT); лицензии сторонних компонентов внутри приложения, исходники GPL приложены к каждому релизу</span></li>
+          <li><span lang="en">Software Update: at startup the app asks GitHub for the newest release (at most every 6 hours, only the app version is sent) and shows its notes with Download / Skip / Later; Check for Updates… is in the app menu, and the check can be turned off in Settings → General</span><span lang="ru">Обновления: при запуске приложение спрашивает у GitHub последний релиз (не чаще раза в 6 часов, отправляется только версия приложения) и показывает его описание с кнопками Download / Skip / Later; Check for Updates… — в меню приложения, проверку можно выключить в Settings → General</span></li>
+          <li><span lang="en">The VM is sized for your Mac: one vCPU per performance core (2–8) and half of the RAM (4–16 GB); Custom in Settings → Advanced warns when you over-commit</span><span lang="ru">Размер ВМ подбирается под ваш Mac: vCPU по числу производительных ядер (2–8) и половина памяти (4–16 ГБ); в режиме Custom в Settings → Advanced есть предупреждение, если выделено слишком много</span></li>
+          <li><span lang="en">Steam's Shader Pre-Caching and background shader processing are off by default: replaying them costs minutes on Venus/MoltenVK and the shared caches barely match. Your own choice in Steam's settings wins</span><span lang="ru">Shader Pre-Caching и фоновая обработка шейдеров в Steam по умолчанию выключены: на Venus/MoltenVK их прогон занимает минуты, а общие кеши почти не подходят. Если включить их в настройках Steam, ваш выбор сохраняется</span></li>
+          <li><span lang="en">MoltenVK: vertex input Metal would reject now fails the pipeline cleanly instead of crashing the VM</span><span lang="ru">MoltenVK: вершинные данные, которые Metal отверг бы, теперь просто не создают конвейер, а не роняют ВМ</span></li>
         </ul>
         <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
 <pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
