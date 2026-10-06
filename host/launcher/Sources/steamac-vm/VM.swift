@@ -101,16 +101,17 @@ final class VM {
         log("gpu: Venus → \(o.vulkanDriver.name)")
         let flags = o.gpuFlags ?? (STEAMAC_VIRGL_VENUS | STEAMAC_VIRGL_NO_VIRGL)
         try krun("krun_set_gpu_options2", krun_set_gpu_options2(ctx, flags, UInt64(o.shmMiB) << 20))
-        displayId = UInt32(try krun("krun_add_display", krun_add_display(ctx, UInt32(o.displayWidth), UInt32(o.displayHeight))))
+        let (gw, gh) = o.guestSize
+        displayId = UInt32(try krun("krun_add_display", krun_add_display(ctx, UInt32(gw), UInt32(gh))))
         let did = displayId
         try krun("krun_display_set_refresh_rate", krun_display_set_refresh_rate(ctx, did, UInt32(o.refreshRate)))
         // EDID physical size (drives the guest UI scale; libkrun's default of 300 DPI makes Steam ~2x).
         edid = EdidSize.resolve(o)
         try krun("krun_display_set_physical_size",
                  krun_display_set_physical_size(ctx, did, UInt16(clamping: edid.widthMM), UInt16(clamping: edid.heightMM)))
-        displaySize = (o.displayWidth, o.displayHeight, edid.widthMM, edid.heightMM)
-        log("display: \(o.displayWidth)x\(o.displayHeight) px → \(edid.widthMM)x\(edid.heightMM) mm (\(edid.source));"
-            + " follows the window size at this DPI")
+        displaySize = (gw, gh, edid.widthMM, edid.heightMM)
+        log("display: \(gw)x\(gh) px" + (o.pixelScale > 1 ? " (window \(o.displayWidth)x\(o.displayHeight) pt, Retina \(o.pixelScale)x)" : "")
+            + " → \(edid.widthMM)x\(edid.heightMM) mm (\(edid.source)); follows the window size at this DPI")
         var backend = display.makeCBackend()
         try krun("krun_set_display_backend", krun_set_display_backend(ctx, &backend, MemoryLayout<krun_display_backend>.size))
 

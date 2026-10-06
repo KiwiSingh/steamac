@@ -28,8 +28,16 @@ struct Options {
     var memMiB = VMSizing.autoMemMiB(.current)
     var cpusSource = VMSizing.Source.auto
     var memSource = VMSizing.Source.auto
+    /// Initial window content size in points (`--display`, Settings > Display window size).
     var displayWidth = 1280
     var displayHeight = 800
+    /// Guest pixels per window point: the target screen's backing scale with Settings > Display >
+    /// Retina resolution, else 1 (fixed for the boot, like the EDID DPI).
+    var pixelScale = 1.0
+    /// Guest display size at boot: the window size times `pixelScale` (WindowController.guestSize).
+    var guestSize: (Int, Int) {
+        WindowController.guestSize(points: CGSize(width: displayWidth, height: displayHeight), scale: pixelScale)
+    }
     var refreshRate = 60
     var dpi: Int?
     var displayMM: (Int, Int)?
@@ -133,9 +141,10 @@ struct Options {
                            cores, 2..8)
       --mem MiB            guest RAM (default: Settings > Advanced, automatic = half this Mac's RAM,
                            4096..16384; the GPU's memory comes from the same RAM)
-      --display WxH        initial virtio-gpu display size (default 1280x800); afterwards the guest
-                           display follows the window: content size in points = guest pixels (even,
-                           min 800x500, max 4094), applied when a resize / fullscreen switch ends
+      --display WxH        initial window size in points (default 1280x800); the guest display follows
+                           the window: content size in points = guest pixels, x the screen's backing
+                           scale with Settings > Display > Retina resolution (even, min 800x500, max
+                           4094), applied when a resize / fullscreen switch ends
       --refresh HZ         EDID refresh rate (default 60)
       --dpi N              EDID pixel density instead of the default physical size (below)
       --display-mm WxH     EDID physical size in millimetres at the initial size (overrides --dpi)
@@ -501,6 +510,9 @@ struct Options {
                 ? LauncherSettings.fitToScreenSize() : (s.windowWidth, s.windowHeight)
             displayWidth = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.width), w & ~1))
             displayHeight = min(VM.maxDisplaySide & ~1, max(Int(WindowController.minGuestSize.height), h & ~1))
+        }
+        if s.retinaResolution && !headless {
+            pixelScale = max(1, WindowController.targetScreen()?.backingScaleFactor ?? 1)
         }
         if given("--dpi") || given("--display-mm") {
             let flag = displayMM.map { "--display-mm \($0.0)x\($0.1)" } ?? "--dpi \(dpi ?? 0)"

@@ -354,7 +354,8 @@ enum CrashReporting {
         vmContext([
             "boot": String(Supervisor.bootNumber),
             "display_mode": options.headless ? "headless"
-                : "\(options.displayWidth)x\(options.displayHeight)@\(options.refreshRate) \(options.fullscreen ? "fullscreen" : "windowed")",
+                : "\(options.guestSize.0)x\(options.guestSize.1)@\(options.refreshRate) \(options.fullscreen ? "fullscreen" : "windowed")"
+                    + (options.pixelScale > 1 ? " retina \(options.pixelScale)x" : ""),
             "mouse": options.mouseMode.rawValue,
             "network": options.network ? "on" : "off",
             "sound": options.sound ? "on" : "off",

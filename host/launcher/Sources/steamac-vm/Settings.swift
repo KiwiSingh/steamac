@@ -24,7 +24,7 @@ final class LauncherSettings: ObservableObject {
              closeAction, checkForUpdates, followMacTime, shareClipboard, shareConcealedClipboard
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
-             windowSizePreset, metalHUD
+             windowSizePreset, retinaResolution, metalHUD, superResolution
         // Mouse
         case autoCaptureGames, gameNames
         // Controller
@@ -37,7 +37,7 @@ final class LauncherSettings: ObservableObject {
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .windowSizePreset, .soundEnabled, .cpus, .memMiB, .sshEnabled,
+                 .windowWidth, .windowHeight, .windowSizePreset, .retinaResolution, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network, .lanRemotePlay,
                  .diskImage, .steamClient, .followMacTime, .vulkanDriver:
                 return true
@@ -265,8 +265,13 @@ final class LauncherSettings: ObservableObject {
     @Published var windowHeight = 800 { didSet { save(.windowHeight, windowHeight) } }
     /// "<W>x<H>" (a sizePresets entry), `fitPreset` or `customPreset`; W/H always hold the size.
     @Published var windowSizePreset = "1280x800" { didSet { save(.windowSizePreset, windowSizePreset) } }
+    /// The guest display gets the screen's pixel density (backing scale guest pixels per window
+    /// point, Options.pixelScale) instead of one pixel per point; next start.
+    @Published var retinaResolution = false { didSet { save(.retinaResolution, retinaResolution) } }
     /// Apple's Metal Performance HUD on the VM window (FPS, frame interval, GPU time, memory); applies now.
     @Published var metalHUD = false { didSet { save(.metalHUD, metalHUD) } }
+    /// MetalFX spatial upscaling of the guest picture to the window's pixel size (Renderer); applies now.
+    @Published var superResolution = false { didSet { save(.superResolution, superResolution) } }
     // Mouse
     @Published var autoCaptureGames = true { didSet { save(.autoCaptureGames, autoCaptureGames) } }
     @Published private(set) var games: [Game] = []
@@ -359,7 +364,9 @@ final class LauncherSettings: ObservableObject {
             let id = "\(windowWidth)x\(windowHeight)"
             windowSizePreset = LauncherSettings.sizePresets.contains { $0.id == id } ? id : LauncherSettings.customPreset
         }
+        bool(.retinaResolution, &retinaResolution)
         bool(.metalHUD, &metalHUD)
+        bool(.superResolution, &superResolution)
         bool(.autoCaptureGames, &autoCaptureGames)
         bool(.virtualPad, &virtualPad)
         if let s = d.string(forKey: Key.padType.rawValue).flatMap(PadType.init(rawValue:)) { padType = s }
@@ -432,7 +439,9 @@ final class LauncherSettings: ObservableObject {
             guard text == LauncherSettings.fitPreset || text == LauncherSettings.customPreset
                 || LauncherSettings.sizePresets.contains(where: { $0.id == text }) else { return false }
             windowSizePreset = text
+        case .retinaResolution: guard let b else { return false }; retinaResolution = b
         case .metalHUD: guard let b else { return false }; metalHUD = b
+        case .superResolution: guard let b else { return false }; superResolution = b
         case .autoCaptureGames: guard let b else { return false }; autoCaptureGames = b
         case .gameNames: return false
         case .virtualPad: guard let b else { return false }; virtualPad = b
@@ -476,7 +485,8 @@ final class LauncherSettings: ObservableObject {
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset
-        metalHUD = fresh.metalHUD
+        retinaResolution = fresh.retinaResolution
+        metalHUD = fresh.metalHUD; superResolution = fresh.superResolution
         autoCaptureGames = fresh.autoCaptureGames
         virtualPad = fresh.virtualPad; padType = fresh.padType; dualSensePassthrough = fresh.dualSensePassthrough
         controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
@@ -515,7 +525,7 @@ final class LauncherSettings: ObservableObject {
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
-            .windowSizePreset: windowSizePreset,
+            .windowSizePreset: windowSizePreset, .retinaResolution: retinaResolution,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network, .lanRemotePlay: lanRemotePlay,
             .diskImage: diskImage, .steamClient: steamClient.rawValue, .followMacTime: followMacTime,

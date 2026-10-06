@@ -1,10 +1,11 @@
 import CKrun
 import Foundation
 import Metal
+import MetalFX
 import QuartzCore
 
 /// Uploads guest frames into an MTLTexture (swizzled per virtio-gpu format) and draws them
-/// aspect-fit into a CAMetalLayer.
+/// aspect-fit into a CAMetalLayer, optionally upscaled by MetalFX (`superResolution`).
 final class Renderer {
     let device: MTLDevice
     private let queue: MTLCommandQueue
@@ -20,6 +21,20 @@ final class Renderer {
     private var textureGeneration = -1
     private var lastCommandBuffer: MTLCommandBuffer?
     static let layerFormat: MTLPixelFormat = .bgra8Unorm
+
+    /// MetalFX spatial upscaling of the guest frame to its on-screen pixel size whenever that is
+    /// larger (Settings > Display, "MetalFX super resolution"); otherwise the plain linear/nearest draw.
+    var superResolution = false {
+        didSet { if !superResolution { releaseScaler() } }
+    }
+    /// The MetalFX spatial scaler runs on this Mac's GPU (every Apple silicon Mac).
+    static let superResolutionSupported: Bool =
+        MTLCreateSystemDefaultDevice().map { MTLFXSpatialScalerDescriptor.supportsDevice($0) } ?? false
+    /// Scaler + its output texture for the current input format/size -> output size.
+    private var scaler: MTLFXSpatialScaler?
+    private var upscaled: MTLTexture?
+    /// Set after a scaler could not be made (logged once); super resolution then stays off.
+    private var scalerFailed = false
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -110,6 +125,7 @@ final class Renderer {
     func dropTexture() {
         texture = nil
         textureGeneration = -1
+        releaseScaler()
     }
 
     /// Aspect-fit rect of the texture inside a target of `size` (pixels).
@@ -125,24 +141,80 @@ final class Renderer {
         return CGRect(x: bounds.minX + (bounds.width - w) / 2, y: bounds.minY + (bounds.height - h) / 2, width: w, height: h)
     }
 
+    private func releaseScaler() {
+        scaler = nil
+        upscaled = nil
+    }
+
+    /// A scaler (and output texture) from `texture` to `width` x `height`, reused while those match.
+    private func scaler(for texture: MTLTexture, width: Int, height: Int) -> (MTLFXSpatialScaler, MTLTexture)? {
+        if let s = scaler, let out = upscaled, s.inputWidth == texture.width, s.inputHeight == texture.height,
+           s.colorTextureFormat == texture.pixelFormat, s.outputWidth == width, s.outputHeight == height {
+            return (s, out)
+        }
+        releaseScaler()
+        guard !scalerFailed else { return nil }
+        let sd = MTLFXSpatialScalerDescriptor()
+        sd.inputWidth = texture.width
+        sd.inputHeight = texture.height
+        sd.outputWidth = width
+        sd.outputHeight = height
+        sd.colorTextureFormat = texture.pixelFormat
+        sd.outputTextureFormat = Renderer.layerFormat
+        sd.colorProcessingMode = .perceptual   // guest scanouts hold sRGB-encoded 8-bit values
+        guard Renderer.superResolutionSupported, let s = sd.makeSpatialScaler(device: device) else {
+            log("display: MetalFX spatial scaler unavailable on \(device.name); drawing without super resolution")
+            scalerFailed = true
+            return nil
+        }
+        guard texture.usage.contains(s.colorTextureUsage) else {
+            log("display: MetalFX needs input usage \(s.colorTextureUsage.rawValue), the frame texture has "
+                + "\(texture.usage.rawValue); drawing without super resolution")
+            scalerFailed = true
+            return nil
+        }
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: Renderer.layerFormat, width: width, height: height, mipmapped: false)
+        td.usage = s.outputTextureUsage.union(.shaderRead)
+        td.storageMode = .private
+        guard let out = device.makeTexture(descriptor: td) else { return nil }
+        s.outputTexture = out
+        s.inputContentWidth = texture.width
+        s.inputContentHeight = texture.height
+        scaler = s
+        upscaled = out
+        log("display: MetalFX super resolution \(texture.width)x\(texture.height) -> \(width)x\(height)")
+        return (s, out)
+    }
+
     private func encode(into target: MTLTexture, commandBuffer cb: MTLCommandBuffer) {
+        // Snap to whole pixels; nearest sampling for exact integer scale factors and for the
+        // MetalFX output (already at the viewport's size).
+        var source = texture, vp = MTLViewport(), nearestSampling = false
+        if let texture {
+            let fit = fitRect(in: CGSize(width: target.width, height: target.height))
+            vp = MTLViewport(originX: Double(fit.minX.rounded()), originY: Double(fit.minY.rounded()),
+                             width: Double(fit.width.rounded()), height: Double(fit.height.rounded()), znear: 0, zfar: 1)
+            let sx = vp.width / Double(texture.width), sy = vp.height / Double(texture.height)
+            nearestSampling = sx >= 1 && abs(sx - sx.rounded()) < 0.001 && abs(sy - sx) < 0.001
+            if superResolution, sx > 1, sy > 1,
+               case let (s, out)? = scaler(for: texture, width: Int(vp.width), height: Int(vp.height)) {
+                s.colorTexture = texture   // a new frame texture of the same size reuses the scaler
+                s.encode(commandBuffer: cb)
+                source = out
+                nearestSampling = true
+            }
+        }
         let rp = MTLRenderPassDescriptor()
         rp.colorAttachments[0].texture = target
         rp.colorAttachments[0].loadAction = .clear
         rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         rp.colorAttachments[0].storeAction = .store
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return }
-        if let texture {
-            let fit = fitRect(in: CGSize(width: target.width, height: target.height))
-            // Snap to whole pixels; use nearest sampling for exact integer scale factors.
-            let x = fit.minX.rounded(), y = fit.minY.rounded()
-            let w = fit.width.rounded(), h = fit.height.rounded()
-            enc.setViewport(MTLViewport(originX: Double(x), originY: Double(y), width: Double(w), height: Double(h), znear: 0, zfar: 1))
-            let sx = w / CGFloat(texture.width)
-            let integral = sx >= 1 && abs(sx - sx.rounded()) < 0.001 && abs(h / CGFloat(texture.height) - sx) < 0.001
+        if let source {
+            enc.setViewport(vp)
             enc.setRenderPipelineState(pipeline)
-            enc.setFragmentTexture(texture, index: 0)
-            enc.setFragmentSamplerState(integral ? nearest : linear, index: 0)
+            enc.setFragmentTexture(source, index: 0)
+            enc.setFragmentSamplerState(nearestSampling ? nearest : linear, index: 0)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         enc.endEncoding()

@@ -38,7 +38,8 @@ enum SelfTest {
             let failures = feed(display: display, presenter: presenter, renderer: renderer,
                                 width: o.displayWidth, height: o.displayHeight, outDir: outDir)
             if failures.isEmpty {
-                let paths = wc == nil ? "CPU PNG + Metal offscreen" : "CPU PNG + Metal offscreen + window drawable"
+                let metal = Renderer.superResolutionSupported ? "Metal offscreen (+ MetalFX)" : "Metal offscreen"
+                let paths = wc == nil ? "CPU PNG + \(metal)" : "CPU PNG + \(metal) + window drawable"
                 log("selftest: PASS (\(ScanoutFormat.all.count) formats, \(paths)) -> \(outDir)")
             } else {
                 for f in failures { log("selftest: FAIL \(f)") }
@@ -129,26 +130,37 @@ enum SelfTest {
                 }
 
                 // Metal path: same texture the window draws, rendered offscreen at 1.5x (linear, letterboxed)
-                // and 2x (nearest).
-                for (sx, rw, rh) in [(1.5, w * 3 / 2, h * 2), (2.0, w * 2, h * 2)] {
-                    let bgra: [UInt8] = DispatchQueue.main.sync {
-                        presenter.consume()
-                        return renderer.renderOffscreen(width: rw, height: rh)
-                    }
-                    let yoff = (Double(rh) - Double(h) * sx) / 2
-                    for (x, y, c) in expect {
-                        let px = Int(Double(x) * sx), py = Int(yoff + Double(y) * sx)
-                        let p = (py * rw + px) * 4
-                        let got: RGB = (bgra[p + 2], bgra[p + 1], bgra[p])
-                        if got != c { failures.append("\(name) Metal \(sx)x (\(px),\(py)) got \(got) want \(c)") }
-                    }
-                    if yoff >= 2 {
-                        let p = (1 * rw + rw / 2) * 4
-                        if bgra[p] != 0 || bgra[p + 1] != 0 || bgra[p + 2] != 0 { failures.append("\(name) Metal letterbox not black") }
-                    }
-                    if sx == 1.5 {
-                        try PNG.write(bgrxLike: Data(bgra), width: rw, height: rh,
-                                      format: UInt32(KRUN_DISPLAY_FORMAT_B8G8R8A8_UNORM), to: "\(outDir)/selftest-\(name)-metal.png")
+                // and 2x (nearest), then both again through MetalFX super resolution (sharpening may shift
+                // flat colours by a few levels).
+                let srModes = Renderer.superResolutionSupported ? [false, true] : [false]
+                for sr in srModes {
+                    for (sx, rw, rh) in [(1.5, w * 3 / 2, h * 2), (2.0, w * 2, h * 2)] {
+                        let bgra: [UInt8] = DispatchQueue.main.sync {
+                            presenter.consume()
+                            let was = renderer.superResolution
+                            renderer.superResolution = sr
+                            defer { renderer.superResolution = was }
+                            return renderer.renderOffscreen(width: rw, height: rh)
+                        }
+                        let label = "\(name) Metal \(sx)x" + (sr ? " MetalFX" : "")
+                        let tolerance = sr ? 6 : 0
+                        let yoff = (Double(rh) - Double(h) * sx) / 2
+                        for (x, y, c) in expect {
+                            let px = Int(Double(x) * sx), py = Int(yoff + Double(y) * sx)
+                            let p = (py * rw + px) * 4
+                            let got: RGB = (bgra[p + 2], bgra[p + 1], bgra[p])
+                            let off = max(abs(Int(got.0) - Int(c.0)), abs(Int(got.1) - Int(c.1)), abs(Int(got.2) - Int(c.2)))
+                            if off > tolerance { failures.append("\(label) (\(px),\(py)) got \(got) want \(c)") }
+                        }
+                        if yoff >= 2 {
+                            let p = (1 * rw + rw / 2) * 4
+                            if bgra[p] != 0 || bgra[p + 1] != 0 || bgra[p + 2] != 0 { failures.append("\(label) letterbox not black") }
+                        }
+                        if sx == 1.5 {
+                            try PNG.write(bgrxLike: Data(bgra), width: rw, height: rh,
+                                          format: UInt32(KRUN_DISPLAY_FORMAT_B8G8R8A8_UNORM),
+                                          to: "\(outDir)/selftest-\(name)-metal\(sr ? "-metalfx" : "").png")
+                        }
                     }
                 }
 

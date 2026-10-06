@@ -78,26 +78,34 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var wheelHiRemainder = (0.0, 0.0)   // (vertical, horizontal) in 1/120 notch units
     private var wheelLoAccum: (Int32, Int32) = (0, 0)
     private var scanoutSize: (Int, Int)
-    /// Guest display should become (width, height) px: the window's content size in points.
+    /// Guest display should become (width, height) px: the window's content size in points times
+    /// `pixelScale`.
     var onGuestSizeRequest: ((Int, Int) -> Void)?
     private var requestedGuestSize: (Int, Int)
     private var guestResizeWork: DispatchWorkItem?
     private var inFullScreenTransition = false
     static let minGuestSize = NSSize(width: 800, height: 500)
+    /// Guest pixels per window point for this session (Settings > Display > Retina resolution:
+    /// the screen's backing scale at boot, else 1).
+    let pixelScale: Double
     /// Settle time after the last size change before the guest is asked to switch modes.
     static let guestResizeDebounce: TimeInterval = 0.25
 
-    init(title: String, width: Int, height: Int, renderer: Renderer, inputs: VMInputs?, mouseMode: MouseMode) {
+    /// `width` x `height`: initial content size in points; the guest display is that times `pixelScale`.
+    init(title: String, width: Int, height: Int, pixelScale: Double = 1, renderer: Renderer, inputs: VMInputs?,
+         mouseMode: MouseMode) {
         self.inputs = inputs
         self.mouseMode = mouseMode
         self.baseTitle = title
-        self.scanoutSize = (width, height)
-        self.requestedGuestSize = (width, height)
+        self.pixelScale = pixelScale
+        let guest = WindowController.guestSize(points: CGSize(width: width, height: height), scale: pixelScale)
+        self.scanoutSize = guest
+        self.requestedGuestSize = guest
         let rect = NSRect(x: 0, y: 0, width: width, height: height)
         let screen = WindowController.targetScreen()
         window = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false, screen: screen)
-        view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: width, height: height))
+        view = VMView(frame: rect, renderer: renderer, contentPixelSize: CGSize(width: guest.0, height: guest.1))
         overlay = OverlayView(frame: rect)
         stallView = StallIndicatorView(frame: rect)
         pill = ProgressPillView(frame: rect)
@@ -157,6 +165,10 @@ final class WindowController: NSObject, NSWindowDelegate {
         subscriptions.append(settings.$metalHUD.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
             self?.applyMetalHUD(on)
         })
+        applySuperResolution(settings.superResolution)
+        subscriptions.append(settings.$superResolution.dropFirst().removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] on in
+            self?.applySuperResolution(on)
+        })
     }
 
     func show() {
@@ -171,8 +183,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
     }
 
-    /// Initial content size: one guest pixel = one point (Retina: 2x2 physical pixels), shrunk to fit
-    /// the screen's visible area below the title bar. Also the basis of the default EDID size.
+    /// Initial content size: the requested size in points (Retina: 2x2 physical pixels each), shrunk
+    /// to fit the screen's visible area below the title bar. Also the basis of the default EDID size.
     static func initialContentSize(width: Int, height: Int, screen: NSScreen?) -> NSSize {
         var size = NSSize(width: width, height: height)
         if let vf = screen?.visibleFrame {
@@ -197,14 +209,19 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.redraw()
     }
 
-    /// Guest size for the current window: content size in points (one guest pixel per point),
-    /// rounded down to even, clamped to [minGuestSize, VM.maxDisplaySide].
+    /// Guest size for the current window: content size in points times `pixelScale`.
     func guestSizeForWindow() -> (Int, Int) {
-        let s = view.bounds.size
+        WindowController.guestSize(points: view.bounds.size, scale: pixelScale)
+    }
+
+    /// Guest display size for a content size in points at `scale` guest pixels per point: rounded
+    /// down to even, at least `minGuestSize`, at most VM.maxDisplaySide per side (a scale above 1
+    /// is lowered, keeping the aspect, until the longer side fits).
+    static func guestSize(points: CGSize, scale: Double) -> (Int, Int) {
         let maxSide = VM.maxDisplaySide & ~1
-        let w = min(maxSide, max(Int(WindowController.minGuestSize.width), Int(s.width) & ~1))
-        let h = min(maxSide, max(Int(WindowController.minGuestSize.height), Int(s.height) & ~1))
-        return (w, h)
+        let pw = max(minGuestSize.width, points.width), ph = max(minGuestSize.height, points.height)
+        let s = max(1, min(scale, Double(maxSide) / Double(max(pw, ph))))
+        return (min(maxSide, Int(Double(pw) * s) & ~1), min(maxSide, Int(Double(ph) * s) & ~1))
     }
 
     /// Set while the VM is paused (suspended, guest asleep): window size changes (leaving full
@@ -434,6 +451,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         view.metalHUD = on
         log("display: Metal Performance HUD \(on ? "on" : "off")")
         view.redraw()   // the HUD changes with the next present; an idle guest sends none
+    }
+
+    private func applySuperResolution(_ on: Bool) {
+        view.renderer.superResolution = on
+        log("display: MetalFX super resolution \(on ? "on" : "off")"
+            + (on && !Renderer.superResolutionSupported ? " (not supported on this GPU)" : ""))
+        view.redraw()   // an idle guest sends no new frame
     }
 
     /// The GPU-idle indicator follows `ready`, the overlay (never while it is up or the guest shuts
@@ -870,7 +894,8 @@ extension WindowController {
         guestCursor = target
     }
 
-    /// Captured: raw relative motion (host points = guest pixels; no acceleration in gamescope).
+    /// Captured: raw relative motion, one count per host point (also with Retina resolution: games
+    /// keep their mouse sensitivity; no acceleration in gamescope).
     func moveRelative(dx: Double, dy: Double) {
         guard let inputs else { return }
         let fx = dx + relRemainder.0

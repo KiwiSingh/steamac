@@ -365,7 +365,7 @@ final class ReportBundle: @unchecked Sendable {
             add("initramfs", o.initrd)
             for (i, d) in o.disks.enumerated() { add("disk \(i)", ReportBundle.diskInfo(d.path) + (d.readOnly ? " (ro)" : "")) }
             add("vm", "cpus \(o.cpus) (\(o.cpusSource.rawValue)), memory \(o.memMiB) MiB (\(o.memSource.rawValue)), "
-                + "display \(o.displayWidth)x\(o.displayHeight)@\(o.refreshRate)"
+                + "display \(o.guestSize.0)x\(o.guestSize.1)@\(o.refreshRate)" + (o.pixelScale > 1 ? " retina \(o.pixelScale)x" : "")
                 + (o.headless ? " headless" : o.fullscreen ? " fullscreen" : " windowed")
                 + ", mouse \(o.mouseMode.rawValue), network \(o.network ? "on" : "off"), sound \(o.sound ? "on" : "off"), gamepad \(o.gamepad ? "on" : "off")"
                 + ", vulkan \(o.vulkanDriver.rawValue)")

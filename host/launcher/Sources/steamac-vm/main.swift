@@ -350,7 +350,8 @@ do {
                 log("window dumped to \(base)-window.png, \(base)-overlay.png, \(base)-screen.png"
                     + " (overlay \(wc.overlay.shown ? "shown" : "hidden"), pill "
                     + (wc.pill.shown ? "\"\(wc.pill.content.title)\" / \"\(wc.pill.content.detail)\" \(wc.pill.content.percentText)" : "hidden")
-                    + ", title \"\(wc.window.title)\", Metal HUD \(settings.metalHUD ? "on" : "off"))")
+                    + ", title \"\(wc.window.title)\", Metal HUD \(settings.metalHUD ? "on" : "off")"
+                    + ", MetalFX super resolution \(settings.superResolution ? "on" : "off"))")
             } catch {
                 log("window dump failed: \(error)")
             }
@@ -364,7 +365,7 @@ do {
     supervisorWatch.setEventHandler { lifecycle.supervisorExited() }
     supervisorWatch.resume()
 
-    log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.displayWidth)x\(options.displayHeight)"
+    log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.guestSize.0)x\(options.guestSize.1)"
         + " cmdline=\"\(options.cmdline)\"" + (Supervisor.bootNumber > 1 ? " (boot #\(Supervisor.bootNumber))" : ""))
     log("vm size: " + VMSizing.describe(cpus: options.cpus, cpusSource: options.cpusSource,
                                         memMiB: options.memMiB, memSource: options.memSource))
@@ -392,7 +393,7 @@ do {
     let renderer = Renderer()
     let presenter = Presenter(display: display, renderer: renderer)
     let wc = WindowController(title: windowTitle, width: options.displayWidth, height: options.displayHeight,
-                              renderer: renderer, inputs: inputs, mouseMode: options.mouseMode)
+                              pixelScale: options.pixelScale, renderer: renderer, inputs: inputs, mouseMode: options.mouseMode)
     if let f = Supervisor.windowFrame, !f.isEmpty { wc.window.setFrame(NSRectFromString(f), display: false) }
     presenter.view = wc.view
     PerfStats.instance.attach(view: wc.view)

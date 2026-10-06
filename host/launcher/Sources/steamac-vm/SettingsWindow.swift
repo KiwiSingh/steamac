@@ -432,7 +432,8 @@ private struct DisplayTab: View {
                     Text(verbatim: "Fit to screen (\(fit.0) × \(fit.1))").tag(LauncherSettings.fitPreset)
                     Text(verbatim: "Custom…").tag(LauncherSettings.customPreset)
                 } label: {
-                    Label2(title: "Default window size", detail: "Guest pixels = window points; at least 800 × 500.",
+                    Label2(title: "Default window size",
+                           detail: "Guest pixels = window points (twice per side with Retina resolution); at least 800 × 500.",
                            now: false, key: .windowSizePreset)
                 }
                 if settings.windowSizePreset == LauncherSettings.customPreset {
@@ -447,6 +448,17 @@ private struct DisplayTab: View {
                         Text("pt")
                     }
                 }
+                Toggle(isOn: $settings.retinaResolution) {
+                    Label2(title: "Retina resolution",
+                           detail: settings.retinaResolution
+                               ? "The guest gets the screen's full pixel density (2 × 2 pixels per point on Retina screens), "
+                                   + "with the UI scaled to the same size: sharp text, but games draw 4× the pixels. "
+                                   + "Recommended instead: leave this off and turn on MetalFX super resolution, which "
+                                   + "upscales the guest 2× to the Retina screen at a fraction of the cost."
+                               : "Off: one guest pixel per point, scaled up to Retina screens (MetalFX super resolution "
+                                   + "can sharpen it). On: the guest renders at the screen's full pixel density.",
+                           now: false, key: .retinaResolution)
+                }
             }
             Section {
                 Toggle(isOn: $settings.metalHUD) {
@@ -455,6 +467,15 @@ private struct DisplayTab: View {
                                + "interval, GPU time, memory (Ctrl+Cmd+P, View menu).",
                            now: true)
                 }
+                Toggle(isOn: $settings.superResolution) {
+                    Label2(title: "MetalFX super resolution",
+                           detail: !Renderer.superResolutionSupported ? "Not supported on this Mac's GPU."
+                               : "Apple's MetalFX upscaler sharpens the guest picture when the window has more pixels "
+                                   + "than the guest (2× on Retina screens, scaled or fullscreen windows) instead of plain scaling."
+                                   + (settings.retinaResolution ? " Little to upscale while Retina resolution is on." : ""),
+                           now: true)
+                }
+                .disabled(!Renderer.superResolutionSupported && !settings.superResolution)
             }
         }
     }
