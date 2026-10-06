@@ -45,6 +45,9 @@
 # 14. multi_entry.c: modules with vertex, fragment and compute entry points (shaders/multi_entry/ linked with
 #    spirv-link, SPIR-V 1.0 and 1.6) whose compute entry point has workgroup variables (one zero-initialized):
 #    the vertex/fragment pipeline draws, the compute pipeline counts in workgroup memory.
+# 15. wgsize.c: threadgroup size of compute shaders with LocalSize / LocalSizeId (constants, specialization
+#    constant) and zero-initialized workgroup memory (DXVK's new compiler: LocalSizeId + OpConstantNull ran
+#    1x1x1 threadgroups); every invocation and the shared counter of each workgroup checked.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -175,3 +178,13 @@ done
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/multi_entry.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/multi_entry"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/multi_entry" "$mspv"
+
+wspv=$work/wgsize-spv
+rm -rf "$wspv"
+mkdir -p "$wspv"
+for s in "$here"/shaders/wgsize/*.spvasm; do
+	spirv-as --target-env vulkan1.3 "$s" -o "$wspv/$(basename "$s" .spvasm).spv"
+done
+xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/wgsize.c" \
+	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/wgsize"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/wgsize" "$wspv"

@@ -1,0 +1,85 @@
+; SPIR-V
+; Version: 1.6
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 51
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %count %gl_WorkGroupID %o %gl_LocalInvocationIndex
+               OpExecutionMode %main LocalSize 8 8 1
+               OpSource GLSL 450
+               OpSourceExtension "GL_EXT_null_initializer"
+               OpName %main "main"
+               OpName %count "count"
+               OpName %base "base"
+               OpName %gl_WorkGroupID "gl_WorkGroupID"
+               OpName %Out "Out"
+               OpMemberName %Out 0 "v"
+               OpName %o "o"
+               OpName %gl_LocalInvocationIndex "gl_LocalInvocationIndex"
+               OpDecorate %gl_WorkGroupID BuiltIn WorkgroupId
+               OpDecorate %_runtimearr_uint ArrayStride 4
+               OpDecorate %Out Block
+               OpMemberDecorate %Out 0 Offset 0
+               OpDecorate %o Binding 0
+               OpDecorate %o DescriptorSet 0
+               OpDecorate %gl_LocalInvocationIndex BuiltIn LocalInvocationIndex
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+          %7 = OpConstantNull %uint
+%_ptr_Workgroup_uint = OpTypePointer Workgroup %uint
+      %count = OpVariable %_ptr_Workgroup_uint Workgroup %7
+     %uint_1 = OpConstant %uint 1
+     %uint_0 = OpConstant %uint 0
+     %uint_2 = OpConstant %uint 2
+   %uint_264 = OpConstant %uint 264
+%_ptr_Function_uint = OpTypePointer Function %uint
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_WorkGroupID = OpVariable %_ptr_Input_v3uint Input
+%_ptr_Input_uint = OpTypePointer Input %uint
+    %uint_65 = OpConstant %uint 65
+%_runtimearr_uint = OpTypeRuntimeArray %uint
+        %Out = OpTypeStruct %_runtimearr_uint
+%_ptr_StorageBuffer_Out = OpTypePointer StorageBuffer %Out
+          %o = OpVariable %_ptr_StorageBuffer_Out StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%gl_LocalInvocationIndex = OpVariable %_ptr_Input_uint Input
+%_ptr_StorageBuffer_uint = OpTypePointer StorageBuffer %uint
+       %bool = OpTypeBool
+    %uint_64 = OpConstant %uint 64
+     %uint_8 = OpConstant %uint 8
+         %50 = OpConstantComposite %v3uint %uint_8 %uint_8 %uint_1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+       %base = OpVariable %_ptr_Function_uint Function
+         %12 = OpAtomicIAdd %uint %count %uint_1 %uint_0 %uint_1
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+         %21 = OpAccessChain %_ptr_Input_uint %gl_WorkGroupID %uint_0
+         %22 = OpLoad %uint %21
+         %24 = OpIMul %uint %22 %uint_65
+               OpStore %base %24
+         %31 = OpLoad %uint %base
+         %33 = OpLoad %uint %gl_LocalInvocationIndex
+         %34 = OpIAdd %uint %31 %33
+         %35 = OpLoad %uint %gl_LocalInvocationIndex
+         %36 = OpIAdd %uint %35 %uint_1
+         %38 = OpAccessChain %_ptr_StorageBuffer_uint %o %int_0 %34
+               OpStore %38 %36
+         %39 = OpLoad %uint %gl_LocalInvocationIndex
+         %41 = OpIEqual %bool %39 %uint_0
+               OpSelectionMerge %43 None
+               OpBranchConditional %41 %42 %43
+         %42 = OpLabel
+         %44 = OpLoad %uint %base
+         %46 = OpIAdd %uint %44 %uint_64
+         %47 = OpLoad %uint %count
+         %48 = OpAccessChain %_ptr_StorageBuffer_uint %o %int_0 %46
+               OpStore %48 %47
+               OpBranch %43
+         %43 = OpLabel
+               OpReturn
+               OpFunctionEnd

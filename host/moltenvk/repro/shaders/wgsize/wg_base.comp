@@ -1,0 +1,16 @@
+#version 450
+#extension GL_EXT_null_initializer : require
+// Workgroup size check: every invocation of an 8x8 workgroup writes its index, a zero-initialized shared counter
+// (DXVK's TGSM: OpConstantNull initializer) counts them. Source of the .spvasm variants in this directory (glslang
+// output, edited: LocalSize / LocalSizeId with constants / LocalSizeId with a specialization constant, with and
+// without the initializer); see repro/wgsize.c.
+layout(local_size_x = 8, local_size_y = 8) in;
+shared uint count = {};
+layout(set = 0, binding = 0, std430) buffer Out { uint v[]; } o;
+void main() {
+  atomicAdd(count, 1u);
+  barrier();
+  uint base = gl_WorkGroupID.x * 65u;
+  o.v[base + gl_LocalInvocationIndex] = gl_LocalInvocationIndex + 1u;
+  if (gl_LocalInvocationIndex == 0u) o.v[base + 64u] = count;
+}

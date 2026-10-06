@@ -301,6 +301,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0021 = steamac: vertex/fragment entry points of multi-entry-point modules leave out the workgroup"
 	echo "         variables of the module's compute entry points ('variables in the threadgroup address space"
 	echo "         cannot be declared in a vertex function', also their zero initialization)"
+	echo "  0022 = steamac: the gl_WorkGroupSize constant synthesized for LocalSizeId (zero-initialized"
+	echo "         workgroup memory, 0017) keeps workgroup_size.x/y/z: MoltenVK dispatched 1x1x1 threadgroups"
+	echo "         for every DXVK compute shader with groupshared memory (Rogue Trader tile lighting)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"
