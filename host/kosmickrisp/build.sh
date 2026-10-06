@@ -36,6 +36,9 @@
 #              vkd3d-proton (D3D12) requires it.
 #   0025       steamac: timestamp query pools split over Metal counter heaps of 4096 (Metal's limit):
 #              vkd3d-proton's 8192-query pools failed, Venus lost them and Stellar Blade's GPU context died.
+#   0026       steamac: device and queue losses are printed on stderr ("MESA: error: VK_ERROR_DEVICE_LOST: ...",
+#              with the Metal error of a failed command buffer). Release builds lost the device silently:
+#              Venus only logged "vkQueueSubmit resulted in CS error" (STEAMAC-G, M4 Max).
 #
 # Two meson builds: (1) the host compiler tools mesa_clc + vtn_bindgen2 against Homebrew LLVM
 # (shared) and SPIRV-LLVM-Translator, installed into work/build/host-kosmickrisp/clc; (2) the driver
@@ -199,6 +202,7 @@ mv -f "$lib.tmp.$$" "$lib"
 	echo "  0023 = steamac: unsupported sample counts use the largest supported one"
 	echo "  0024 = steamac: single texel alignment for texel buffer views (vkd3d-proton)"
 	echo "  0025 = steamac: timestamp pools over several Metal counter heaps (4096 each; vkd3d-proton 8192)"
+	echo "  0026 = steamac: device/queue losses (and their Metal error) printed on stderr"
 	echo
 	echo "Known gaps (host/moltenvk/repro/run.sh): transform feedback with strip geometry shaders and"
 	echo "the overflow counter (draft !44928)."

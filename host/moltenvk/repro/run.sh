@@ -70,6 +70,9 @@
 # 17. msl_helpers.c: fragment helpers with an OpKill-only block, directly and through a nested caller
 #    (STEAMAC-1Q): discard left-half pixels, render right-half colors, suppress writes after discard;
 #    a compute helper named log10(float) (STEAMAC-1R), its implementation's values read back.
+# 18. device_lost.c (KosmicKrisp only): a device loss must be printed on stderr (STEAMAC-G: a release build lost
+#    the device silently and Venus only logged "vkQueueSubmit resulted in CS error"); the runtime's queue-loss
+#    path (a timeline signal of value 0) stands in for a failed Metal command buffer, which can't be provoked.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
@@ -243,3 +246,8 @@ build descriptor_heap
 
 build msl_helpers
 "$work/msl_helpers" "$gspv"
+
+if [ "$driver" = kosmickrisp ]; then
+	build device_lost
+	"$work/device_lost"
+fi
