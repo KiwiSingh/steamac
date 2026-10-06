@@ -69,9 +69,16 @@
 //! `fx-progress-agent pad` is the root service fx-pad.service: the guest's
 //! gamepad as a uinput device driven by the launcher, its rumble sent back
 //! (pad.rs, port fx.pad).
+//!
+//! `fx-progress-agent clipboard` is the user service fx-clipboard-agent.service:
+//! the clipboard shared with the Mac (clipboard.rs, clipx11.rs, clipwl.rs; port
+//! fx.clipboard).
 
 mod alive;
 mod clock;
+mod clipboard;
+mod clipwl;
+mod clipx11;
 mod appname;
 mod codec;
 mod collect;
@@ -400,6 +407,7 @@ fn main() {
         Some("clock-sync") => std::process::exit(clock::run()),
         Some("sleep") => std::process::exit(sleep::run(&std::env::args().nth(2).unwrap_or_else(|| "suspend".into()))),
         Some("pad") => std::process::exit(pad::run()),
+        Some("clipboard") => std::process::exit(clipboard::run()),
         _ => {}
     }
     let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());

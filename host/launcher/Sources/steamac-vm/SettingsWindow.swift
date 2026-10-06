@@ -291,6 +291,21 @@ private struct GeneralTab: View {
                 }
             }
             Section {
+                Toggle(isOn: $settings.shareClipboard) {
+                    Label2(title: "Share clipboard with SteamOS",
+                           detail: "Text and images copied on the Mac can be pasted in SteamOS (Ctrl+V) and the other way round; "
+                               + "up to 1 MB of text and 16 MB images. Desktop Mode included.",
+                           now: true)
+                }
+                Toggle(isOn: $settings.shareConcealedClipboard) {
+                    Label2(title: "Include concealed (password manager) items",
+                           detail: "Passwords that apps like 1Password, Bitwarden or KeePassXC mark as concealed or transient "
+                               + "stay on the Mac unless this is on.",
+                           now: true)
+                }
+                .disabled(!settings.shareClipboard)
+            }
+            Section {
                 Toggle(isOn: $settings.muteInBackground) {
                     Label2(title: "Mute sound", detail: "Short fade; the volume comes back when you switch back.", now: true)
                 }

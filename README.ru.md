@@ -248,6 +248,33 @@ Flatpak-приложения (Discover) работают в bubblewrap, кото
 `/run/steamac/proc` (`nosuid,nodev,noexec`). Без него каждое Flatpak-приложение завершается с
 `bwrap: Can't mount proc on /newroot/proc: Operation not permitted`.
 
+## Буфер обмена (Clipboard)
+
+Settings → General → **Share clipboard with SteamOS** (по умолчанию вкл., применяется сразу): текст
+(UTF-8) и PNG-изображения, скопированные на Mac, вставляются в SteamOS (Ctrl+V — в текстовые поля
+Steam, в игры и приложения Desktop Mode) и обратно; ограничения — 1 МиБ текста и 16 МиБ на
+изображение (больше — пропускается со строкой в логе). Элементы, которые менеджеры паролей помечают
+как скрытые или временные (`org.nspasteboard.ConcealedType` / `TransientType`), остаются на Mac, пока
+не включено **Include concealed (password manager) items**. Лаунчер проверяет `changeCount`
+буфера таймером 0,5 с только пока приложение активно и VM работает, и один раз при каждой активации —
+никогда в фоне, при приостановке или сне; изображения из SteamOS попадают на Mac как PNG + TIFF.
+
+Транспорт: virtio-console порт `fx.clipboard`, двоичные кадры (`HELLO` / `STATE` / `SET` с
+порядковыми номерами / `ACK`; `host/launcher/Sources/steamac-vm/Clipboard.swift`,
+`guest/progress-agent/src/clipboard.rs`). В госте пользовательский сервис
+`fx-clipboard-agent.service` (`fx-progress-agent clipboard`, его хотят и игровая сессия, и Desktop
+Mode) владеет `CLIPBOARD` и следит за ним (XFixes; TARGETS, UTF8_STRING, text/plain;charset=utf-8,
+TEXT, STRING, image/png, INCR больше 256 КиБ) на **обоих** Xwayland-серверах gamescope (`:0` Steam,
+`:1` игры): gamescope сам синхронизирует между ними простой текст, перехватывая выделение, но не
+изображения и не текст размером под INCR. В Desktop Mode используется ещё Wayland-буфер сессии
+Plasma через `zwlr_data_control_manager_v1` (`ext_data_control_manager_v1`, если есть); KWin
+передаёт его X11-приложениям, пока активно X11-окно. Подавление эха — по содержимому: каждая
+сторона помнит последнее отправленное или принятое содержимое, так что одно копирование — одна
+передача, сколько бы раз gamescope, KWin или Klipper его ни переобъявляли. Выделение, уже бывшее на
+дисплее при его появлении (например, история, восстановленная Klipper), на Mac не отправляется —
+туда предлагается общее содержимое. В `--control-fifo` есть `chord KEYCODE ctrl` (например,
+`chord 9 ctrl` = Ctrl+V в госте) и `set shareClipboard on|off`.
+
 ## Контроллер
 
 Любой контроллер, который поддерживает GameController в macOS (Xbox, DualSense, DualShock 4, MFi, …),

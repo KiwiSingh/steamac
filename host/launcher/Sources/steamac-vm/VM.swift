@@ -37,7 +37,8 @@ final class VM {
     static let maxDisplaySide = 4095
 
     init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
-         clockPort: ClockPort?, sleepPort: SleepPort?, padPort: PadPort?, inputs: VMInputs?, netSocket: String?) throws {
+         clockPort: ClockPort?, sleepPort: SleepPort?, padPort: PadPort?, clipboardPort: ClipboardPort?,
+         inputs: VMInputs?, netSocket: String?) throws {
         try krun("krun_init_log", krun_init_log(KRUN_LOG_TARGET_DEFAULT, o.krunLogLevel, UInt32(KRUN_LOG_STYLE_AUTO), 0))
         ctx = UInt32(try krun("krun_create_ctx", krun_create_ctx()))
         try krun("krun_set_vm_config", krun_set_vm_config(ctx, UInt8(o.cpus), UInt32(o.memMiB)))
@@ -67,6 +68,11 @@ final class VM {
         if let p = padPort {
             try krun("krun_add_console_port_inout(\(PadPort.name))",
                      krun_add_console_port_inout(ctx, UInt32(con), PadPort.name, p.guestInputFd, p.guestOutputFd))
+        }
+        // The Mac's clipboard <-> SteamOS's (fx-clipboard-agent.service, ClipboardSync).
+        if let c = clipboardPort {
+            try krun("krun_add_console_port_inout(\(ClipboardPort.name))",
+                     krun_add_console_port_inout(ctx, UInt32(con), ClipboardPort.name, c.guestInputFd, c.guestOutputFd))
         }
 
         try krun("krun_set_kernel", krun_set_kernel(ctx, o.kernel, STEAMAC_KERNEL_FORMAT_RAW, o.initrd, o.cmdline))

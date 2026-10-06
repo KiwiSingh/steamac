@@ -297,8 +297,11 @@ do {
     let sleepPort = options.headless ? nil : try SleepPort()
     // The guest's gamepad follows the Mac's controller (GamepadBridge): needs the window too.
     let padPort = options.headless || !options.gamepad ? nil : try PadPort()
+    // Clipboard sharing follows the app's activation (ClipboardSync): window only.
+    let clipboardPort = options.headless ? nil : try ClipboardPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    clockPort: clockPort, sleepPort: sleepPort, padPort: padPort, inputs: inputs, netSocket: Supervisor.netSocket)
+                    clockPort: clockPort, sleepPort: sleepPort, padPort: padPort, clipboardPort: clipboardPort,
+                    inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
     let gamepad = padPort.map { GamepadBridge(port: $0, settings: settings, typeOverride: options.padType) }
     let sound = SoundControl()
@@ -406,6 +409,8 @@ do {
     let gamePause = GamePause(settings: settings, progress: progress) { progressPort.send($0) }
     gamePause.onChange = { stall.paused = $0 }
     gamePause.onConfirmedChange = { [weak wc] in wc?.gamePaused($0) }
+    // Settings > General "Share clipboard with SteamOS" (fx.clipboard).
+    let clipboard = clipboardPort.map { ClipboardSync(port: $0, settings: settings) }
     let suspender = SuspendController(ctx: vm.ctx, clock: clockPort, sleepPort: sleepPort, window: wc, presenter: presenter,
                                       stall: stall, gamePause: gamePause, gpuCounters: gpuCounters)
     suspender.onShutdown = { lifecycle.requestShutdown() }
@@ -413,6 +418,7 @@ do {
     suspender.onPausedChange = { paused in
         noPicture.vmPaused = paused
         gamepad?.vmPaused(paused)
+        clipboard?.vmPaused = paused
         if paused {
             activity.map(ProcessInfo.processInfo.endActivity)
             activity = nil
@@ -461,6 +467,7 @@ do {
     DispatchQueue.main.async {
         sound.setAppActive(NSApp.isActive)
         gamePause.setAppActive(NSApp.isActive)
+        clipboard?.setAppActive(NSApp.isActive)
     }
     if settings.showOverlay { wc.overlay.show() }
     if options.fullscreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
@@ -477,7 +484,9 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, progressPort, supervisorWatch, perfSubscription, gamePause, suspender)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, progressPort, supervisorWatch, perfSubscription, gamePause, suspender, clipboard)) {
+        app.run()
+    }
 } catch {
     fatal("\(error)")
 }

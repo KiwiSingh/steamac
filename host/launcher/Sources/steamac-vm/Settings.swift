@@ -21,7 +21,7 @@ final class LauncherSettings: ObservableObject {
     enum Key: String, CaseIterable {
         // General
         case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground,
-             closeAction, checkForUpdates, followMacTime
+             closeAction, checkForUpdates, followMacTime, shareClipboard, shareConcealedClipboard
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
              windowSizePreset, metalHUD
@@ -180,6 +180,10 @@ final class LauncherSettings: ObservableObject {
     /// While the app is not active: mute the guest's sound / freeze the focused game.
     @Published var muteInBackground = true { didSet { save(.muteInBackground, muteInBackground) } }
     @Published var pauseInBackground = false { didSet { save(.pauseInBackground, pauseInBackground) } }
+    /// The Mac's clipboard ↔ SteamOS's (ClipboardSync); concealed (password manager) items only
+    /// with the second switch. Both apply now.
+    @Published var shareClipboard = true { didSet { save(.shareClipboard, shareClipboard) } }
+    @Published var shareConcealedClipboard = false { didSet { save(.shareConcealedClipboard, shareConcealedClipboard) } }
     @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
     /// New-version check when the app starts (UpdateChecker; never in development builds); applies now.
     @Published var checkForUpdates = true { didSet { save(.checkForUpdates, checkForUpdates) } }
@@ -264,6 +268,8 @@ final class LauncherSettings: ObservableObject {
         bool(.sendCrashReports, &sendCrashReports)
         bool(.muteInBackground, &muteInBackground)
         bool(.pauseInBackground, &pauseInBackground)
+        bool(.shareClipboard, &shareClipboard)
+        bool(.shareConcealedClipboard, &shareConcealedClipboard)
         if let s = d.string(forKey: Key.closeAction.rawValue).flatMap(CloseAction.init(rawValue:)) { closeAction = s }
         bool(.checkForUpdates, &checkForUpdates)
         bool(.followMacTime, &followMacTime)
@@ -332,6 +338,8 @@ final class LauncherSettings: ObservableObject {
         case .sendCrashReports: guard let b else { return false }; sendCrashReports = b
         case .muteInBackground: guard let b else { return false }; muteInBackground = b
         case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
+        case .shareClipboard: guard let b else { return false }; shareClipboard = b
+        case .shareConcealedClipboard: guard let b else { return false }; shareConcealedClipboard = b
         case .closeAction: guard let v = CloseAction(rawValue: text) else { return false }; closeAction = v
         case .checkForUpdates: guard let b else { return false }; checkForUpdates = b
         case .followMacTime: guard let b else { return false }; followMacTime = b
@@ -383,6 +391,7 @@ final class LauncherSettings: ObservableObject {
         showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         muteInBackground = fresh.muteInBackground; pauseInBackground = fresh.pauseInBackground
+        shareClipboard = fresh.shareClipboard; shareConcealedClipboard = fresh.shareConcealedClipboard
         closeAction = fresh.closeAction; checkForUpdates = fresh.checkForUpdates; followMacTime = fresh.followMacTime
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize

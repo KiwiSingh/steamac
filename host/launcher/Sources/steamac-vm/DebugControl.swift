@@ -12,6 +12,8 @@ import Foundation
 ///   wheel N               N wheel notches (positive = up)
 ///   rel DX DY             relative motion in points (as when the mouse is captured)
 ///   key KEYCODE           macOS virtual key code, press + release
+///   chord KEYCODE MODS    the modifiers (ctrl+shift+opt+cmd) pressed in the guest, the key, the modifiers
+///                         released (e.g. `chord 9 ctrl` = Ctrl+V in SteamOS)
 ///   grab | release        capture / release the mouse
 ///   menu game|global      toggle Mouse > Capture Mouse in This Game / Auto-Capture Mouse in Games
 ///   guest LINE            handle LINE as if the guest had sent it on fx.progress
@@ -138,6 +140,31 @@ enum DebugControl {
                                             charactersIgnoringModifiers: "", isARepeat: false, keyCode: code) {
                     _ = wc.processKey(e)
                 }
+            }
+        case "chord":
+            guard let code = UInt16(args.first ?? "") else { break }
+            let table: [String: (Int, NSEvent.ModifierFlags)] = [
+                "ctrl": (kVK_Control, .control), "shift": (kVK_Shift, .shift), "opt": (kVK_Option, .option), "cmd": (kVK_Command, .command),
+            ]
+            let held = (args.count > 1 ? args[1] : "").split(separator: "+").compactMap { table[String($0)] }
+            func send(_ type: NSEvent.EventType, _ key: Int, _ flags: UInt) {
+                if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: NSEvent.ModifierFlags(rawValue: flags),
+                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: wc.window.windowNumber,
+                                            context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false,
+                                            keyCode: UInt16(key)) {
+                    _ = wc.processKey(e)
+                }
+            }
+            var flags: UInt = 0
+            for (key, f) in held {
+                flags |= f.rawValue | (Keymap.modifierMask(UInt16(key)) ?? 0)
+                send(.flagsChanged, key, flags)
+            }
+            send(.keyDown, Int(code), flags)
+            send(.keyUp, Int(code), flags)
+            for (key, f) in held.reversed() {
+                flags &= ~(f.rawValue | (Keymap.modifierMask(UInt16(key)) ?? 0))
+                send(.flagsChanged, key, flags)
             }
         case "grab": wc.grabPointer()
         case "menu":   // menu game | menu global: toggle like the Mouse menu items

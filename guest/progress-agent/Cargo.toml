@@ -7,8 +7,9 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-# Pure-Rust X11 client (RustConnection); no libxcb / C libraries.
-x11rb = { version = "0.13", default-features = false }
+# Pure-Rust X11 client (RustConnection); no libxcb / C libraries. XFixes: clipboard
+# owner changes (clipx11.rs).
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
 # Raw syscalls only: open/write/fcntl, sigaction/pause, mktime.
 libc = "0.2"
 

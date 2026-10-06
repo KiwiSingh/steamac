@@ -1,0 +1,21 @@
+# steamac: the clipboard shared with the Mac (FX Steam Launcher Settings >
+# General "Share clipboard with SteamOS"). Owns and watches CLIPBOARD on every
+# gamescope Xwayland and, in Desktop Mode, the Plasma session's Wayland
+# clipboard; talks to the launcher over /dev/virtio-ports/fx.clipboard (see
+# guest/progress-agent/src/clipboard.rs).
+# Pulled in by gamescope-session.target and plasma-session.target through
+# .wants symlinks in the layer; stops with either.
+[Unit]
+Description=FX Steam Launcher shared clipboard
+PartOf=gamescope-session.target plasma-session.target
+After=gamescope-session.service
+
+[Service]
+Type=simple
+Slice=session.slice
+ExecStart=/usr/lib/steamac/fx-progress-agent clipboard
+# Exits 0 by itself when the launcher has no fx.clipboard port.
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=3
+Nice=5
