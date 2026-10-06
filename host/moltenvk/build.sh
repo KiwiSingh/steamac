@@ -316,6 +316,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0025 = steamac: array/matrix user outputs of emulated geometry shaders are flattened into one mesh"
 	echo "         vertex member per element (Metal: 'invalid type for mesh vertex type'; Stellar Blade's cube"
 	echo "         map GS), copied into the vertex at every EmitVertex"
+	echo "  0026 = steamac: a copy (OpCopyObject) of an access chain is the same lvalue: MSL dereferenced it"
+	echo "         ('*_117[_192] = ...', Stellar Blade's compute pipelines) and stores through it did not count"
+	echo "         as writes (a constant-initialized array became a const lookup table)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

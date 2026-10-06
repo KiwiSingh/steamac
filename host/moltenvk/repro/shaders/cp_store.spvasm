@@ -1,0 +1,55 @@
+; A store through an OpCopyObject of an access chain into a function-local array (dxil-spirv, Stellar Blade's
+; compute shaders): MSL dereferenced the copy like a pointer ("*_117[_192] = ...", 'indirection requires pointer
+; operand'), the pipeline did not compile.
+;   uint a[2] = { 0, 0 };  uint *p = &a[idx];  *copy(p) = val;  o[0] = a[0];  o[1] = a[1];
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %rt ArrayStride 4
+               OpDecorate %Out BufferBlock
+               OpMemberDecorate %Out 0 Offset 0
+               OpDecorate %out DescriptorSet 0
+               OpDecorate %out Binding 1
+               OpDecorate %PC Block
+               OpMemberDecorate %PC 0 Offset 0
+               OpMemberDecorate %PC 1 Offset 4
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+       %arr2 = OpTypeArray %uint %uint_2
+    %p_f_arr = OpTypePointer Function %arr2
+      %p_f_u = OpTypePointer Function %uint
+      %zero2 = OpConstantNull %arr2
+         %rt = OpTypeRuntimeArray %uint
+        %Out = OpTypeStruct %rt
+    %p_u_out = OpTypePointer Uniform %Out
+        %out = OpVariable %p_u_out Uniform
+      %p_u_u = OpTypePointer Uniform %uint
+         %PC = OpTypeStruct %uint %uint
+       %p_pc = OpTypePointer PushConstant %PC
+         %pc = OpVariable %p_pc PushConstant
+     %p_pc_u = OpTypePointer PushConstant %uint
+       %main = OpFunction %void None %fn
+      %entry = OpLabel
+          %a = OpVariable %p_f_arr Function %zero2
+         %ip = OpAccessChain %p_pc_u %pc %uint_0
+        %idx = OpLoad %uint %ip
+         %vp = OpAccessChain %p_pc_u %pc %uint_1
+        %val = OpLoad %uint %vp
+          %p = OpAccessChain %p_f_u %a %idx
+          %q = OpCopyObject %p_f_u %p
+               OpStore %q %val
+         %e0 = OpAccessChain %p_f_u %a %uint_0
+         %v0 = OpLoad %uint %e0
+         %e1 = OpAccessChain %p_f_u %a %uint_1
+         %v1 = OpLoad %uint %e1
+         %o0 = OpAccessChain %p_u_u %out %uint_0 %uint_0
+               OpStore %o0 %v0
+         %o1 = OpAccessChain %p_u_u %out %uint_0 %uint_1
+               OpStore %o1 %v1
+               OpReturn
+               OpFunctionEnd

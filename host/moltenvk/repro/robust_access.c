@@ -11,6 +11,8 @@
  *                           clamped last element) and a runtime array after a header (bound by
  *                           (size - offset) / stride)
  *   rba_array_load.comp     whole array loaded from a buffer
+ *   cp_store.spvasm         store through an OpCopyObject of an access chain into a function-local array
+ *                           (dxil-spirv; the copy was dereferenced like a pointer and the MSL did not compile)
  *
  * Buffers are bound with ranges smaller than the buffers, filled with non-zero data: in-bounds reads must
  * return the data, out-of-bounds reads zero, out-of-bounds writes must be discarded.
@@ -306,6 +308,20 @@ int main(int argc, char **argv)
 				want[c] = inside ? in[idxs[t] * 4 + c] : 0.0f;
 			snprintf(what, sizeof(what), "rba_array_load s[%u].a%s", idxs[t], inside ? "" : " (out of bounds)");
 			check_vec4(what, out, want);
+		}
+	}
+
+	/* --- uint a[2] = { 0, 0 }; *copy(&a[idx]) = val; o[0..1] = a[0..1] */
+	p = pipeline("cp_store.spv");
+	if (p) {
+		const uint32_t *o = (const uint32_t *)out;
+		for (uint32_t idx = 0; idx < 2; idx++) {
+			memset(out, 0xff, 256);
+			dispatch(p, idx, 0x1234 + idx);
+			int ok = o[idx] == 0x1234 + idx && o[1 - idx] == 0;
+			printf("%-4s cp_store a[%u] = 0x%x through a copy of its pointer: a = { 0x%x, 0x%x }\n", ok ? "OK" : "FAIL",
+			       idx, 0x1234 + idx, o[0], o[1]);
+			fails += !ok;
 		}
 	}
 

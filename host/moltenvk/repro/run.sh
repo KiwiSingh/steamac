@@ -28,7 +28,8 @@
 #    that signalled it still runs (DXVK; Heroes Olden Era device loss).
 # 8. robust_access.c: robustBufferAccess2 MSL (texel buffer atomic store, struct/packed matrix/array
 #    loads, read-modify-write, runtime array after a header) with limited buffer ranges: in-bounds data,
-#    out-of-bounds zeros, out-of-bounds stores discarded.
+#    out-of-bounds zeros, out-of-bounds stores discarded; a store through an OpCopyObject of an access chain
+#    into a function-local array (dxil-spirv), values read back.
 # 9. invalid_usage.c: VK_NULL_HANDLE set layouts in a pipeline layout (independent sets, from Venus) and
 #    rasterizationSamples 8 (not supported by Apple GPUs); then a pipeline whose MSL does not compile, whose
 #    MSL must be logged as "[mvk-msl] " lines on stderr.
