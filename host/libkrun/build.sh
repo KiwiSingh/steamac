@@ -10,7 +10,8 @@
 #   virglrenderer  host/virglrenderer/build.sh output in work/out/host (built first if
 #                  missing); Venus over the steamac MoltenVK (host/moltenvk)
 #   Rust           $RUST_TOOLCHAIN via rustup (deps need >= 1.87)
-#   Homebrew       dtc, xz, lld (init cross-link), libepoxy
+#   libepoxy       host/libepoxy/build.sh output (built first if missing)
+#   Homebrew       dtc, xz, lld (init cross-link), pkgconf
 #
 # Features: make GPU=1 BLK=1 NET=1 INPUT=1 SND=1. v1.19.6 has no TIMESYNC make flag (the
 # vsock timesync is always built). SND on macOS uses the CoreAudio virtio-snd backend from
@@ -35,7 +36,8 @@ REPO=https://github.com/libkrun/libkrun.git
 TAG=v1.19.6
 COMMIT=227b2de6ed323fe180e02f871c5f325a90c13cc2
 RUST_TOOLCHAIN=${RUST_TOOLCHAIN:-1.90.0}
-BREW_DEPS="dtc xz lld libepoxy pkgconf"
+BREW_DEPS="dtc xz lld pkgconf"
+export MACOSX_DEPLOYMENT_TARGET=15.0 # rustc and cc build scripts inherit this target
 MAKE_FLAGS="GPU=1 BLK=1 NET=1 INPUT=1 SND=1"
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -54,6 +56,10 @@ for dep in $BREW_DEPS; do
 done
 rustup toolchain list | grep -q "^$RUST_TOOLCHAIN-" ||
 	rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+if [ ! -f "$out/lib/libepoxy.0.dylib" ] || [ ! -f "$out/lib/pkgconfig/epoxy.pc" ]; then
+	"$root/host/libepoxy/build.sh"
+fi
 
 if [ ! -f "$out/lib/pkgconfig/virglrenderer.pc" ]; then
 	"$root/host/virglrenderer/build.sh"
@@ -83,6 +89,8 @@ done
 	cd "$src"
 	export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
 	export PKG_CONFIG_PATH="$out/lib/pkgconfig"
+	# Do not fall back to Homebrew bottles; Cargo also tracks this pkg-config environment.
+	export PKG_CONFIG_LIBDIR="$out/lib/pkgconfig"
 	# No rustc strip: its llvm-objcopy debuginfo strip leaves LC_SYMTAB.stroff 4-byte aligned,
 	# which ld and dyld reject for images built against the macOS 27 SDK ("mis-aligned LINKEDIT
 	# string pool"; rust-lang/rust#157750, fixed in LLVM by llvm/llvm-project#203680).

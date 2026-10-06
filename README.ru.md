@@ -22,7 +22,11 @@ Metal 4) — экспериментальная альтернатива на ma
 - KosmicKrisp (необязательно, альтернативный Vulkan-драйвер): собирается только на macOS 26+;
   `host/kosmickrisp/build.sh` сам ставит Homebrew-зависимости (`llvm spirv-llvm-translator spirv-tools vulkan-loader glslang`).
 - OrbStack (или Docker с arm64 и `--privileged`): ядро, Mesa и образ диска собираются в Linux-контейнерах.
-- Homebrew-пакеты: `meson ninja pkg-config dtc xz lld libepoxy sshpass go` (`go`: лицензии вложенных gvproxy/desync).
+- Homebrew-пакеты: `meson ninja pkg-config dtc xz lld sshpass go` (`go`: лицензии вложенных gvproxy/desync).
+- libepoxy 1.5.10 собирается из закреплённых исходников через `host/libepoxy/build.sh` перед
+  virglrenderer и libkrun; все три используют `MACOSX_DEPLOYMENT_TARGET=15.0`, в том числе на
+  macOS 26/27. Сборка бандла отклоняет Mach-O с deployment target выше macOS 15.0
+  (только KosmicKrisp может требовать 26.0).
 
 ## Сборка и запуск
 
@@ -661,6 +665,7 @@ Report ID (первые 8 знаков ID события). Не удалось �
 |---|---|
 | `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), texel-буферы со смещением на любой тексель (vkd3d-proton), запись в маленькие буферы push-дескрипторов с robustness2, массивы дескрипторов переменной длины как runtime-массивы (Metal держал 32 МБ на массив кучи vkd3d-proton и программу), распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal (и на KosmicKrisp: `REPRO_DRIVER=kosmickrisp`); `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками; `bench/shaders.sh <дамп или пак>` меряет компиляцию шейдеров игры (SPIR-V → MSL, MSL → библиотека Metal, pipeline state; холодный/тёплый кэш, потоки) по дампу шейдеров MoltenVK или 10%-выборке из `bench/pack.py` |
 | `host/kosmickrisp/` | KosmicKrisp (Mesa main @ce576c29) + открытые MR Mesa и патчи steamac (см. «Vulkan-драйвер»), без LLVM во время работы (`-Dllvm=disabled`, `mesa_clc` из первой сборки), `-Db_ndebug=true`; только macOS 26+ |
+| `host/libepoxy/` | libepoxy 1.5.10, стандартные macOS-опции Meson, сборка для macOS 15.0 вместо копирования Homebrew bottle |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров (draw отбрасываются в virglrenderer), пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков, Vulkan-драйвер открывается во время работы (`VKR_VULKAN_DRIVER`) |
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, pad гостя Xbox 360 / DualSense / DualShock 4 из GameController.framework с вибрацией (`fx.pad`), сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |

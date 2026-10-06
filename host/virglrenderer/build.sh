@@ -36,7 +36,8 @@ UPSTREAM_REPO=https://gitlab.freedesktop.org/virgl/virglrenderer.git
 UPSTREAM_COMMIT=aafa9bd234a43c31004ec768ce000b21cf7b99ca
 PYYAML_VERSION=6.0.3
 MAKO_VERSION=1.3.10
-BREW_DEPS="libepoxy meson ninja pkgconf"
+BREW_DEPS="meson ninja pkgconf"
+export MACOSX_DEPLOYMENT_TARGET=15.0
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -56,6 +57,11 @@ fi
 for dep in $BREW_DEPS; do
 	brew list --versions "$dep" > /dev/null 2>&1 || brew install "$dep"
 done
+if [ ! -f "$out/lib/libepoxy.0.dylib" ] || [ ! -f "$out/lib/pkgconfig/epoxy.pc" ]; then
+	"$root/host/libepoxy/build.sh"
+fi
+export PKG_CONFIG_PATH="$out/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$out/lib/pkgconfig" # native dependencies come from our source builds
 if [ ! -f "$mvk_lib" ]; then
 	"$root/host/moltenvk/build.sh"
 fi

@@ -124,6 +124,47 @@ if ! log=$(xcrun actool "$HERE/AppIcon.icon" --compile "$TMP/Contents/Resources"
 fi
 rm -f "$STAGE/icon-info.plist"
 
+# Newer build hosts must not silently raise the bundle's minimum macOS version.
+# KosmicKrisp is the only exception: Settings gates its runtime dlopen on macOS 26+.
+python3 - "$TMP" <<'PY'
+from pathlib import Path
+import plistlib
+import re
+import subprocess
+import sys
+
+app = Path(sys.argv[1])
+with (app / 'Contents/Info.plist').open('rb') as f:
+    minimum = plistlib.load(f)['LSMinimumSystemVersion']
+
+def version(text):
+    parts = tuple(int(p) for p in text.split('.'))
+    return parts + (0,) * (3 - len(parts))
+
+magic = {b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe',
+         b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}
+failures = []
+for directory in ('MacOS', 'Frameworks', 'Resources'):
+    for path in sorted((app / 'Contents' / directory).rglob('*')):
+        if not path.is_file():
+            continue
+        with path.open('rb') as f:
+            if f.read(4) not in magic:
+                continue
+        limit = '26.0' if path == app / 'Contents/Frameworks/libvulkan_kosmickrisp.dylib' else minimum
+        result = subprocess.run(['xcrun', 'vtool', '-show-build', str(path)],
+                                capture_output=True, text=True)
+        minos = re.findall(r'^\s*minos\s+([0-9.]+)\s*$', result.stdout, re.M)
+        relative = path.relative_to(app)
+        if result.returncode or not minos:
+            failures.append(f'{relative}: cannot read LC_BUILD_VERSION minos: {result.stderr.strip()}')
+        elif any(version(v) > version(limit) for v in minos):
+            failures.append(f'{relative}: LC_BUILD_VERSION minos {", ".join(minos)} exceeds macOS {limit}')
+if failures:
+    sys.exit('bundle.sh: deployment target check failed:\n  ' + '\n  '.join(failures))
+print(f'bundle.sh: Mach-O deployment targets <= macOS {minimum} (KosmicKrisp <= 26.0)')
+PY
+
 # Sign inside-out: libraries, helper executables, then the bundle (executable + sealed resources).
 for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"; do
     codesign --force --sign - --timestamp=none "$f"

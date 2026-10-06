@@ -134,9 +134,13 @@ if (root / 'work/out/host/lib/libvulkan_kosmickrisp.dylib').is_file():
     source('KosmicKrisp-Mesa', mesa_commit.group(1)[:10], 'MIT', host + '/libvulkan_kosmickrisp.dylib',
            'https://gitlab.freedesktop.org/mesa/mesa/-/tree/' + mesa_commit.group(1), mesa,
            ['docs/license.rst'] + [str(p.relative_to(mesa)) for p in sorted((mesa / 'licenses').rglob('*')) if p.is_file()])
-epoxy = Path(run('brew', '--prefix', 'libepoxy'))
-source('libepoxy', run('brew', 'list', '--versions', 'libepoxy').split()[-1], 'MIT',
-       host + '/libepoxy.0.dylib', 'https://github.com/anholt/libepoxy', epoxy)
+epoxy_script = (root / 'host/libepoxy/build.sh').read_text()
+epoxy_version = re.search(r'^VERSION=([0-9.]+)$', epoxy_script, re.M)
+epoxy_url = re.search(r'^URL=(https://\S+)$', epoxy_script, re.M)
+if not epoxy_version or not epoxy_url:
+    raise RuntimeError('missing pinned libepoxy version or source URL')
+source('libepoxy', epoxy_version.group(1), 'MIT', host + '/libepoxy.0.dylib',
+       epoxy_url.group(1), root / 'work/build/host-libepoxy/src')
 sentry = root / 'host/launcher/.build/checkouts/sentry-cocoa'
 source('sentry-cocoa', '9.30.0', None, launcher,
        'https://github.com/getsentry/sentry-cocoa/tree/9.30.0', sentry)

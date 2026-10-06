@@ -4,8 +4,8 @@
 # rustup, OrbStack (or another Docker with arm64 + privileged containers).
 #
 #   ./build.sh            host stack, guest kernel, guest Venus Mesa, disk image
-#   ./build.sh host       only the macOS side (MoltenVK, KosmicKrisp on macOS 26+, virglrenderer,
-#                         libkrun, launcher)
+#   ./build.sh host       only the macOS side (MoltenVK, KosmicKrisp on macOS 26+, libepoxy,
+#                         virglrenderer, libkrun, launcher)
 #   ./build.sh guest      only the guest side (kernel, rootfs, Mesa, initramfs, layer, disk)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -18,6 +18,7 @@ host() {
     else
         echo "KosmicKrisp skipped: needs macOS 26 or newer" >&2
     fi
+    host/libepoxy/build.sh
     host/virglrenderer/build.sh
     host/libkrun/build.sh
     host/launcher/build.sh
