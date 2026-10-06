@@ -83,6 +83,10 @@ done
 	cd "$src"
 	export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
 	export PKG_CONFIG_PATH="$out/lib/pkgconfig"
+	# No rustc strip: its llvm-objcopy debuginfo strip leaves LC_SYMTAB.stroff 4-byte aligned,
+	# which ld and dyld reject for images built against the macOS 27 SDK ("mis-aligned LINKEDIT
+	# string pool"; rust-lang/rust#157750, fixed in LLVM by llvm/llvm-project#203680).
+	export CARGO_PROFILE_RELEASE_STRIP=false
 	# shellcheck disable=SC2086
 	make $MAKE_FLAGS
 	make PREFIX="$out" libkrun.pc
