@@ -42,27 +42,42 @@ if [ "$clean" = 1 ]; then
 fi
 mkdir -p "$OUT" "$WORK"
 
+artifacts() { python3 "$REPO/scripts/guest-artifacts.py" "$@"; }
+# Starting any Mesa operation invalidates the release tree receipt. Per-arch
+# receipts allow a verify-only run, but never bless an old architecture build.
+artifacts invalidate mesa
+fetched=0
+fetch_sources() {
+    docker run --rm --platform linux/arm64 \
+        -e MESA_URL -e MESA_COMMIT -e VENUS_PROTOCOL_URL -e VENUS_PROTOCOL_COMMIT \
+        -v "$SRC_VOLUME:/src" -v "$HERE/container:/scripts:ro" \
+        "$TOOLS_IMAGE" sh /scripts/fetch-mesa.sh
+    fetched=1
+}
+
 log() { printf '\n=== %s\n' "$*"; }
 
 for step in "${steps[@]}"; do
     case $step in
     fetch)
         log "fetch mesa $MESA_COMMIT"
-        docker run --rm --platform linux/arm64 \
-            -e MESA_URL -e MESA_COMMIT -e VENUS_PROTOCOL_URL -e VENUS_PROTOCOL_COMMIT \
-            -v "$SRC_VOLUME:/src" -v "$HERE/container:/scripts:ro" \
-            "$TOOLS_IMAGE" sh /scripts/fetch-mesa.sh
+        fetch_sources
         ;;
     aarch64)
         log "build aarch64 (log: $WORK/build-aarch64.log)"
+        inputs=$(artifacts begin mesa-aarch64)
+        [[ $fetched == 1 ]] || fetch_sources
         rm -rf "$OUT/usr/lib" "$OUT/usr/share/vulkan"
         docker run --rm --platform linux/arm64 \
             -v "$SRC_VOLUME:/src:ro" -v "$HERE/container:/scripts:ro" -v "$OUT:/out" -v "$WORK:/work" \
             "$AARCH64_IMAGE" bash /scripts/build-aarch64.sh > "$WORK/build-aarch64.log" 2>&1 \
             || { tail -40 "$WORK/build-aarch64.log"; exit 1; }
+        artifacts finish mesa-aarch64 "$inputs"
         ;;
     x86)
         log "build x86_64 + i386 (log: $WORK/build-x86.log)"
+        inputs=$(artifacts begin mesa-x86)
+        [[ $fetched == 1 ]] || fetch_sources
         rm -rf "$OUT/usr/share/guestos"
         docker run --rm --platform linux/amd64 \
             -e STEAMOS_X86_MIRROR -e STEAMOS_X86_BRANCH -e FEX_PROVIDER -e HOLO_KEYRING_PKG -e HOLO_KEYRING_SHA256 \
@@ -71,15 +86,22 @@ for step in "${steps[@]}"; do
             -v "$SRC_VOLUME:/src:ro" -v "$HERE/container:/scripts:ro" -v "$OUT:/out" -v "$WORK:/work" \
             "$X86_IMAGE" bash /scripts/build-x86.sh > "$WORK/build-x86.log" 2>&1 \
             || { tail -40 "$WORK/build-x86.log"; exit 1; }
+        artifacts finish mesa-x86 "$inputs"
         ;;
     verify)
         log "manifest + verify against $ROOTFS_IMG (log: $WORK/verify.log)"
+        inputs=$(artifacts begin mesa)
         [ -f "$ROOTFS_IMG" ] || { echo "missing stock rootfs image: $ROOTFS_IMG" >&2; exit 1; }
+        # An override may be useful for diagnostics, but cannot produce a release
+        # receipt for a different rootfs than the one pinned in config.env.
+        rootfs_sha=$(. "$REPO/scripts/config.env" && echo "$STEAMOS_ROOTFS_SHA256")
+        echo "$rootfs_sha  $ROOTFS_IMG" | shasum -a 256 -c -
         docker run --rm --platform linux/arm64 --privileged \
             -e MESA_URL -e MESA_COMMIT -e VENUS_PROTOCOL_COMMIT -e AARCH64_IMAGE -e X86_IMAGE \
             -e STEAMOS_X86_MIRROR -e STEAMOS_X86_BRANCH -e FEX_PROVIDER \
             -v "$ROOTFS_IMG:/rootfs.img:ro" -v "$HERE/container:/scripts:ro" -v "$OUT:/out" -v "$WORK:/work" \
             "$TOOLS_IMAGE" sh -c 'sh /scripts/manifest.sh && sh /scripts/verify.sh' 2>&1 | tee "$WORK/verify.log"
+        artifacts finish mesa "$inputs"
         ;;
     esac
 done

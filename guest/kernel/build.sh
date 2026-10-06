@@ -65,6 +65,9 @@ if [ "${1:-}" = clean ]; then
 	exit 0
 fi
 
+# No receipt survives a failed rebuild or a source edit during the build.
+inputs=$(python3 "$root/scripts/guest-artifacts.py" begin kernel)
+
 mkdir -p "$cache" "$out"
 tarball=$cache/linux-$KVER.tar.xz
 if ! echo "$KSHA256  $tarball" | shasum -a 256 -c - > /dev/null 2>&1; then
@@ -89,3 +92,4 @@ cp "$out/kernel.config" "$here/config-steamac"
 file "$out/Image"
 ls -l "$out/Image" "$out/kernel.config"
 shasum -a 256 "$out/Image"
+python3 "$root/scripts/guest-artifacts.py" finish kernel "$inputs"

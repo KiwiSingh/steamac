@@ -38,6 +38,17 @@ Build parts separately: `./build.sh host`, `./build.sh guest`, or the scripts in
 The SteamOS image is downloaded from Valve's servers (a signed RAUC bundle); its signature and
 sha256 are verified.
 
+Guest release artifacts have adjacent `.inputs.json` build receipts binding their selected Git
+working-tree inputs to their output bytes. Relevant dirty edits invalidate them; unrelated commits
+do not. `host/launcher/bundle.sh` refuses missing/stale receipts before modifying the app;
+`dist.sh` also validates the receipts and resources inside an existing app before packaging it.
+The error names the step to rerun. To refresh guest artifacts without touching an existing SteamOS
+disk: `guest/kernel/build.sh` (only when its inputs changed or its receipt is missing),
+`scripts/build-image.sh builder rootfs`, `guest/mesa/build.sh`, then
+`scripts/build-image.sh initramfs layer`; finally `host/launcher/build.sh`. An unstamped artifact
+needs its normal build once; kernel builds reuse the build volume without `clean`.
+`ALLOW_NO_VENUS=1` layers are test-only and cannot be released.
+
 VM options: `./run.sh --display 1920x1080 --cpus 10 --mem 24576` (full list:
 `work/out/steamac-vm --help`).
 

@@ -40,6 +40,9 @@ case ${1:-} in
     *) die "usage: $0 [--no-notarize]" ;;
 esac
 [[ -d $SRC ]] || die "missing $SRC (run host/launcher/build.sh)"
+# An already assembled app is not an escape hatch around guest provenance.
+# Check its own sealed resource bytes and receipts before touching dist/.
+python3 "$ROOT/scripts/guest-artifacts.py" check-bundle "$SRC/Contents/Resources"
 
 # Valid identities only, as "<SHA-1> <name>".
 valid=$(security find-identity -v -p codesigning \

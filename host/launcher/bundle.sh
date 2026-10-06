@@ -23,6 +23,8 @@ APP="$OUT/$NAME.app"
 STAGE="$OUT/.bundle.$$"
 TMP="$STAGE/$NAME.app"
 
+# Fail before notices/staging (and before touching an existing app).
+python3 "$ROOT/scripts/guest-artifacts.py" check-release
 for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy host/bin/desync; do
     [[ -f "$OUT/$f" ]] || { echo "bundle.sh: missing $OUT/$f" >&2; exit 1; }
 done
@@ -103,6 +105,7 @@ done < <(otool -L "$exe" | awk 'NR > 1 {print $1}')
 # Resources (APFS clones where possible; the layer and kernel are rebuilt by the guest scripts).
 for f in Image initramfs.cpio.gz steamac-layer.img; do
     cp -c "$OUT/$f" "$TMP/Contents/Resources/$f" 2>/dev/null || cp "$OUT/$f" "$TMP/Contents/Resources/$f"
+    cp "$OUT/$f.inputs.json" "$TMP/Contents/Resources/$f.inputs.json"
 done
 cp "$OUT/host/bin/gvproxy" "$TMP/Contents/Resources/gvproxy"
 cp "$OUT/host/bin/desync" "$TMP/Contents/Resources/desync"
@@ -164,6 +167,10 @@ if failures:
     sys.exit('bundle.sh: deployment target check failed:\n  ' + '\n  '.join(failures))
 print(f'bundle.sh: Mach-O deployment targets <= macOS {minimum} (KosmicKrisp <= 26.0)')
 PY
+
+# Recheck the copied receipts and bytes before sealing the app. A concurrent
+# guest rebuild during assembly must not publish mismatched resources.
+python3 "$ROOT/scripts/guest-artifacts.py" check-bundle "$TMP/Contents/Resources"
 
 # Sign inside-out: libraries, helper executables, then the bundle (executable + sealed resources).
 for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"; do
