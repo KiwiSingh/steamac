@@ -219,7 +219,7 @@ Steam Link и Mac должны находиться в **одной подсет
 | General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться). Пока агент подтверждает заморозку (`game-frozen`/`game-thawed`), окно затемнено, с карточкой «Game paused · Click to resume» и заголовком «— paused»; щелчок по окну возвращает игру и в гостя не передаётся; отчёты о сбоях (`--no-crash-reports`, см. ниже); **Check for updates at startup** (по умолчанию вкл., см. «Проверка обновлений»); лог статистики кадров (`--perf-stats`) | полный экран при старте; **Use the Mac's time zone and clock format** (по умолчанию вкл., см. выше) |
 | Display | гость следует за размером окна; Metal Performance HUD Apple в правом верхнем углу окна (Ctrl+Cmd+P, View → Show Metal Performance HUD) | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
-| Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), получает ли SteamOS pad и каким он виден (`--no-gamepad`, `--pad`, см. «Контроллер»), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | — |
+| Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), получает ли SteamOS pad и каким он виден (`--no-gamepad`, `--pad`, см. «Контроллер»), передаётся ли DualSense как есть, A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | — |
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
 | Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk…, клиент Steam (`--steam-client`, см. «Клиент Steam»), Vulkan-драйвер (`--vulkan-driver`, см. «Vulkan-драйвер») |
 
@@ -374,8 +374,25 @@ Plasma через `zwlr_data_control_manager_v1` (`ext_data_control_manager_v1`,
 гироскоп, световая панель и адаптивные курки — HID-функции настоящего контроллера, которых у этого
 evdev-устройства нет.
 
+**Проброс DualSense.** Когда pad ведёт DualSense (или Edge) и он виден как DualSense, Settings →
+Controller → **Pass a DualSense through** (по умолчанию включено, применяется сразу) отдаёт SteamOS
+сам контроллер вместо uinput-pad. Лаунчер открывает его как сырое HID-устройство (IOHIDManager, без
+захвата: GameController по-прежнему выбирает его и будит спящего гостя), а `fx-pad` воссоздаёт его
+через `/dev/uhid` с тем же дескриптором отчётов, vendor/product и шиной USB или Bluetooth. Драйвер
+гостя `hid-playstation` цепляется к нему, как к подключённому контроллеру (геймпад, сенсорная
+панель, датчики движения, световая панель и индикаторы игрока, индикатор mute), а Steam работает с
+`/dev/hidraw*` своим HIDAPI-драйвером DualSense: Steam Input получает сенсорную панель, гироскоп и
+кнопку mute и сам управляет вибрацией, световой панелью и адаптивными курками. Входные отчёты идут в
+гостя как есть (`hid-input`); выходные отчёты, GET_REPORT и SET_REPORT — обратно в контроллер
+(`hid-output`, `hid-get` / `hid-get-reply`, `hid-set` / `hid-set-reply`, hex с ID отчёта в начале).
+Если гость не успевает, старые входные отчёты отбрасываются, а не копятся: каждый несёт всё
+состояние. Перестановка A/B и мёртвая зона к проброшенному контроллеру не применяются. GameController
+не сообщает, какое HID-устройство соответствует контроллеру: при нескольких DualSense пробрасывается
+первый найденный. Старые слои гостя без `caps hid` по-прежнему получают uinput-pad.
+
 Тестовые команды `--control-fifo`: `pad on` (pad без контроллера, как в `--input-selftest`),
-`pad off`, `pad test` (A + левый стик), `pad state` (pad гостя и последний уровень вибрации).
+`pad off`, `pad test` (A + левый стик), `pad state` (pad гостя, последний уровень вибрации, принимает
+ли гость HID-устройства, подключённые DualSense и число проброшенных входных отчётов).
 
 ## FX Steam Launcher.app
 
@@ -753,11 +770,11 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `host/libepoxy/` | libepoxy 1.5.10, стандартные macOS-опции Meson, сборка для macOS 15.0 вместо копирования Homebrew bottle |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров (draw отбрасываются в virglrenderer), пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков, Vulkan-драйвер открывается во время работы (`VKR_VULKAN_DRIVER`) |
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
-| `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, pad гостя Xbox 360 / DualSense / DualShock 4 из GameController.framework с вибрацией (`fx.pad`), сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
-| `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
+| `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, pad гостя Xbox 360 / DualSense / DualShock 4 из GameController.framework с вибрацией или DualSense, проброшенный как сырое HID-устройство (`fx.pad`), сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
+| `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX; uhid, hidraw и `hid-playstation` (с нужными ему классами LED) для проброшенного DualSense |
 | `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики); x86_64-репортёр сбоев эмулируемых игр (`/usr/lib/steamac/x86_64/fault-report.so`) |
 | `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos`; `steamac.tz=` — часовой пояс Mac в `/etc/localtime`; нетронутый procfs в `/run/steamac/proc` для песочниц Flatpak |
-| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, режим рабочего стола (Plasma внутри gamescope), маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`) и его root-сервисы (`fx.clock`, `fx.sleep`, uinput-геймпад на `fx.pad`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), фоновая обработка шейдеров Steam включена по умолчанию (`steam-shader-defaults`) |
+| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, режим рабочего стола (Plasma внутри gamescope), маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`) и его root-сервисы (`fx.clock`, `fx.sleep`, uinput- или uhid-геймпад на `fx.pad`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), фоновая обработка шейдеров Steam включена по умолчанию (`steam-shader-defaults`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
 MoltenVK также исправляет fragment-хелперы с discard в иначе пустом блоке SPIR-V
@@ -784,6 +801,12 @@ MoltenVK также исправляет fragment-хелперы с discard в �
   его как `PS5 Controller` (тип PS5) и показывает значки PlayStation; pad появляется, исчезает и
   меняет вид, пока ВМ работает; вибрация из SDL и из виртуального pad Steam доходит до лаунчера
   (`rumble 49152 16384` 1,5 с, затем 0); воспроизведение на физическом контроллере ещё не проверено;
+- проброс DualSense, сторона гостя: uhid-DualSense с настоящим USB-дескриптором отчётов, которого
+  питает замена лаунчера, привязывает `hid-playstation` (геймпад, сенсорная панель, датчики движения,
+  гнездо гарнитуры, RGB- и индикаторы игрока); касание и нажатие сенсорной панели доходят до её
+  устройства, кнопка mute переключает индикатор mute выходным отчётом обратно на сторону Mac, а Steam
+  открывает `/dev/hidraw*` своим HIDAPI-драйвером (`Controller using HIDAPI driver, vid=0x054c,
+  pid=0x0ce6`). Сторона Mac (IOHIDManager, физический DualSense по USB или Bluetooth) ещё не проверена;
 - режим рабочего стола: Switch to Desktop, рабочий стол Plasma с мышью (в том числе с полями), Return
   to Gaming Mode, загрузка сразу в рабочий стол; песочницы Flatpak запускаются;
 - обновление A→B официальным OTA и откат;

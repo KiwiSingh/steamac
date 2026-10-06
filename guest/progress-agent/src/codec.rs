@@ -1,5 +1,5 @@
 //! Base64 (standard alphabet, padded) and SHA-256 for the log bundle transfer
-//! (`logs <id> <chunk>` / `logs-end <id> <sha256>`); no crates needed.
+//! (`logs <id> <chunk>` / `logs-end <id> <sha256>`), hex for HID reports on fx.pad; no crates needed.
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -13,6 +13,27 @@ pub fn base64(data: &[u8]) -> String {
         out.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
     }
     out
+}
+
+/// Lowercase hex, two digits per byte.
+pub fn hex(data: &[u8]) -> String {
+    const D: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(data.len() * 2);
+    for &b in data {
+        out.push(D[(b >> 4) as usize] as char);
+        out.push(D[(b & 15) as usize] as char);
+    }
+    out
+}
+
+/// `hex` back to bytes (either case); None for an odd length or a non-hex digit.
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    let s = s.as_bytes();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    s.chunks(2).map(|p| Some(digit(p[0])? << 4 | digit(p[1])?)).collect()
 }
 
 const K: [u32; 64] = [
@@ -76,6 +97,16 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn hex_round_trip() {
+        assert_eq!(hex(&[0x00, 0x0f, 0xa1, 0xff]), "000fa1ff");
+        assert_eq!(unhex("000fA1ff"), Some(vec![0x00, 0x0f, 0xa1, 0xff]));
+        assert_eq!(unhex(""), Some(vec![]));
+        assert_eq!(unhex("abc"), None, "odd length");
+        assert_eq!(unhex("zz"), None);
+        assert_eq!(unhex("+1"), None, "a sign is not a digit");
     }
 
     #[test]

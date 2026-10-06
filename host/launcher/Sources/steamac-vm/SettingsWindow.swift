@@ -568,8 +568,16 @@ private struct ControllerTab: View {
                     Label2(title: "Appears in SteamOS as",
                            detail: "Button glyphs and layout in Steam. Automatic: the same kind as the controller "
                                + "that drives it (DualSense, DualShock 4, else Xbox 360). Buttons, sticks, triggers "
-                               + "and rumble (no touchpad, gyro or lightbar).",
+                               + "and rumble (no touchpad, gyro or lightbar unless a DualSense is passed through).",
                            now: true, key: .padType)
+                }
+                .disabled(!settings.virtualPad)
+                Toggle(isOn: $settings.dualSensePassthrough) {
+                    Label2(title: "Pass a DualSense through",
+                           detail: "When a DualSense appears as a DualSense, SteamOS gets the controller itself: "
+                               + "touchpad, motion sensors, lightbar, mute button and its light, rumble and adaptive "
+                               + "triggers, as on a Steam Deck. Swap and deadzone below do not apply to it.",
+                           now: true)
                 }
                 .disabled(!settings.virtualPad)
                 Picker(selection: $settings.controllerID) {

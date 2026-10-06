@@ -67,8 +67,8 @@
 //! a guest kernel suspend nothing could wake (sleep.rs, port fx.sleep).
 //!
 //! `fx-progress-agent pad` is the root service fx-pad.service: the guest's
-//! gamepad as a uinput device driven by the launcher, its rumble sent back
-//! (pad.rs, port fx.pad).
+//! gamepad as a uinput device driven by the launcher, its rumble sent back, or
+//! the Mac's DualSense itself as a uhid device (pad.rs, uhid.rs; port fx.pad).
 //!
 //! `fx-progress-agent clipboard` is the user service fx-clipboard-agent.service:
 //! the clipboard shared with the Mac (clipboard.rs, clipx11.rs, clipwl.rs; port
@@ -90,6 +90,7 @@ mod sleep;
 mod steamlog;
 mod steamstrings;
 mod ui;
+mod uhid;
 mod freeze;
 
 use std::sync::atomic::{AtomicI32, Ordering};

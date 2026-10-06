@@ -1,26 +1,44 @@
 //! `fx-progress-agent pad`: root system service (fx-pad.service, started by udev when the
-//! launcher's virtio-console port `fx.pad` appears) that owns the guest's gamepad as a uinput
-//! device. The launcher reads the Mac's controller (GameController) and drives this device; the
-//! device's force feedback (FF_RUMBLE, what SDL and Steam use for rumble) goes back to the
-//! launcher, which plays it on the controller. Unlike a virtio-input device, the pad can come and
-//! go and change its identity while the VM runs.
+//! launcher's virtio-console port `fx.pad` appears) that owns the guest's gamepad. The pad is
+//! one of two kinds:
+//! - a uinput device the launcher drives from the Mac's controller (GameController); its force
+//!   feedback (FF_RUMBLE, what SDL and Steam use for rumble) goes back to the launcher, which
+//!   plays it on the controller;
+//! - the Mac's HID device itself, passed through as a uhid device (uhid.rs): the guest's own
+//!   driver binds to it (hid-playstation for a DualSense: touchpad, motion sensors, lights,
+//!   rumble) and Steam reads its /dev/hidraw. Input reports come from the Mac as they are;
+//!   output reports and feature/set requests go back to the Mac's device.
+//! Unlike a virtio-input device, the pad can come and go and change its identity while the VM
+//! runs.
 //!
 //! Protocol on fx.pad, one message per line:
 //!   host -> guest  `create <bus> <vendor> <product> <version> <keys> <axes> <name>`
 //!                    ids as 4-digit hex; keys `code,code,...`; axes `code:min:max:fuzz:flat,...`;
 //!                    the name is the rest of the line. Replaces the current pad, if any.
-//!                  `remove`
+//!                  `hid-create <bus> <vendor> <product> <version> <country> <descriptor> <name>`
+//!                    a uhid pad: ids hex, the report descriptor in hex, the name the rest of the
+//!                    line. Replaces the current pad, if any.
+//!                  `remove`                   removes the pad of either kind
 //!                  `ev <type>:<code>:<value> ...`   one input frame (EV_KEY / EV_ABS), then SYN_REPORT
+//!                  `hid-input <report>`       one input report (hex, report ID first if numbered)
+//!                  `hid-get-reply <id> <err> [<report>]`  answers `hid-get` (err: 0 or an errno)
+//!                  `hid-set-reply <id> <err>`             answers `hid-set`
 //!   guest -> host  `hello`                    at start: no pad exists; the host sends `create` again
+//!                  `caps hid`                 right after `hello`: `hid-create` is understood
 //!                  `rumble <strong> <weak>`   the pad's combined rumble, 0..65535 each, on every change
+//!                  `hid-output <type> <report>`       a driver / hidraw output report for the device
+//!                  `hid-get <id> <type> <rnum>`       GET_REPORT, waits for `hid-get-reply <id>`
+//!                  `hid-set <id> <type> <report>`     SET_REPORT, waits for `hid-set-reply <id>`
+//!                    type: feature | output | input; rnum decimal; reports hex, ID first.
 //!
 //! uinput leaves force-feedback playback to its user-space driver: uploads and erases arrive as
 //! EV_UINPUT requests on the device fd, plays and stops as EV_FF events. `Rumble` implements the
 //! kernel's ff-memless semantics for FF_RUMBLE (start after replay.delay, stop after
 //! replay.length, 0 = until stopped, `value` repetitions, re-uploading a playing effect restarts
 //! it, concurrent effects add up and saturate) on a millisecond clock, testable without a device.
+//! A uhid pad has no such thing: its driver sends rumble in its own output reports.
 //!
-//! Environment overrides (testing): FX_PAD_PORT=<path>, FX_PAD_UINPUT=<path>.
+//! Environment overrides (testing): FX_PAD_PORT=<path>, FX_PAD_UINPUT=<path>, FX_PAD_UHID=<path>.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -28,10 +46,13 @@ use std::io;
 use std::mem::size_of;
 use std::time::Instant;
 
+use crate::codec::{hex, unhex};
 use crate::port::Port;
+use crate::uhid::{self, HidSpec};
 
 const DEFAULT_PORT: &str = "/dev/virtio-ports/fx.pad";
 const DEFAULT_UINPUT: &str = "/dev/uinput";
+const DEFAULT_UHID: &str = "/dev/uhid";
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
@@ -92,8 +113,12 @@ pub struct Spec {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Create(Spec),
+    HidCreate(HidSpec),
     Remove,
     Frame(Vec<(u16, u16, i32)>),
+    HidInput(Vec<u8>),
+    HidGetReply { id: u32, err: u16, data: Vec<u8> },
+    HidSetReply { id: u32, err: u16 },
 }
 
 /// One host line; None for anything malformed.
@@ -102,6 +127,45 @@ pub fn parse(line: &str) -> Option<Command> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     match verb {
         "remove" if rest.trim().is_empty() => Some(Command::Remove),
+        "hid-input" => {
+            let report = unhex(rest.trim())?;
+            (!report.is_empty() && report.len() <= uhid::DATA_MAX).then_some(Command::HidInput(report))
+        }
+        "hid-get-reply" => {
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            if !(2..=3).contains(&f.len()) {
+                return None;
+            }
+            let data = f.get(2).map_or(Some(Vec::new()), |s| unhex(s))?;
+            (data.len() <= uhid::DATA_MAX).then_some(())?;
+            Some(Command::HidGetReply { id: f[0].parse().ok()?, err: f[1].parse().ok()?, data })
+        }
+        "hid-set-reply" => {
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            (f.len() == 2).then_some(())?;
+            Some(Command::HidSetReply { id: f[0].parse().ok()?, err: f[1].parse().ok()? })
+        }
+        "hid-create" => {
+            let f: Vec<&str> = rest.splitn(7, ' ').collect();
+            if f.len() != 7 {
+                return None;
+            }
+            let hex16 = |s: &str| u16::from_str_radix(s, 16).ok();
+            let descriptor = unhex(f[5])?;
+            let name = f[6].trim();
+            if name.is_empty() || descriptor.is_empty() || descriptor.len() > uhid::DATA_MAX {
+                return None;
+            }
+            Some(Command::HidCreate(HidSpec {
+                bus: hex16(f[0])?,
+                vendor: hex16(f[1])?,
+                product: hex16(f[2])?,
+                version: hex16(f[3])?,
+                country: u32::from_str_radix(f[4], 16).ok()?,
+                descriptor,
+                name: name.to_string(),
+            }))
+        }
         "ev" => {
             let mut events = Vec::new();
             for e in rest.split_whitespace() {
@@ -399,10 +463,26 @@ impl Drop for Device {
 
 // MARK: service
 
+/// The guest's pad: driven by the host (uinput) or the Mac's own HID device (uhid).
+enum Pad {
+    Uinput(Device),
+    Hid(uhid::Device),
+}
+
+impl Pad {
+    fn fd(&self) -> libc::c_int {
+        match self {
+            Pad::Uinput(d) => d.fd,
+            Pad::Hid(d) => d.fd,
+        }
+    }
+}
+
 /// Serve the port until the host closes it (exit 0); exit 1 if it cannot be opened.
 pub fn run() -> i32 {
     let port_path = std::env::var("FX_PAD_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
     let uinput = std::env::var("FX_PAD_UINPUT").unwrap_or_else(|_| DEFAULT_UINPUT.into());
+    let uhid_path = std::env::var("FX_PAD_UHID").unwrap_or_else(|_| DEFAULT_UHID.into());
     let mut port = match Port::open(&port_path) {
         Ok(p) => p,
         Err(e) => {
@@ -412,11 +492,12 @@ pub fn run() -> i32 {
     };
     let clock = Instant::now();
     let ms = || clock.elapsed().as_millis() as u64;
-    let mut pad: Option<Device> = None;
+    let mut pad: Option<Pad> = None;
     let mut rumble = Rumble::default();
     let mut sent = (0u16, 0u16);
     eprintln!("fx-pad: > hello");
     port.send_quiet("hello");
+    port.send_quiet("caps hid");
     loop {
         for line in port.read_lines() {
             match parse(&line) {
@@ -426,9 +507,23 @@ pub fn run() -> i32 {
                     match Device::create(&uinput, &spec) {
                         Ok(d) => {
                             eprintln!("fx-pad: created \"{}\" ({:04x}:{:04x})", spec.name, spec.vendor, spec.product);
-                            pad = Some(d);
+                            pad = Some(Pad::Uinput(d));
                         }
                         Err(e) => eprintln!("fx-pad: cannot create \"{}\" on {uinput}: {e}", spec.name),
+                    }
+                }
+                Some(Command::HidCreate(spec)) => {
+                    pad = None;
+                    rumble = Rumble::default();
+                    match uhid::Device::create(&uhid_path, &spec) {
+                        Ok(d) => {
+                            eprintln!(
+                                "fx-pad: created HID \"{}\" ({:04x}:{:04x}:{:04x}, {}-byte descriptor)",
+                                spec.name, spec.bus, spec.vendor, spec.product, spec.descriptor.len()
+                            );
+                            pad = Some(Pad::Hid(d));
+                        }
+                        Err(e) => eprintln!("fx-pad: cannot create HID \"{}\" on {uhid_path}: {e}", spec.name),
                     }
                 }
                 Some(Command::Remove) => {
@@ -438,43 +533,83 @@ pub fn run() -> i32 {
                     rumble = Rumble::default();
                 }
                 Some(Command::Frame(events)) => {
-                    if let Some(d) = &pad {
+                    if let Some(Pad::Uinput(d)) = &pad {
                         if let Err(e) = d.write_frame(&events) {
                             eprintln!("fx-pad: write: {e}");
+                        }
+                    }
+                }
+                Some(Command::HidInput(report)) => {
+                    if let Some(Pad::Hid(d)) = &pad {
+                        if let Err(e) = d.write(&uhid::encode_input(&report)) {
+                            eprintln!("fx-pad: HID input: {e}");
+                        }
+                    }
+                }
+                Some(Command::HidGetReply { id, err, data }) => {
+                    if let Some(Pad::Hid(d)) = &pad {
+                        if let Err(e) = d.write(&uhid::encode_get_reply(id, err, &data)) {
+                            eprintln!("fx-pad: HID get reply {id}: {e}");
+                        }
+                    }
+                }
+                Some(Command::HidSetReply { id, err }) => {
+                    if let Some(Pad::Hid(d)) = &pad {
+                        if let Err(e) = d.write(&uhid::encode_set_reply(id, err)) {
+                            eprintln!("fx-pad: HID set reply {id}: {e}");
                         }
                     }
                 }
                 None => eprintln!("fx-pad: ignoring {:?}", line.trim()),
             }
         }
-        if let Some(d) = &pad {
-            for e in d.read_events() {
-                let now = ms();
-                match e.type_ {
-                    EV_UINPUT => {
-                        if let Err(err) = d.serve(e.code, e.value as u32, &mut rumble, now) {
-                            eprintln!("fx-pad: force-feedback request {}: {err}", e.code);
+        match &pad {
+            Some(Pad::Uinput(d)) => {
+                for e in d.read_events() {
+                    let now = ms();
+                    match e.type_ {
+                        EV_UINPUT => {
+                            if let Err(err) = d.serve(e.code, e.value as u32, &mut rumble, now) {
+                                eprintln!("fx-pad: force-feedback request {}: {err}", e.code);
+                            }
                         }
+                        EV_FF if e.code < FF_EFFECTS_MAX => rumble.play(e.code as i16, e.value, now),
+                        _ => {}
                     }
-                    EV_FF if e.code < FF_EFFECTS_MAX => rumble.play(e.code as i16, e.value, now),
-                    _ => {}
                 }
             }
+            Some(Pad::Hid(d)) => {
+                for e in d.read_events() {
+                    match e {
+                        uhid::Event::Output { rtype, data } => {
+                            port.send_quiet(&format!("hid-output {} {}", rtype.name(), hex(&data)))
+                        }
+                        uhid::Event::GetReport { id, rnum, rtype } => {
+                            port.send_quiet(&format!("hid-get {id} {} {rnum}", rtype.name()))
+                        }
+                        uhid::Event::SetReport { id, rtype, data, .. } => {
+                            port.send_quiet(&format!("hid-set {id} {} {}", rtype.name(), hex(&data)))
+                        }
+                        other => eprintln!("fx-pad: HID {other:?}"),
+                    }
+                }
+            }
+            None => {}
         }
         let now = ms();
-        let level = if pad.is_some() { rumble.level(now) } else { (0, 0) };
+        let level = if matches!(pad, Some(Pad::Uinput(_))) { rumble.level(now) } else { (0, 0) };
         if level != sent {
             port.send_quiet(&format!("rumble {} {}", level.0, level.1));
             sent = level;
         }
         port.flush();
 
-        // Wait for host lines, uinput requests / FF events, the next rumble change, or (while
-        // bytes for the host are waiting) a retry tick.
+        // Wait for host lines, uinput requests / FF events / uhid requests, the next rumble
+        // change, or (while bytes for the host are waiting) a retry tick.
         let Some(port_fd) = port.read_fd() else { return 0 };
         let mut pfds = [
             libc::pollfd { fd: port_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: pad.as_ref().map_or(-1, |d| d.fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: pad.as_ref().map_or(-1, Pad::fd), events: libc::POLLIN, revents: 0 },
         ];
         let mut wait = rumble.next_change(now).map(|t| t.saturating_sub(now) as i64);
         if port.has_pending() {
@@ -543,6 +678,40 @@ mod tests {
     fn parses_frames_and_remove() {
         assert_eq!(parse("ev 1:304:1 3:0:-32768\n"), Some(Command::Frame(vec![(1, 304, 1), (3, 0, -32768)])));
         assert_eq!(parse("remove"), Some(Command::Remove));
+    }
+
+    #[test]
+    fn parses_hid_create_with_descriptor_and_name() {
+        let Some(Command::HidCreate(s)) = parse("hid-create 0005 054c 0ce6 0100 21 05010905a101 DualSense Wireless Controller")
+        else {
+            panic!("not a hid-create")
+        };
+        assert_eq!((s.bus, s.vendor, s.product, s.version, s.country), (5, 0x054c, 0x0ce6, 0x0100, 0x21));
+        assert_eq!(s.descriptor, vec![0x05, 0x01, 0x09, 0x05, 0xa1, 0x01]);
+        assert_eq!(s.name, "DualSense Wireless Controller");
+    }
+
+    #[test]
+    fn parses_hid_reports_and_replies() {
+        assert_eq!(parse("hid-input 01807f"), Some(Command::HidInput(vec![0x01, 0x80, 0x7f])));
+        assert_eq!(parse("hid-get-reply 7 0 0501"), Some(Command::HidGetReply { id: 7, err: 0, data: vec![0x05, 0x01] }));
+        assert_eq!(parse("hid-get-reply 8 5"), Some(Command::HidGetReply { id: 8, err: 5, data: vec![] }), "an error without data");
+        assert_eq!(parse("hid-set-reply 9 0"), Some(Command::HidSetReply { id: 9, err: 0 }));
+    }
+
+    #[test]
+    fn rejects_malformed_hid_lines() {
+        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 0501"), None, "no name");
+        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 - name"), None, "no descriptor");
+        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 050 name"), None, "odd hex");
+        let huge = format!("hid-create 0003 054c 0ce6 0100 0 {} name", "00".repeat(uhid::DATA_MAX + 1));
+        assert_eq!(parse(&huge), None, "descriptor beyond HID_MAX_DESCRIPTOR_SIZE");
+        assert_eq!(parse("hid-input"), None, "empty report");
+        assert_eq!(parse(&format!("hid-input {}", "00".repeat(uhid::DATA_MAX + 1))), None, "report beyond UHID_DATA_MAX");
+        assert_eq!(parse("hid-get-reply 7"), None);
+        assert_eq!(parse("hid-get-reply x 0 01"), None);
+        assert_eq!(parse("hid-set-reply 9"), None);
+        assert_eq!(parse("hid-set-reply 9 0 1"), None);
     }
 
     fn fx(strong: u16, weak: u16, length: u16, delay: u16) -> Effect {

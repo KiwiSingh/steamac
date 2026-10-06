@@ -28,7 +28,7 @@ final class LauncherSettings: ObservableObject {
         // Mouse
         case autoCaptureGames, gameNames
         // Controller
-        case virtualPad, padType, controllerID, swapABXY, stickDeadzone
+        case virtualPad, padType, dualSensePassthrough, controllerID, swapABXY, stickDeadzone
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
@@ -274,6 +274,9 @@ final class LauncherSettings: ObservableObject {
     /// SteamOS gets a gamepad while a controller is connected.
     @Published var virtualPad = true { didSet { save(.virtualPad, virtualPad) } }
     @Published var padType = PadType.auto { didSet { save(.padType, padType.rawValue) } }
+    /// A DualSense that SteamOS gets as a DualSense is passed through as itself (HIDPassthrough):
+    /// touchpad, motion, lights, mute button, rumble and triggers handled in SteamOS.
+    @Published var dualSensePassthrough = true { didSet { save(.dualSensePassthrough, dualSensePassthrough) } }
     /// "" = first connected controller, else GamepadBridge.identifier(of:).
     @Published var controllerID = "" { didSet { save(.controllerID, controllerID) } }
     @Published var swapABXY = false { didSet { save(.swapABXY, swapABXY) } }
@@ -360,6 +363,7 @@ final class LauncherSettings: ObservableObject {
         bool(.autoCaptureGames, &autoCaptureGames)
         bool(.virtualPad, &virtualPad)
         if let s = d.string(forKey: Key.padType.rawValue).flatMap(PadType.init(rawValue:)) { padType = s }
+        bool(.dualSensePassthrough, &dualSensePassthrough)
         string(.controllerID, &controllerID)
         bool(.swapABXY, &swapABXY)
         int(.stickDeadzone, &stickDeadzone)
@@ -433,6 +437,7 @@ final class LauncherSettings: ObservableObject {
         case .gameNames: return false
         case .virtualPad: guard let b else { return false }; virtualPad = b
         case .padType: guard let v = PadType(rawValue: text) else { return false }; padType = v
+        case .dualSensePassthrough: guard let b else { return false }; dualSensePassthrough = b
         case .controllerID: controllerID = text
         case .swapABXY: guard let b else { return false }; swapABXY = b
         case .stickDeadzone: guard let i else { return false }; stickDeadzone = i
@@ -473,7 +478,8 @@ final class LauncherSettings: ObservableObject {
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset
         metalHUD = fresh.metalHUD
         autoCaptureGames = fresh.autoCaptureGames
-        virtualPad = fresh.virtualPad; padType = fresh.padType; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
+        virtualPad = fresh.virtualPad; padType = fresh.padType; dualSensePassthrough = fresh.dualSensePassthrough
+        controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
         cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network

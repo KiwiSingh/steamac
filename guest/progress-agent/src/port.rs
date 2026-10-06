@@ -76,7 +76,9 @@ impl Port {
             lines.push(String::from_utf8_lossy(&self.rx[..nl]).to_string());
             self.rx.drain(..=nl);
         }
-        if self.rx.len() > 4096 {
+        // An incomplete line this long is garbage (the longest, fx.pad's `hid-create`, is
+        // under 8.3 KB with a maximal 4 KiB report descriptor).
+        if self.rx.len() > 16 * 1024 {
             self.rx.clear();
         }
         lines
