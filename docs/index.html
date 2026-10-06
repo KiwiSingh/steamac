@@ -36,6 +36,7 @@
   <nav class="nav-links">
     <a href="#scene"><span lang="en">Inside</span><span lang="ru">Внутри</span></a>
     <a href="#proof"><span lang="en">Games</span><span lang="ru">Игры</span></a>
+    <a href="#graphics"><span lang="en">Graphics</span><span lang="ru">Графика</span></a>
     <a href="#settings"><span lang="en">Settings</span><span lang="ru">Настройки</span></a>
     <a href="#get"><span lang="en">Download</span><span lang="ru">Скачать</span></a>
     <a href="https://github.com/fxgl/steamac" class="gh">GitHub</a>
@@ -253,10 +254,10 @@
         <p class="info-lede"><span lang="en">Windows games render through a chain of translations, GPU-accelerated end to end.</span><span lang="ru">Windows-игры рисуют через цепочку трансляций — с аппаратным ускорением на всём пути.</span></p>
         <ul>
           <li><span lang="en">DXVK in Proton turns DirectX 9/10/11 into Vulkan, vkd3d-proton does the same for DirectX 12. Mesa's Venus driver in the VM serializes the Vulkan calls to the host over virtio-gpu, sharing memory as 16K-aligned blobs.</span><span lang="ru">DXVK в Proton превращает DirectX 9/10/11 в Vulkan, vkd3d-proton — DirectX 12. Драйвер Venus из Mesa внутри ВМ сериализует вызовы Vulkan и передаёт их хосту через virtio-gpu; память общая — blob-ресурсы с выравниванием 16K.</span></li>
-          <li><span lang="en">On the Mac, virglrenderer replays them on MoltenVK, which runs them on Metal. SteamOS sees “Virtio-GPU Venus (Apple M4 Max)” with Vulkan 1.4.</span><span lang="ru">На Mac virglrenderer исполняет их на MoltenVK, а тот — на Metal. SteamOS видит «Virtio-GPU Venus (Apple M4 Max)» с Vulkan 1.4.</span></li>
+          <li><span lang="en">On the Mac, virglrenderer replays them on a Vulkan driver that runs on Metal: KosmicKrisp (Mesa, Metal 4, macOS 26+) or MoltenVK (Metal 3, macOS 15+). SteamOS sees “Virtio-GPU Venus (Apple M4 Max)” with Vulkan 1.4.</span><span lang="ru">На Mac virglrenderer исполняет их на Vulkan-драйвере поверх Metal: KosmicKrisp (Mesa, Metal 4, macOS 26+) или MoltenVK (Metal 3, macOS 15+). SteamOS видит «Virtio-GPU Venus (Apple M4 Max)» с Vulkan 1.4.</span></li>
           <li><span lang="en">Patched MoltenVK adds what DXVK and vkd3d-proton need: geometry shaders, transform feedback, depth clip, null descriptors, million-entry descriptor heaps, texel buffers at any offset. Metal caches compiled shaders — a new effect stutters once, then never again.</span><span lang="ru">Пропатченный MoltenVK даёт то, что нужно DXVK и vkd3d-proton: геометрические шейдеры, transform feedback, depth clip, null-дескрипторы, кучи дескрипторов на миллион записей, texel-буферы с любым смещением. Metal кеширует шейдеры — новый эффект подтормаживает один раз, потом никогда.</span></li>
         </ul>
-        <p class="tags"><span>DXVK</span><span>vkd3d-proton</span><span>Venus</span><span>virglrenderer</span><span>MoltenVK</span></p>
+        <p class="tags"><span>DXVK</span><span>vkd3d-proton</span><span>Venus</span><span>virglrenderer</span><span>KosmicKrisp</span><span>MoltenVK</span></p>
       </article>
 
       <article class="info" data-i="4" style="--accent:#fb7185">
@@ -313,12 +314,6 @@
       <figure><img src="media/shot-play.jpg" alt="Diplomacy is Not an Option gameplay in the VM" loading="lazy" width="960" height="600"><figcaption><span lang="en">In game: Windows x86-64 via Proton 11 + FEX</span><span lang="ru">В игре: Windows x86-64 через Proton 11 + FEX</span></figcaption></figure>
       <figure><img src="media/shot-stellar-blade.jpg" alt="Stellar Blade Demo gameplay in the VM: DirectX 12 through vkd3d-proton" loading="lazy" width="960" height="600"><figcaption><span lang="en">DirectX 12: Stellar Blade Demo via vkd3d-proton</span><span lang="ru">DirectX 12: Stellar Blade Demo через vkd3d-proton</span></figcaption></figure>
     </div>
-    <figure class="compare">
-      <video controls autoplay muted loop playsinline preload="metadata" poster="media/stellar-blade-moltenvk-vs-kosmickrisp.jpg" aria-label="Stellar Blade Demo split screen: MoltenVK on the left, KosmicKrisp on the right">
-        <source src="media/stellar-blade-moltenvk-vs-kosmickrisp.mp4" type="video/mp4">
-      </video>
-      <figcaption><span lang="en">Stellar Blade Demo on an M1 Max, the same scene cut down the middle: MoltenVK on the left (~18 FPS), KosmicKrisp on the right (~29 FPS). Apple's Metal HUD shows the frame rate on each side.</span><span lang="ru">Stellar Blade Demo на M1 Max, одна и та же сцена разрезана посередине: слева MoltenVK (~18 FPS), справа KosmicKrisp (~29 FPS). Metal HUD Apple показывает частоту кадров на каждой стороне.</span></figcaption>
-    </figure>
     <div class="cards">
       <div class="card">
         <h3>Death's Door</h3>
@@ -346,6 +341,42 @@
         <li><span lang="en"><b>First-time effects</b> stutter while Metal compiles the pipeline (~50–100 ms); after that it's cached, even across VM restarts.</span><span lang="ru"><b>Новые эффекты</b> подтормаживают, пока Metal компилирует конвейер (~50–100 мс); дальше всё из кеша, даже после перезапуска ВМ.</span></li>
       </ul>
     </div>
+  </div>
+</section>
+
+<section class="section graphics" id="graphics">
+  <div class="wrap">
+    <p class="kicker"><span lang="en">DirectX on Apple silicon</span><span lang="ru">DirectX на Apple silicon</span></p>
+    <h2><span lang="en">One DirectX path, two Vulkan drivers</span><span lang="ru">Один путь DirectX, два Vulkan-драйвера</span></h2>
+    <p class="section-lede">
+      <span lang="en">Proton translates DirectX to Vulkan inside SteamOS; Venus carries the Vulkan calls out of the VM; on the Mac a Vulkan driver turns them into Metal. That last step is yours to pick in Settings → Advanced → Vulkan driver (or <code>--vulkan-driver</code>): KosmicKrisp by default where the Mac and the build have it, MoltenVK everywhere else.</span>
+      <span lang="ru">Proton переводит DirectX в Vulkan внутри SteamOS; Venus выносит вызовы Vulkan из ВМ; на Mac Vulkan-драйвер превращает их в Metal. Последний шаг выбирается в Settings → Advanced → Vulkan driver (или <code>--vulkan-driver</code>): по умолчанию KosmicKrisp, если он есть у Mac и сборки, иначе MoltenVK.</span>
+    </p>
+    <figure class="compare">
+      <video controls autoplay muted loop playsinline preload="metadata" poster="media/stellar-blade-moltenvk-vs-kosmickrisp.jpg" aria-label="Stellar Blade Demo side by side: MoltenVK on the left, KosmicKrisp on the right">
+        <source src="media/stellar-blade-moltenvk-vs-kosmickrisp.mp4" type="video/mp4">
+      </video>
+      <figcaption><span lang="en">Stellar Blade Demo (DirectX 12) on an M1 Max, two recordings of the same run side by side, cropped, not scaled: MoltenVK on the left (~18 FPS), KosmicKrisp on the right (~29 FPS). Apple's Metal HUD shows the frame rate on each side.</span><span lang="ru">Stellar Blade Demo (DirectX 12) на M1 Max, две записи одного забега рядом, обрезаны без масштабирования: слева MoltenVK (~18 FPS), справа KosmicKrisp (~29 FPS). Metal HUD Apple показывает частоту кадров на каждой стороне.</span></figcaption>
+    </figure>
+    <div class="cards">
+      <div class="card">
+        <h3>DirectX 9 / 10 / 11</h3>
+        <p><span lang="en">DXVK in Proton. Death's Door, Heroes of Might and Magic: Olden Era and Diplomacy is Not an Option run; Death's Door also on KosmicKrisp.</span><span lang="ru">DXVK в Proton. Работают Death's Door, Heroes of Might and Magic: Olden Era и Diplomacy is Not an Option; Death's Door — и на KosmicKrisp.</span></p>
+      </div>
+      <div class="card">
+        <h3>DirectX 12</h3>
+        <p><span lang="en">vkd3d-proton. Feature level 11_0 and shader model 6.0 on both drivers: neither exposes the denormal float controls that shader model 6.2 needs. Stellar Blade Demo runs on both.</span><span lang="ru">vkd3d-proton. Уровень 11_0 и shader model 6.0 на обоих драйверах: ни один не даёт управления денормализованными числами, нужного shader model 6.2. Stellar Blade Demo работает на обоих.</span></p>
+      </div>
+      <div class="card">
+        <h3>KosmicKrisp · Metal 4 · macOS 26+</h3>
+        <p><span lang="en">Mesa's Vulkan driver on Metal 4, Mesa main plus open merge requests and steamac's patches. The default where available; ~29 FPS against ~18 in Stellar Blade Demo on an M1 Max. Not in the release DMG yet (built on macOS 15).</span><span lang="ru">Vulkan-драйвер Mesa на Metal 4: Mesa main, открытые merge request'ы и патчи steamac. По умолчанию, где он есть; ~29 FPS против ~18 в Stellar Blade Demo на M1 Max. В DMG релиза пока нет (собран на macOS 15).</span></p>
+      </div>
+      <div class="card">
+        <h3>MoltenVK · Metal 3 · macOS 15+</h3>
+        <p><span lang="en">The UTM fork with steamac's patches: geometry shaders, transform feedback, depth clip, million-entry descriptor heaps. Works on every supported Mac; 60 FPS in Stellar Blade Demo at 1280×800 on an M4 Max.</span><span lang="ru">Форк UTM с патчами steamac: геометрические шейдеры, transform feedback, depth clip, кучи дескрипторов на миллион записей. Работает на любом поддерживаемом Mac; 60 FPS в Stellar Blade Demo в 1280×800 на M4 Max.</span></p>
+      </div>
+    </div>
+    <p class="graphics-note"><span lang="en">Switching drivers makes Steam and games rebuild their shader caches: the first run of a big DirectX 12 game compiles for a while (Stellar Blade Demo: ~28 minutes on an M1 Max with KosmicKrisp); later runs use the cache.</span><span lang="ru">После смены драйвера Steam и игры заново собирают кеши шейдеров: первый запуск большой DirectX 12-игры долго компилирует (Stellar Blade Demo: ~28 минут на M1 Max с KosmicKrisp); следующие запуски берут шейдеры из кеша.</span></p>
   </div>
 </section>
 
