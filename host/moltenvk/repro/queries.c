@@ -10,6 +10,10 @@
  *   queries 3 and 4: never begun      -> unavailable, results untouched
  * Copies: 5 and 2 each (64-bit, availability, wait), 3..4 (64-bit, availability), 5 (32-bit, availability);
  * vkGetQueryPoolResults of query 5 must match.
+ *
+ * Timestamp pool of 8192 queries (vkd3d-proton's size, more than one Metal counter heap holds on KosmicKrisp: 4096):
+ * creation failed, Venus lost the pool and Stellar Blade's next vkCmdResetQueryPool killed the context. Queries 0
+ * and 5000 (two heaps) written, both available and non-zero, query 1 unavailable.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -202,6 +206,36 @@ int main(int argc, char **argv)
 		       checks[i].ok ? "OK" : "FAIL", checks[i].what, (unsigned long long)r64[0], (unsigned long long)r64[1]);
 		fails += !checks[i].ok;
 	}
+
+	VkQueryPoolCreateInfo tpci = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+		.queryCount = 8192 };
+	VkQueryPool tp;
+	VkResult tr = vkCreateQueryPool(dev, &tpci, NULL, &tp);
+	uint64_t ts[3][2] = { { 0 } };
+	if (tr == VK_SUCCESS) {
+		VkCommandBuffer tc;
+		ai.commandBufferCount = 1;
+		CK(vkAllocateCommandBuffers(dev, &ai, &tc));
+		CK(vkBeginCommandBuffer(tc, &bi));
+		vkCmdResetQueryPool(tc, tp, 0, 8192);
+		vkCmdWriteTimestamp2(tc, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, tp, 0);
+		vkCmdWriteTimestamp2(tc, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, tp, 5000);
+		CK(vkEndCommandBuffer(tc));
+		si.pCommandBuffers = &tc;
+		CK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+		CK(vkQueueWaitIdle(queue));
+		const VkQueryResultFlags tf = VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT;
+		CK(vkGetQueryPoolResults(dev, tp, 0, 1, sizeof(ts[0]), ts[0], 16, tf | VK_QUERY_RESULT_WAIT_BIT));
+		CK(vkGetQueryPoolResults(dev, tp, 5000, 1, sizeof(ts[1]), ts[1], 16, tf | VK_QUERY_RESULT_WAIT_BIT));
+		VkResult nr = vkGetQueryPoolResults(dev, tp, 1, 1, sizeof(ts[2]), ts[2], 16, tf);
+		if (nr != VK_SUCCESS && nr != VK_NOT_READY) tr = nr;
+	}
+	int ts_ok = tr == VK_SUCCESS && ts[0][1] == 1 && ts[1][1] == 1 && ts[0][0] && ts[1][0] && ts[2][1] == 0;
+	printf("%-4s timestamp pool of 8192 (VkResult %d): queries 0 and 5000 available (%llu, %llu), values %llu %llu, "
+	       "query 1 unavailable (%llu)\n", ts_ok ? "OK" : "FAIL", tr, (unsigned long long)ts[0][1],
+	       (unsigned long long)ts[1][1], (unsigned long long)ts[0][0], (unsigned long long)ts[1][0],
+	       (unsigned long long)ts[2][1]);
+	fails += !ts_ok;
 	if (fails) { printf("queries: %d failure(s)\n", fails); return 1; }
 	return 0;
 }

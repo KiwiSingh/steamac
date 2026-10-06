@@ -34,6 +34,8 @@
 #   0024       steamac: single texel alignment for texel buffer views (as MoltenVK 0029): the texture
 #              starts 16-byte aligned below the view, shaders add the texel offset from the descriptor.
 #              vkd3d-proton (D3D12) requires it.
+#   0025       steamac: timestamp query pools split over Metal counter heaps of 4096 (Metal's limit):
+#              vkd3d-proton's 8192-query pools failed, Venus lost them and Stellar Blade's GPU context died.
 #
 # Two meson builds: (1) the host compiler tools mesa_clc + vtn_bindgen2 against Homebrew LLVM
 # (shared) and SPIRV-LLVM-Translator, installed into work/build/host-kosmickrisp/clc; (2) the driver
@@ -196,6 +198,7 @@ mv -f "$lib.tmp.$$" "$lib"
 	echo "  0022 = steamac: fillModeNonSolid (wireframe; DXVK requires it)"
 	echo "  0023 = steamac: unsupported sample counts use the largest supported one"
 	echo "  0024 = steamac: single texel alignment for texel buffer views (vkd3d-proton)"
+	echo "  0025 = steamac: timestamp pools over several Metal counter heaps (4096 each; vkd3d-proton 8192)"
 	echo
 	echo "Known gaps (host/moltenvk/repro/run.sh): transform feedback with strip geometry shaders and"
 	echo "the overflow counter (draft !44928)."
