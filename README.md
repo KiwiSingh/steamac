@@ -437,7 +437,9 @@ takes precedence over the file.
 ## Vulkan driver
 
 The host Vulkan driver behind Venus is chosen in **Settings → Advanced → Vulkan driver** (applies on
-next start) or for one launch with `--vulkan-driver moltenvk|kosmickrisp`. virglrenderer opens the
+next start) or for one launch with `--vulkan-driver moltenvk|kosmickrisp`. The default is KosmicKrisp
+where the Mac and the build have it (macOS 26+, a build made on macOS 26+), MoltenVK otherwise; a
+driver chosen in Settings stays. virglrenderer opens the
 driver at runtime (no Vulkan loader): the launcher sets `VKR_VULKAN_DRIVER` to
 `@rpath/libMoltenVK.dylib` or `@rpath/libvulkan_kosmickrisp.dylib` before the VM starts. The boot
 overlay shows the driver (“Venus → KosmicKrisp”); crash reports carry `vulkan_driver` and the
@@ -445,8 +447,8 @@ driver's patch revision.
 
 | Option | What it is | Pros and cons |
 |---|---|---|
-| **MoltenVK** (`moltenvk`, by default) | `host/moltenvk/`: the UTM fork + steamac's patches | every supported Mac; games are tested with it; D3D12 (vkd3d-proton) device checks pass |
-| **KosmicKrisp** (`kosmickrisp`, experimental) | `host/kosmickrisp/`: Mesa main + open MRs (geometry shaders !44786, transform feedback !44928, tiled images in host-pointer memory !44929, device-local memory type !44221, linear render targets !44782/!44222) + steamac's patches (explicit LINEAR row pitch, LINEAR input attachments, `fillModeNonSolid`, which DXVK requires, 8-sample requests as 4, single texel alignment for texel buffers and timestamp pools over several Metal counter heaps, which vkd3d-proton requires) | macOS 26+ only (Metal 4); built only when the build host runs macOS 26+, otherwise the setting falls back to MoltenVK. Steam UI, DXVK games and Stellar Blade Demo (D3D12, vkd3d-proton) run; its first run spends ~28 min compiling shaders on an M1 Max; known gap (host repros): transform feedback with strip geometry shaders and its overflow counter (draft MR) |
+| **KosmicKrisp** — Mesa on Metal 4 · macOS 26+ (`kosmickrisp`, default where available) | `host/kosmickrisp/`: Mesa main + open MRs (geometry shaders !44786, transform feedback !44928, tiled images in host-pointer memory !44929, device-local memory type !44221, linear render targets !44782/!44222) + steamac's patches (explicit LINEAR row pitch, LINEAR input attachments, `fillModeNonSolid`, which DXVK requires, 8-sample requests as 4, single texel alignment for texel buffers and timestamp pools over several Metal counter heaps, which vkd3d-proton requires) | faster: Stellar Blade Demo ~29 FPS against ~18 on MoltenVK on an M1 Max (split-screen video: `docs/media/stellar-blade-moltenvk-vs-kosmickrisp.mp4`); Steam UI, DXVK games and Stellar Blade Demo (D3D12, vkd3d-proton) run, its first run spends ~28 min compiling shaders on an M1 Max. macOS 26+ only; built only when the build host runs macOS 26+, otherwise MoltenVK is used. Known gap (host repros): transform feedback with strip geometry shaders and its overflow counter (draft MR) |
+| **MoltenVK** — Metal 3 · macOS 15+ (`moltenvk`) | `host/moltenvk/`: the UTM fork + steamac's patches | every supported Mac; the default on macOS 15 and in builds without KosmicKrisp (the release DMG is built on macOS 15) |
 
 Switching changes the Venus driver identity (pipeline cache UUID), so Steam and games rebuild their
 shader caches. A pipeline the host driver cannot build is a placeholder in virglrenderer: its draws

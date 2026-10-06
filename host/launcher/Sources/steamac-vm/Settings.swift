@@ -124,9 +124,9 @@ final class LauncherSettings: ObservableObject {
     /// Host Vulkan driver behind Venus: virglrenderer, in the VM process, opens its dylib
     /// (VKR_VULKAN_DRIVER, set by VM.start).
     enum VulkanDriver: String, CaseIterable, Identifiable {
-        /// MoltenVK with steamac's patches (host/moltenvk): every supported Mac.
+        /// MoltenVK with steamac's patches (host/moltenvk): every supported Mac; the default without KosmicKrisp.
         case moltenvk
-        /// KosmicKrisp, Mesa's driver on Metal 4 (host/kosmickrisp): macOS 26 or newer.
+        /// KosmicKrisp, Mesa's driver on Metal 4 (host/kosmickrisp): macOS 26 or newer, the default there.
         case kosmickrisp
         var id: String { rawValue }
 
@@ -138,17 +138,30 @@ final class LauncherSettings: ObservableObject {
             }
         }
 
-        var title: String { self == .kosmickrisp ? name + " (experimental)" : name }
-
-        var detail: String {
+        /// Main features and the oldest macOS it runs on (picker items).
+        var summary: String {
             switch self {
-            case .moltenvk:
-                return "Vulkan on Metal through MoltenVK with steamac's patches. Games are tested with it."
-            case .kosmickrisp:
-                return "Mesa's Vulkan driver on Metal 4 (macOS 26 or newer). Experimental: D3D12 games (vkd3d-proton) "
-                    + "are not expected to start, and pipelines the driver cannot build are skipped."
+            case .moltenvk: return "Metal 3 · macOS 15+"
+            case .kosmickrisp: return "Metal 4 · macOS 26+"
             }
         }
+
+        var title: String { name + " · " + summary }
+
+        var detail: String {
+            let text: String
+            switch self {
+            case .moltenvk:
+                text = "Vulkan on Metal 3 through MoltenVK with steamac's patches (macOS 15 or newer)."
+            case .kosmickrisp:
+                text = "Mesa's Vulkan driver on Metal 4 (macOS 26 or newer). Faster than MoltenVK: Stellar Blade Demo "
+                    + "runs at ~29 FPS instead of ~18 on an M1 Max."
+            }
+            return self == Self.preferred ? text + " Default on this Mac." : text
+        }
+
+        /// The default: KosmicKrisp where this Mac and build have it, else MoltenVK (fixed for the process).
+        static let preferred: VulkanDriver = kosmickrisp.unavailableReason == nil ? .kosmickrisp : .moltenvk
 
         /// Switching changes the Venus driver identity: Steam and games rebuild their shader caches.
         static let switchNote = "Switching makes Steam and games rebuild their shader caches."
@@ -289,7 +302,7 @@ final class LauncherSettings: ObservableObject {
     /// Steam client of the next start (`steamac.steam_client=`).
     @Published var steamClient = SteamClient.deck { didSet { save(.steamClient, steamClient.rawValue) } }
     /// Host Vulkan driver of the next start (VulkanDriver).
-    @Published var vulkanDriver = VulkanDriver.moltenvk { didSet { save(.vulkanDriver, vulkanDriver.rawValue) } }
+    @Published var vulkanDriver = VulkanDriver.preferred { didSet { save(.vulkanDriver, vulkanDriver.rawValue) } }
 
     init() {
         let domain = LauncherSettings.domain

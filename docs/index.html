@@ -313,6 +313,12 @@
       <figure><img src="media/shot-play.jpg" alt="Diplomacy is Not an Option gameplay in the VM" loading="lazy" width="960" height="600"><figcaption><span lang="en">In game: Windows x86-64 via Proton 11 + FEX</span><span lang="ru">В игре: Windows x86-64 через Proton 11 + FEX</span></figcaption></figure>
       <figure><img src="media/shot-stellar-blade.jpg" alt="Stellar Blade Demo gameplay in the VM: DirectX 12 through vkd3d-proton" loading="lazy" width="960" height="600"><figcaption><span lang="en">DirectX 12: Stellar Blade Demo via vkd3d-proton</span><span lang="ru">DirectX 12: Stellar Blade Demo через vkd3d-proton</span></figcaption></figure>
     </div>
+    <figure class="compare">
+      <video controls autoplay muted loop playsinline preload="metadata" poster="media/stellar-blade-moltenvk-vs-kosmickrisp.jpg" aria-label="Stellar Blade Demo split screen: MoltenVK on the left, KosmicKrisp on the right">
+        <source src="media/stellar-blade-moltenvk-vs-kosmickrisp.mp4" type="video/mp4">
+      </video>
+      <figcaption><span lang="en">Stellar Blade Demo on an M1 Max, the same scene cut down the middle: MoltenVK on the left (~18 FPS), KosmicKrisp on the right (~29 FPS). Apple's Metal HUD shows the frame rate on each side.</span><span lang="ru">Stellar Blade Demo на M1 Max, одна и та же сцена разрезана посередине: слева MoltenVK (~18 FPS), справа KosmicKrisp (~29 FPS). Metal HUD Apple показывает частоту кадров на каждой стороне.</span></figcaption>
+    </figure>
     <div class="cards">
       <div class="card">
         <h3>Death's Door</h3>
@@ -328,7 +334,7 @@
       </div>
       <div class="card">
         <h3>Stellar Blade Demo</h3>
-        <p><span lang="en">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK. 60 FPS at 1280×800 on an M4 Max; the first run compiles shaders for a few minutes.</span><span lang="ru">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK. 60 FPS в 1280×800 на M4 Max; при первом запуске несколько минут компилируются шейдеры.</span></p>
+        <p><span lang="en">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK or KosmicKrisp. 60 FPS at 1280×800 on an M4 Max with MoltenVK; on an M1 Max KosmicKrisp gives ~29 FPS where MoltenVK gives ~18. The first run compiles shaders for a few minutes.</span><span lang="ru">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK или KosmicKrisp. 60 FPS в 1280×800 на M4 Max с MoltenVK; на M1 Max KosmicKrisp даёт ~29 FPS там, где MoltenVK — ~18. При первом запуске несколько минут компилируются шейдеры.</span></p>
       </div>
     </div>
 
@@ -395,8 +401,8 @@
         </button></li>
         <li><button type="button" role="tab" data-tab="advanced" aria-selected="false">
           <b>Advanced</b>
-          <span lang="en">vCPUs and memory sized for your Mac automatically, or custom with a warning when you over-commit; SSH into SteamOS with one switch (off by default, a generated password per disk); network; the Steam client (Steam Deck by default, Steam Deck beta or Steam Frame); the Vulkan driver (MoltenVK, or the experimental KosmicKrisp on macOS 26 in builds that include it); the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
-          <span lang="ru">vCPU и память подбираются под ваш Mac автоматически или задаются вручную — с предупреждением, если это слишком много; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; клиент Steam (по умолчанию Steam Deck, Steam Deck beta или Steam Frame); драйвер Vulkan (MoltenVK или экспериментальный KosmicKrisp на macOS 26 в сборках, где он есть); диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
+          <span lang="en">vCPUs and memory sized for your Mac automatically, or custom with a warning when you over-commit; SSH into SteamOS with one switch (off by default, a generated password per disk); network; the Steam client (Steam Deck by default, Steam Deck beta or Steam Frame); the Vulkan driver (KosmicKrisp — Mesa on Metal 4, macOS 26+ — by default in builds that include it, otherwise MoltenVK — Metal 3, macOS 15+); the SteamOS disk — create a new one from Valve's servers or pick an existing image, never copied.</span>
+          <span lang="ru">vCPU и память подбираются под ваш Mac автоматически или задаются вручную — с предупреждением, если это слишком много; SSH в SteamOS одним переключателем (по умолчанию выключен, пароль генерируется для каждого диска); сеть; клиент Steam (по умолчанию Steam Deck, Steam Deck beta или Steam Frame); драйвер Vulkan (KosmicKrisp — Mesa на Metal 4, macOS 26+ — по умолчанию в сборках, где он есть, иначе MoltenVK — Metal 3, macOS 15+); диск SteamOS — создать новый с серверов Valve или выбрать готовый образ, который никогда не копируется.</span>
         </button></li>
       </ol>
 

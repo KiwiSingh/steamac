@@ -425,15 +425,17 @@ to apply»), для одного запуска — `--steam-client frame|deck|d
 ## Vulkan-драйвер (Vulkan driver)
 
 Vulkan-драйвер хоста за Venus выбирается в **Settings → Advanced → Vulkan driver** (при следующем
-запуске) или на один запуск флагом `--vulkan-driver moltenvk|kosmickrisp`. virglrenderer открывает
+запуске) или на один запуск флагом `--vulkan-driver moltenvk|kosmickrisp`. По умолчанию — KosmicKrisp,
+если он есть у Mac и сборки (macOS 26+, сборка на macOS 26+), иначе MoltenVK; драйвер, выбранный в
+Settings, сохраняется. virglrenderer открывает
 драйвер во время работы (без Vulkan-загрузчика): перед стартом ВМ лаунчер ставит `VKR_VULKAN_DRIVER`
 в `@rpath/libMoltenVK.dylib` или `@rpath/libvulkan_kosmickrisp.dylib`. Оверлей загрузки показывает
 драйвер («Venus → KosmicKrisp»); в отчётах о сбоях есть `vulkan_driver` и ревизия патчей драйвера.
 
 | Вариант | Что это | Плюсы и минусы |
 |---|---|---|
-| **MoltenVK** (`moltenvk`, по умолчанию) | `host/moltenvk/`: форк UTM + патчи steamac | любой поддерживаемый Mac; игры проверены с ним; проверки устройства D3D12 (vkd3d-proton) проходят |
-| **KosmicKrisp** (`kosmickrisp`, экспериментально) | `host/kosmickrisp/`: Mesa main + открытые MR (геометрические шейдеры !44786, transform feedback !44928, tiled-изображения в host-pointer памяти !44929, device-local тип памяти !44221, линейные цели рендера !44782/!44222) + патчи steamac (явный row pitch LINEAR, LINEAR как input attachment, `fillModeNonSolid`, без которого DXVK не запускается, 8 сэмплов как 4, выравнивание texel-буферов по одному текселю и пулы таймстампов на нескольких счётчиковых кучах Metal, нужные vkd3d-proton) | только macOS 26+ (Metal 4); собирается, только если сборка идёт на macOS 26+, иначе настройка откатывается на MoltenVK. Интерфейс Steam, DXVK-игры и Stellar Blade Demo (D3D12, vkd3d-proton) работают; первый запуск Stellar Blade — ~28 мин компиляции шейдеров на M1 Max; известный пробел (repro на хосте): transform feedback со strip-геометрическими шейдерами и его счётчик при переполнении (черновой MR) |
+| **KosmicKrisp** — Mesa на Metal 4 · macOS 26+ (`kosmickrisp`, по умолчанию, где есть) | `host/kosmickrisp/`: Mesa main + открытые MR (геометрические шейдеры !44786, transform feedback !44928, tiled-изображения в host-pointer памяти !44929, device-local тип памяти !44221, линейные цели рендера !44782/!44222) + патчи steamac (явный row pitch LINEAR, LINEAR как input attachment, `fillModeNonSolid`, без которого DXVK не запускается, 8 сэмплов как 4, выравнивание texel-буферов по одному текселю и пулы таймстампов на нескольких счётчиковых кучах Metal, нужные vkd3d-proton) | быстрее: Stellar Blade Demo ~29 FPS против ~18 на MoltenVK на M1 Max (видео на разделённом экране: `docs/media/stellar-blade-moltenvk-vs-kosmickrisp.mp4`); интерфейс Steam, DXVK-игры и Stellar Blade Demo (D3D12, vkd3d-proton) работают, первый запуск Stellar Blade — ~28 мин компиляции шейдеров на M1 Max. Только macOS 26+; собирается, только если сборка идёт на macOS 26+, иначе используется MoltenVK. Известный пробел (repro на хосте): transform feedback со strip-геометрическими шейдерами и его счётчик при переполнении (черновой MR) |
+| **MoltenVK** — Metal 3 · macOS 15+ (`moltenvk`) | `host/moltenvk/`: форк UTM + патчи steamac | любой поддерживаемый Mac; по умолчанию на macOS 15 и в сборках без KosmicKrisp (DMG релиза собирается на macOS 15) |
 
 Смена драйвера меняет идентичность драйвера Venus (UUID кэша конвейеров): Steam и игры заново
 собирают кэши шейдеров. Конвейер, который драйвер хоста не смог собрать, остаётся заглушкой в

@@ -976,7 +976,7 @@ private struct AdvancedTab: View {
                 }
                 Picker(selection: $settings.vulkanDriver) {
                     ForEach(LauncherSettings.VulkanDriver.allCases) { d in
-                        Text(d == .moltenvk ? d.title + " (default)" : d.title).tag(d)
+                        Text(d.title).tag(d)
                             .disabled(d.unavailableReason != nil && d != settings.vulkanDriver)
                     }
                 } label: {

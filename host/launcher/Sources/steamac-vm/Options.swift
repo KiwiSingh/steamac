@@ -174,11 +174,12 @@ struct Options {
                            frame: Valve's Steam Frame client beta (stock; until an account is remembered
                            the Steam Deck client is used for its on-screen sign-in QR code).
                            Switching downloads the other client (~1 GB) when Steam starts.
-      --vulkan-driver D    host Vulkan driver behind Venus (default: Settings > Advanced "Vulkan driver"):
-                           moltenvk: MoltenVK with steamac's patches (every Mac);
-                           kosmickrisp: Mesa's KosmicKrisp on Metal 4, experimental (macOS 26 or newer,
-                           builds that include it: host/kosmickrisp). Switching makes Steam and games
-                           rebuild their shader caches.
+      --vulkan-driver D    host Vulkan driver behind Venus (default: Settings > Advanced "Vulkan driver",
+                           KosmicKrisp where available, else MoltenVK):
+                           kosmickrisp: Mesa's KosmicKrisp on Metal 4 (macOS 26 or newer, builds that
+                           include it: host/kosmickrisp);
+                           moltenvk: MoltenVK with steamac's patches (every Mac).
+                           Switching makes Steam and games rebuild their shader caches.
 
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
       --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
