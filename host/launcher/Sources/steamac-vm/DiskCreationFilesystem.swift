@@ -5,7 +5,7 @@ import Foundation
 enum DiskCreationFilesystem {
     /// Before downloading: reject volumes that cannot hold the disk. Returns whether files
     /// occupy their full logical size (exFAT does not support sparse files).
-    static func preflight(directory: String, diskBytes: UInt64, rootfsBytes: UInt64) throws -> Bool {
+    static func preflight(directory: String, diskBytes: UInt64, rootfsBytes: UInt64, existingBytes: UInt64 = 0) throws -> Bool {
         var fs = statfs()
         guard statfs(directory, &fs) == 0 else {
             throw OptionError("\(directory): \(String(cString: strerror(errno)))")
@@ -22,11 +22,11 @@ enum DiskCreationFilesystem {
         }
         let dense = type == "exfat"
         if dense {
-            let need = diskBytes + rootfsBytes + (1 << 30)
+            let need = diskBytes - min(existingBytes, diskBytes) + rootfsBytes + (1 << 30)
             let free = UInt64(fs.f_bavail) * UInt64(fs.f_bsize)
             guard free >= need else {
                 throw OptionError(String(format: "not enough free space on exFAT: %.1f GB needed on %@, %.1f GB free. "
-                    + "exFAT stores the full disk and temporary rootfs sizes (no sparse files); choose a smaller home size or an APFS volume",
+                    + "exFAT stores the full disk size (no sparse files); choose a smaller home size or an APFS volume",
                     Double(need) / 1e9, directory, Double(free) / 1e9))
             }
         }

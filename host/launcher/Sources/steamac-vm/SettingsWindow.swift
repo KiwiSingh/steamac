@@ -952,7 +952,8 @@ private struct AdvancedTab: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Label2(title: "Disk image", detail: "SteamOS raw GPT disk, used in place (never copied). "
-                           + "Create New Disk… downloads SteamOS from Valve (no Docker needed).",
+                           + "If Steam reports not enough space, Grow Disk… adds room for games without recreating it. "
+                           + "Free space on the Mac does not automatically increase SteamOS's capacity.",
                            now: false, key: .diskImage)
                     HStack {
                         Text(diskStatus.0)
@@ -963,6 +964,7 @@ private struct AdvancedTab: View {
                     HStack {
                         Spacer()
                         Button("Create New Disk…") { CreateDiskWindowController.show(settings: settings) }
+                        Button("Grow Disk…") { growDisk() }.disabled(nextDisk == nil)
                         Button("Use Existing Disk…") { chooseDisk() }
                         Button("Use Default") { settings.diskImage = "" }.disabled(settings.diskImage.isEmpty)
                     }
@@ -1000,6 +1002,48 @@ private struct AdvancedTab: View {
             Button("Reset", role: .destructive) { settings.resetAll() }
         } message: {
             Text("Per-game mouse settings and the chosen disk image are forgotten too.")
+        }
+    }
+
+    private func growDisk() {
+        guard let path = nextDisk else { return }
+        do {
+            let table = try GPT.read(path: path)
+            guard let home = table.entries.last, home.name == "home" else { throw OptionError("not a SteamOS disk") }
+            let current = Double(home.sectors * 512) / Double(1 << 30)
+            let alert = NSAlert()
+            alert.messageText = "Grow SteamOS Disk"
+            let running = context.diskPath == path && context.restart != nil
+            alert.informativeText = String(format: "Games currently have %.1f GiB. Enter a larger home capacity in GiB (up to 4096). "
+                + "This never shrinks or deletes your disk. APFS / Mac OS Extended use space only as SteamOS writes; "
+                + "exFAT takes the full added size immediately and needs that much free space. "
+                + (running ? "SteamOS will shut down normally, the image will be enlarged while it is stopped, then restart."
+                   : "SteamOS must be stopped. The partition and filesystem grow on its next boot."), current)
+            let field = NSTextField(string: String(min(4096, Int(ceil(current)) + 64)))
+            field.frame = NSRect(x: 0, y: 0, width: 180, height: 24)
+            alert.accessoryView = field
+            alert.addButton(withTitle: running ? "Grow and Restart" : "Grow Disk")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard let size = Int(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                throw OptionError("enter a whole number of GiB")
+            }
+            let request = try DiskGrower.request(path: path, homeGiB: size)
+            if running, let runDir = Supervisor.runDir {
+                try DiskGrower.queue(request, runDir: runDir)
+                context.restart?()
+            } else {
+                try DiskGrower.grow(request)
+                let done = NSAlert()
+                done.messageText = "SteamOS disk enlarged"
+                done.informativeText = "Start SteamOS to finish growing the home partition and filesystem."
+                done.runModal()
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "SteamOS disk could not be grown"
+            alert.informativeText = "\(error)"
+            alert.runModal()
         }
     }
 

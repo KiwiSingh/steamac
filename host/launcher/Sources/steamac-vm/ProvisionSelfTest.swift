@@ -79,6 +79,16 @@ enum ProvisionSelfTest {
             check(table.entries.last!.lastLBA + 1 + 2048 == table.sectors, "1 MiB free behind home")
             check(Set(table.entries.map(\.uuid)).count == 8 && !table.entries.contains { $0.uuid == table.diskGUID },
                   "unique random PARTUUIDs / disk GUID")
+            var rejected = false
+            do { _ = try DiskGrower.request(path: tmp, homeGiB: DiskLayout.defaultHomeGiB) }
+            catch { rejected = true }
+            check(rejected, "disk growth rejects same size / shrinking")
+            try DiskGrower.grow(DiskGrower.request(path: tmp, homeGiB: DiskLayout.defaultHomeGiB + 16))
+            let grown = try GPT.read(path: tmp)
+            check(grown.diskGUID == table.diskGUID && grown.entries == table.entries,
+                  "disk growth retains GUIDs and partition extents for guest repart")
+            check(grown.sectors == table.sectors + 16 * 1024 * 1024 * 1024 / 512,
+                  "disk growth extends image and relocates both GPT headers")
         }
 
         // GPT vs the Docker-built disk (scripts/steps/40-disk.sh + sgdisk).

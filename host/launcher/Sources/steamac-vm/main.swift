@@ -43,6 +43,17 @@ if options.selftestPill { PillSelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
 if options.selftestProvision { ProvisionSelfTest.run(options) }
 if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
+if let disk = options.growDisk {
+    do {
+        guard options.explicit.contains("--home-gib") else { throw OptionError("--grow-disk requires --home-gib N") }
+        try DiskGrower.grow(DiskGrower.request(path: disk, homeGiB: options.createHomeGiB))
+        print("Disk enlarged. Start SteamOS to grow home to \(options.createHomeGiB) GiB.")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write("grow-disk: \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
+}
 if let disk = options.showSSHPassword {
     guard let id = GuestPassword.identity(ofDisk: disk) else { fatal("\(disk): not a GPT disk image") }
     guard let state = GuestPassword.state(disk: id), let pw = GuestPassword.password(disk: id) else {

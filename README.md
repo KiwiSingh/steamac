@@ -186,6 +186,17 @@ over saved values, but only for that launch: the field displays “overridden by
 | Sound | output device (System default follows macOS, or a specific CoreAudio device), volume/mute, Low/Normal/Safe buffer — via `krun_snd_set_*` (looked up with `dlsym`; with an older libkrun the fields are disabled with an explanation) | sound (`--no-sound`) |
 | Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH enable/disable + port (`--ssh-port`, `--no-ssh`) and generated password, network (`--no-net`), disk image (`--disk`), Create New Disk…, Steam client (`--steam-client`, see “Steam client”), Vulkan driver (`--vulkan-driver`, see “Vulkan driver”) |
 
+**More room for games:** free space on the Mac is not automatically free space inside SteamOS.
+The home capacity is fixed when a disk is created. **Settings → Advanced → Grow Disk…** increases
+it without recreating the disk or deleting games (grow only, up to 4096 GiB). For the running disk,
+**Grow and Restart** shuts SteamOS down normally, takes the disk's exclusive lock while the VM is
+stopped, enlarges the image, then boots again. SteamOS grows the last home partition with
+`systemd-repart`, then its ext4 filesystem with `x-systemd.growfs`, before using it. Other launchers
+must be stopped too; suspended VMs still own their disks. APFS / Mac OS Extended consume added space
+only as SteamOS writes; exFAT allocates the full added capacity immediately, so growth checks its
+free space first. Terminal, with SteamOS stopped:
+`work/out/steamac-vm --grow-disk /path/to/steamos.img --home-gib 128`.
+
 For tests: `STEAMAC_DEFAULTS_DOMAIN=<domain>` substitutes the settings domain; `--selftest-settings
 --selftest-out DIR` opens the window without a VM and writes a PNG of each tab; `--control-fifo` has
 `settings TAB`, `settings-dump PNG`, `set KEY VALUE` (as from the window), `restart`.

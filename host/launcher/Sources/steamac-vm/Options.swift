@@ -75,6 +75,8 @@ struct Options {
     var configPayload: Provision.ConfigPayload?
     /// --create-disk PATH (no VM): build a new SteamOS disk without Docker (DiskCreator).
     var createDisk: String?
+    /// --grow-disk PATH --home-gib N (no VM): enlarge an existing disk, never shrink.
+    var growDisk: String?
     var createBranch: String?
     var createHomeGiB = DiskLayout.defaultHomeGiB
     var createPassword: String?
@@ -196,6 +198,8 @@ struct Options {
                            Image (https://store.steampowered.com/steamos/download/?ver=steamframe) and the
                            Steam Subscriber Agreement; required unless they were already accepted (Create
                            SteamOS Disk window or an earlier --accept-eula), remembered afterwards
+      --grow-disk PATH     grow an existing disk's home capacity to --home-gib N (grow only).
+                           SteamOS must be stopped; partition and filesystem grow on its next boot.
 
     SSH: --ssh-password DISK prints user, generated password and state (pending / applied) of DISK
     (the password Settings > Advanced shows; it exists once SSH was enabled for that disk).
@@ -356,6 +360,7 @@ struct Options {
             case "--selftest-provision": o.selftestProvision = true
             case "--reference-disk": o.referenceDisk = try value(a)
             case "--create-disk": o.createDisk = try value(a)
+            case "--grow-disk": o.growDisk = try value(a)
             case "--branch": o.createBranch = try value(a)
             case "--home-gib": o.createHomeGiB = try int(a)
             case "--password": o.createPassword = try value(a)
@@ -391,7 +396,7 @@ struct Options {
 
     var isSelftest: Bool {
         selftestDisplay || selftestOverlay || selftestStall || selftestPill || selftestSettings || selftestProvision
-            || createDisk != nil
+            || createDisk != nil || growDisk != nil
             || showSSHPassword != nil
     }
 

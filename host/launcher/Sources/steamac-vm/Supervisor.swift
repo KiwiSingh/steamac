@@ -109,6 +109,14 @@ enum Supervisor {
                 cleanup()
                 exit(1)
             }
+            do {
+                try DiskGrower.applyPending(runDir: dir, disks: o.disks)
+            } catch {
+                log("grow-disk: \(error)")
+                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS disk could not be grown", "\(error)") }
+                cleanup()
+                exit(1)
+            }
             // No disk yet (app bundle first run): the VM process shows the first-run sheet instead.
             gvproxy = nil
             if o.network && !o.needsDisk {

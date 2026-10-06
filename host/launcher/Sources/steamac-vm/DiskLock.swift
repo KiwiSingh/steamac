@@ -32,8 +32,9 @@ enum DiskLock {
         }
     }
 
-    private static func lock(_ path: String) throws -> Int32 {
-        let fd = open(path, O_RDONLY | O_CLOEXEC)
+    /// A scoped operation (e.g. growth) closes the returned descriptor to release its lock.
+    static func lock(_ path: String, writable: Bool = false) throws -> Int32 {
+        let fd = open(path, (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC)
         guard fd >= 0 else { throw OptionError("\(path): \(String(cString: strerror(errno)))") }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             let err = errno

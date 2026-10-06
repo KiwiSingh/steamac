@@ -181,6 +181,17 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
 | Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk…, клиент Steam (`--steam-client`, см. «Клиент Steam»), Vulkan-драйвер (`--vulkan-driver`, см. «Vulkan-драйвер») |
 
+**Больше места для игр:** свободное место на Mac не становится автоматически свободным местом
+в SteamOS. Размер home задаётся при создании диска. **Settings → Advanced → Grow Disk…** увеличивает
+его без пересоздания диска и удаления игр (только увеличение, до 4096 GiB). Для работающего диска
+**Grow and Restart** штатно выключает SteamOS, берёт эксклюзивную блокировку остановленного диска,
+увеличивает образ и запускает ВМ снова. SteamOS расширяет последний раздел home через
+`systemd-repart`, затем его ext4 через `x-systemd.growfs` перед использованием. Другие лаунчеры
+тоже должны быть остановлены; приостановленная ВМ продолжает владеть диском. APFS / Mac OS Extended
+занимают добавленное место по мере записи SteamOS; exFAT занимает весь добавленный объём сразу,
+поэтому свободное место проверяется заранее. Из терминала, когда SteamOS остановлена:
+`work/out/steamac-vm --grow-disk /path/to/steamos.img --home-gib 128`.
+
 Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
 --selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
 `settings TAB`, `settings-dump PNG`, `set KEY VALUE` (как из окна), `restart`.
