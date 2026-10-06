@@ -707,6 +707,14 @@ what you expected, what happened), and checkboxes for attachments:
   Simulator's `game.log.txt`. For an ATS emulator crash, set its Steam launch options to
   `FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%`, reproduce, and report;
   the collector includes the last 512 KiB of that log. Remove the launch options afterwards.
+  FEX re-raises a crash of the emulated game from its JIT code, so the core's stack shows only an
+  anonymous AArch64 address. To record where the x86_64 code faulted, set the game's launch options to
+  `LD_PRELOAD=/usr/lib/steamac/x86_64/fault-report.so:$LD_PRELOAD %command%`, reproduce, and report.
+  On SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT the library writes the x86_64 RIP, the fault address,
+  the registers, a backtrace with the module and offset of every frame, and the memory map to
+  `~/.local/state/steamac/fault-report.txt`. The file stays under 256 KiB and the report includes it
+  as `fex/fault-report.txt`. Then the game's own handler or the default action runs, so the crash and
+  its core dump are unchanged. Without the launch option the library is never loaded.
   Completed crash metadata is exported by a root hook for `steamos` only (root-owned, mode 0640);
   raw cores remain private and are never attached. `coredump-pending.txt` identifies dumps still
   running: reports do not wait for them; send another report once they finish. Namespace-aware
@@ -763,7 +771,7 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 | `host/libkrun/` | libkrun v1.19.6 + patches: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), SME mask for M4, 2D resources without virgl, `SET_SCANOUT_BLOB`, SHM blob mapping, Venus fence signaling, virglrenderer logs, `krun_display_resize` (resolution changes on the fly), vCPU/GPU thread QoS |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, the guest's Xbox 360 / DualSense / DualShock 4 pad from GameController.framework with rumble (`fx.pad`), network via gvproxy, VM restart on guest reboot, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, everything built in, 4K pages, 16K blob-node alignment, Apple TSO for FEX |
-| `guest/mesa/` | Venus ICD for aarch64 (Proton, gamescope, zink) and x86_64/i386 (FEX graphics provider) |
+| `guest/mesa/` | Venus ICD for aarch64 (Proton, gamescope, zink) and x86_64/i386 (FEX graphics provider); x86_64 fault reporter for emulated games (`/usr/lib/steamac/x86_64/fault-report.so`) |
 | `guest/initramfs/` | boot stage = “bootloader”: A/B slot selection with attempt counter, partsets, overlays for `/etc` and `/usr`; initial provisioning of the launcher-created disk (`steamac.provision=1`: static mkfs.fat, mke2fs, btrfstune in initramfs); `steamac.ssh=0` — no SSH server; launcher config payload (`steamac.config=1`) — new `steamos` password; `steamac.tz=` — the Mac's time zone in `/etc/localtime`; untouched procfs at `/run/steamac/proc` for Flatpak sandboxes |
 | `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, Desktop Mode (Plasma nested in gamescope), masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port) and its root services (`fx.clock`, `fx.sleep`, the uinput gamepad on `fx.pad`), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam Shader Pre-Caching disabled by default (`steam-shader-defaults`) |
 | `scripts/` | build of `work/out/steamos.img`: GPT with Valve's partition layout (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev test of provisioning against a disk from Docker |

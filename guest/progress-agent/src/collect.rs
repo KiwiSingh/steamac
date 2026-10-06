@@ -303,6 +303,9 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let note = copy_tail(&home.join("fex-amtrucks.log"), &fex_dir.join("amtrucks.log"), STEAM_LOG_TAIL, &s);
     notes.push(format!("fex/amtrucks.log: {note}"));
     notes.push("To enable FEX diagnostics for ATS, use Steam launch options: FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%".into());
+    let note = copy_tail(&home.join(".local/state/steamac/fault-report.txt"), &fex_dir.join("fault-report.txt"), 256 << 10, &s);
+    notes.push(format!("fex/fault-report.txt: {note}"));
+    notes.push("To record where an emulated x86 game faults, use Steam launch options: LD_PRELOAD=/usr/lib/steamac/x86_64/fault-report.so:$LD_PRELOAD %command%".into());
     let game_dir = dir.join("games");
     let _ = std::fs::create_dir_all(&game_dir);
     let game_log = home.join(".local/share/American Truck Simulator/game.log.txt");

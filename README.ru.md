@@ -690,7 +690,15 @@ email (обязателен, запоминается на этом Mac — чт
   параметры памяти, необязательный лог FEX и последние 512 КиБ `game.log.txt` American Truck
   Simulator. Для сбоя эмулятора ATS задайте параметры запуска в Steam
   `FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%`, повторите сбой
-  и отправьте отчёт: в него войдут последние 512 КиБ лога. Затем уберите параметры запуска. Root-хук
+  и отправьте отчёт: в него войдут последние 512 КиБ лога. Затем уберите параметры запуска.
+  FEX перевыбрасывает сбой эмулируемой игры из своего JIT-кода, поэтому в стеке дампа виден только
+  анонимный адрес AArch64. Чтобы узнать, где упал код x86_64, задайте параметры запуска игры
+  `LD_PRELOAD=/usr/lib/steamac/x86_64/fault-report.so:$LD_PRELOAD %command%`, повторите сбой и отправьте
+  отчёт. При SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT библиотека записывает RIP x86_64, адрес сбоя,
+  регистры, стек вызовов с модулем и смещением каждого кадра и карту памяти в
+  `~/.local/state/steamac/fault-report.txt`. Файл не превышает 256 КиБ, в отчёт он попадает как
+  `fex/fault-report.txt`. Затем срабатывает обработчик самой игры или действие по умолчанию: сбой и
+  core-дамп не меняются. Без параметра запуска библиотека не загружается. Root-хук
   экспортирует сведения о завершённых дампах только для `steamos` (владелец root, режим 0640);
   сами core-файлы остаются закрытыми и никогда не прикладываются. `coredump-pending.txt`
   перечисляет ещё обрабатываемые дампы: отчёт их не ждёт; после завершения отправьте новый.
@@ -747,7 +755,7 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, pad гостя Xbox 360 / DualSense / DualShock 4 из GameController.framework с вибрацией (`fx.pad`), сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
-| `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
+| `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики); x86_64-репортёр сбоев эмулируемых игр (`/usr/lib/steamac/x86_64/fault-report.so`) |
 | `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos`; `steamac.tz=` — часовой пояс Mac в `/etc/localtime`; нетронутый procfs в `/run/steamac/proc` для песочниц Flatpak |
 | `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, режим рабочего стола (Plasma внутри gamescope), маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`) и его root-сервисы (`fx.clock`, `fx.sleep`, uinput-геймпад на `fx.pad`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), фоновая обработка шейдеров Steam включена по умолчанию (`steam-shader-defaults`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |

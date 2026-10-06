@@ -36,8 +36,8 @@ OUTPUTS = {
     "kernel": (OUT / "Image",),
     "initramfs": (OUT / "initramfs.cpio.gz",),
     "mesa": (OUT / "mesa-venus",),
-    "mesa-aarch64": (OUT / "mesa-venus/usr/lib", OUT / "mesa-venus/usr/share/vulkan"),
-    "mesa-x86": (OUT / "mesa-venus/usr/share/guestos",),
+    "mesa-aarch64": (OUT / "mesa-venus/usr/lib/libvulkan_virtio.so", OUT / "mesa-venus/usr/share/vulkan"),
+    "mesa-x86": (OUT / "mesa-venus/usr/share/guestos", OUT / "mesa-venus/usr/lib/steamac"),
     "layer": (OUT / "steamac-layer.img",),
 }
 COMMANDS = {

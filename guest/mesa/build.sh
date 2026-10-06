@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the guest Venus (virtio) Vulkan ICD for the Steam Frame SteamOS image:
 #   aarch64 (native: Steam, Proton ARM64EC/WoW64 unix side, gamescope, zink)
-#   x86_64 + i386 (FEX-emulated x86 apps; installed into the fex-mesa pressure-vessel provider)
+#   x86_64 + i386 (FEX-emulated x86 apps; installed into the fex-mesa pressure-vessel provider),
+#   plus the x86_64 fault reporter for emulated games (/usr/lib/steamac/x86_64/fault-report.so)
 # Output: work/out/mesa-venus/ = tree rooted at guest "/" + MANIFEST.txt.
 # Verification runs against the stock rootfs in a chroot: by default the signature- and
 # sha256-verified OTA rootfs that `scripts/build-image.sh rootfs` caches in work/cache/rootfs/.
@@ -67,7 +68,7 @@ for step in "${steps[@]}"; do
         log "build aarch64 (log: $WORK/build-aarch64.log)"
         inputs=$(artifacts begin mesa-aarch64)
         [[ $fetched == 1 ]] || fetch_sources
-        rm -rf "$OUT/usr/lib" "$OUT/usr/share/vulkan"
+        rm -rf "$OUT/usr/lib/libvulkan_virtio.so" "$OUT/usr/share/vulkan"
         docker run --rm --platform linux/arm64 \
             -v "$SRC_VOLUME:/src:ro" -v "$HERE/container:/scripts:ro" -v "$OUT:/out" -v "$WORK:/work" \
             "$AARCH64_IMAGE" bash /scripts/build-aarch64.sh > "$WORK/build-aarch64.log" 2>&1 \
@@ -78,7 +79,7 @@ for step in "${steps[@]}"; do
         log "build x86_64 + i386 (log: $WORK/build-x86.log)"
         inputs=$(artifacts begin mesa-x86)
         [[ $fetched == 1 ]] || fetch_sources
-        rm -rf "$OUT/usr/share/guestos"
+        rm -rf "$OUT/usr/share/guestos" "$OUT/usr/lib/steamac"
         docker run --rm --platform linux/amd64 \
             -e STEAMOS_X86_MIRROR -e STEAMOS_X86_BRANCH -e FEX_PROVIDER -e HOLO_KEYRING_PKG -e HOLO_KEYRING_SHA256 \
             -e LIBDISPLAY_INFO_PKG -e LIBDISPLAY_INFO_SHA256 \

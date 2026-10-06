@@ -6,6 +6,8 @@
 #      symbol version (GLIBC_*, ...) is defined by the library that provides it
 #   3. runtime: ldd -r and vkprobe (dlopen + ICD entry points + loader instance) inside chroots
 #      of the stock rootfs (aarch64) and of the fex-mesa provider (x86_64 via Rosetta, i386 via qemu)
+#   4. fault-report.so: deps against the provider, and a preloaded test program that faults after
+#      installing and restoring its own handler must die by SIGSEGV with two reports naming its RIP
 set -eu
 : "${FEX_PROVIDER:?}"
 apk add --no-cache -q binutils coreutils grep >/dev/null
@@ -140,6 +142,28 @@ check_elf "$PROV/usr/lib32/libvulkan_virtio.so" "Intel 80386" ELF32
 check_json "$PROV" /usr/share/vulkan/icd.d/virtio_icd.x86.json /usr/lib32/libvulkan_virtio.so 32
 check_deps "$PROV" /usr/lib32/libvulkan_virtio.so /usr/lib32
 check_runtime "$PROV" /usr/lib32/libvulkan_virtio.so vkprobe-i386
+
+echo "== x86_64 fault reporter (/usr/lib/steamac/x86_64, run on the fex-mesa provider's glibc)"
+FR=/merged/usr/lib/steamac/x86_64/fault-report.so
+check_elf "$FR" "Advanced Micro Devices X86-64" ELF64
+cp "$FR" "$PROV/tmp/fault-report.so"
+check_deps "$PROV" /tmp/fault-report.so /usr/lib
+cp /work/bin/fault-report-test "$PROV/tmp/fault-report-test"
+rm -f "$PROV/tmp/fault-report.txt"
+out=$(in_chroot "$PROV" LD_PRELOAD=/tmp/fault-report.so STEAMAC_FAULT_REPORT=/tmp/fault-report.txt \
+    /tmp/fault-report-test 2>&1) && rc=0 || rc=$?
+echo "$out" | sed 's/^/    /'
+reports=$(grep -c '^=== fault-report .* signal 11 code 1 addr 0x1234$' "$PROV/tmp/fault-report.txt" 2>/dev/null || true)
+rips=$(grep -c '^rip [0-9a-f]* \[/tmp/fault-report-test r-xp +0x' "$PROV/tmp/fault-report.txt" 2>/dev/null || true)
+if [ "$rc" -eq 139 ] && [ "$reports" = 2 ] && [ "$rips" = 2 ] && echo "$out" | grep -q 'game handler ran'; then
+    pass "fault-report: SIGSEGV kept (rc $rc), game handler chained, $reports reports with the faulting RIP"
+else
+    fail "fault-report: rc=$rc reports=$reports rips=$rips"
+    head -40 "$PROV/tmp/fault-report.txt" 2>/dev/null | sed 's/^/    /'
+fi
+out=$(in_chroot "$PROV" /tmp/fault-report-test 2>&1) && rc=0 || rc=$?
+if [ "$rc" -eq 139 ] && ! echo "$out" | grep -q 'steamac fault-report'; then pass "fault-report: inert when not preloaded"
+else fail "fault-report: without LD_PRELOAD rc=$rc: $out"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "VERIFY OK"; else echo "VERIFY FAILED: $fails check(s)"; exit 1; fi

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs in X86_IMAGE (Arch Linux amd64, under Rosetta). Builds x86_64 and i386 Venus ICDs
-# for the FEX graphics provider (/usr/share/guestos/fex-mesa).
+# for the FEX graphics provider (/usr/share/guestos/fex-mesa) and the x86_64 fault reporter
+# for emulated games (/usr/lib/steamac/x86_64/fault-report.so, source fault-report.c).
 # Mounts: /src (mesa source, ro), /scripts (ro), /out (guest tree), /work (test bins, logs).
 # Env: STEAMOS_X86_MIRROR STEAMOS_X86_BRANCH FEX_PROVIDER HOLO_KEYRING_PKG HOLO_KEYRING_SHA256
 #      LIBDISPLAY_INFO_PKG LIBDISPLAY_INFO_SHA256 LIB32_LIBDISPLAY_INFO_PKG LIB32_LIBDISPLAY_INFO_SHA256
@@ -66,9 +67,15 @@ install -D -m 0755 /tmp/dest-i386/usr/lib32/libvulkan_virtio.so "$p/usr/lib32/li
 install -D -m 0644 /tmp/dest-i386/usr/share/vulkan/icd.d/virtio_icd.x86.json \
     "$p/usr/share/vulkan/icd.d/virtio_icd.x86.json"
 
+# Same toolchain/glibc as the provider (pressure-vessel runs games on the provider's glibc).
+gcc -O2 -Wall -Wextra -Werror -fPIC -shared -Wl,-soname,fault-report.so -Wl,--build-id=sha1 \
+    -o /tmp/fault-report.so /scripts/fault-report.c
+install -D -m 0644 -s /tmp/fault-report.so /out/usr/lib/steamac/x86_64/fault-report.so
+
 mkdir -p /work/bin
 gcc -O2 -Wall -o /work/bin/vkprobe-x86_64 /scripts/vkprobe.c -ldl
 gcc -m32 -O2 -Wall -o /work/bin/vkprobe-i386 /scripts/vkprobe.c -ldl
+gcc -O1 -g -Wall -o /work/bin/fault-report-test /scripts/fault-report-test.c
 pacman -Q glibc lib32-glibc gcc-libs lib32-gcc-libs libdrm lib32-libdrm wayland lib32-wayland libxcb lib32-libxcb \
     libdisplay-info lib32-libdisplay-info systemd-libs lib32-systemd zstd lib32-zstd expat lib32-expat \
     meson python-mako vulkan-headers > /work/packages-x86.txt

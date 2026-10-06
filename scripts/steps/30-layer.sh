@@ -3,8 +3,9 @@
 # Read-only erofs image; its usr/ becomes the top lowerdir of the guest /usr
 # overlay (lowerdir=<layer>/usr:<rootfs>/usr), see guest/initramfs/init.
 # Contents: guest/layer/usr (steamac files) + work/out/mesa-venus/usr (Venus
-# ICDs from guest/mesa; required unless ALLOW_NO_VENUS=1) + the
-# fx-progress-agent binary built by step 25 from guest/progress-agent.
+# ICDs and the x86_64 fault reporter from guest/mesa; required unless
+# ALLOW_NO_VENUS=1) + the fx-progress-agent binary built by step 25 from
+# guest/progress-agent.
 set -euo pipefail
 . /src/scripts/config.env
 
@@ -17,6 +18,8 @@ cp -a /src/guest/layer/usr "$ST/usr"
 
 if [[ -d $VENUS/usr ]]; then
     cp -a "$VENUS/usr/." "$ST/usr/"
+    [[ -f $ST/usr/lib/steamac/x86_64/fault-report.so ]] \
+        || { echo "[layer] $VENUS lacks usr/lib/steamac/x86_64/fault-report.so: rebuild guest/mesa (x86 step)" >&2; exit 1; }
     venus_info=$(cd "$VENUS/usr" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
     echo "[layer] included Venus tree from $VENUS ($venus_info)"
 elif [[ ${ALLOW_NO_VENUS:-} == 1 ]]; then
