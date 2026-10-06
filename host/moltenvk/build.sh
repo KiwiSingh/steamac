@@ -313,6 +313,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0024 = steamac: access chains are not declared as potential loop temporaries (MSL declared descriptor"
 	echo "         pointers loaded in a loop header, 'constant texture3d<float> _45;', which Metal rejects:"
 	echo "         Stellar Blade's fragment pipelines, 'Out of video memory')"
+	echo "  0025 = steamac: array/matrix user outputs of emulated geometry shaders are flattened into one mesh"
+	echo "         vertex member per element (Metal: 'invalid type for mesh vertex type'; Stellar Blade's cube"
+	echo "         map GS), copied into the vertex at every EmitVertex"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

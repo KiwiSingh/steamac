@@ -37,6 +37,9 @@
  *                                  (pipeline creation only)
  *   v + prim + fprim               GS that reads only some vertex outputs (location-based payload)
  *   v + glin + f                   glslang-style GS reading positions from the gl_in[] block
+ *   v + garr + farr                GS writing an array varying (vec4[2] at location 2) and one after it at
+ *                                  location 4 (Stellar Blade's cube map GS): Metal mesh vertices cannot hold
+ *                                  arrays, the elements must be separate outputs at locations 2 and 3
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -419,6 +422,8 @@ int main(int argc, char **argv)
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 64, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "v.vert.spv", "glin.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
 		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_DIRECT },
+		{ "v.vert.spv", "garr.geom.spv", "farr.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
+		  { { 128, 255, 128, 255 }, { 128, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "voff.vert.spv", "zink_passthrough.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 64, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_FIRST_VERTEX },
 		{ "voff.vert.spv", "zink_passthrough.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
