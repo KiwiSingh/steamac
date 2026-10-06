@@ -255,6 +255,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         (shader writes were lost, GPU-written data not seen; vkd3d-proton root descriptors)"
 	echo "  0031 = steamac: the logged MSL of a failed compile leaves out SPIRV-Cross' helper templates (they"
 	echo "         filled the 40-line head) and logs each error context line once"
+	echo "  0032 = steamac: variable-count descriptor sets with buffer sizes (UBO/SSBO, texel buffers with texel"
+	echo "         offsets) took one size slot per element twice; exactly sized pools ran out (vkd3d-proton's"
+	echo "         descriptor heaps: VK_ERROR_OUT_OF_POOL_MEMORY, Venus stopped the game's command stream)"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"

@@ -50,9 +50,10 @@
 #    1x1x1 threadgroups); every invocation and the shared counter of each workgroup checked.
 # 16. descriptor_heap.c: vkd3d-proton's descriptor heaps without descriptor buffers / mutable descriptors (one
 #    variable-count update-after-bind set per descriptor type, a pool per heap sized exactly for its sets), heaps
-#    of 1 to 1000000 views and 1 to 2048 samplers, shader-visible and host: every set allocates and is written
-#    null (with argument buffers, texel offsets made the pool too small for the last set: Stellar Blade's first
-#    heap failed with VK_ERROR_OUT_OF_POOL_MEMORY and Venus stopped the game's command stream).
+#    of 1 to 1000000 views and 1 to 2048 samplers, shader-visible and host, and pools of one such set: every set
+#    allocates and is written null (variable sets with buffer sizes counted the size of each element twice, and
+#    texel offsets made it worse: Stellar Blade's first heap failed with VK_ERROR_OUT_OF_POOL_MEMORY and Venus
+#    stopped the game's command stream); descriptors at element 999997 read back (dh_read.comp).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -196,4 +197,4 @@ MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$wor
 
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/descriptor_heap.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/descriptor_heap"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/descriptor_heap"
+MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/descriptor_heap" "$gspv"

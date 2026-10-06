@@ -8,10 +8,14 @@
  *   - per heap a pool with one pool size of NumDescriptors per set of the heap's type (+2 storage buffers for the
  *     CBV set's extra bindings), maxSets = number of pool sizes, UPDATE_AFTER_BIND;
  *   - each set allocated with variableDescriptorCount = NumDescriptors, then every descriptor written null.
- * Heaps of the sizes games create (Stellar Blade, UE4: CBV_SRV_UAV shader-visible heaps up to 1000000, samplers
- * 2048, many small host heaps). A failed allocation is fatal over Venus: the guest allocates sets asynchronously,
- * the host's VK_ERROR_OUT_OF_POOL_MEMORY leaves a set handle the next vkUpdateDescriptorSets cannot find, and the
- * context's command stream stops (the game hangs on its first frame).
+ * 1. Heaps of the sizes games create (Stellar Blade, UE4: CBV_SRV_UAV shader-visible heaps up to 1000000, samplers
+ *    2048, many small host heaps) and pools of a single such set, sized exactly: every set allocates. A failed
+ *    allocation is fatal over Venus: the guest allocates sets asynchronously, the host's VK_ERROR_OUT_OF_POOL_MEMORY
+ *    leaves a set handle the next vkUpdateDescriptorSets cannot find, and the context's command stream stops (the
+ *    game hung on its first frame).
+ * 2. dh_read.comp reads descriptors at element 999997 of a 1000000-descriptor heap: an R32_UINT texel buffer view at
+ *    byte 4 (texel offset), a raw SSBO at byte 16, a CBV, and the CBV set's fixed offset buffer (sizes and texel
+ *    offset come from the sets' aux buffers, which start after the variable descriptors).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,8 +25,11 @@
 #define CK(x) do { VkResult r_ = (x); if (r_) { printf("FAIL %s = %d (line %d)\n", #x, r_, __LINE__); exit(1); } } while (0)
 
 enum { MAX_VIEWS = 1000000, MAX_SAMPLERS = 2048, EXTRA_SSBOS = 2 };
+enum { CBV, SRV_BUFFER, SRV_IMAGE, UAV_BUFFER, UAV_IMAGE, RAW_SSBO, VIEW_SETS };
 
 static VkDevice dev;
+static VkPhysicalDevice pd;
+static const char *dir;
 static int fails;
 
 struct heap_set {
@@ -83,10 +90,14 @@ static void zero_initialize(VkDescriptorSet set, VkDescriptorType type, uint32_t
 	free(infos);
 }
 
-/* d3d12_descriptor_heap_create_descriptor_pool + _create_descriptor_set for each set of the heap's type. */
-static void heap(const char *what, struct heap_set *sets, uint32_t set_count, uint32_t num_descriptors, int shader_visible)
+/*
+ * d3d12_descriptor_heap_create_descriptor_pool + _create_descriptor_set for each of the sets. Returns the pool
+ * (the sets in `out`) if `keep`, else destroys it.
+ */
+static VkDescriptorPool heap(const char *what, const struct heap_set *sets, uint32_t set_count, uint32_t num_descriptors,
+                             int shader_visible, VkDescriptorSet *out, int keep)
 {
-	VkDescriptorPoolSize sizes[8];
+	VkDescriptorPoolSize sizes[VIEW_SETS + 1];
 	uint32_t pool_count = 0, ssbo_pool = ~0u, ssbo_extra = 0;
 	for (uint32_t i = 0; i < set_count; i++) {
 		if (sets[i].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
@@ -107,7 +118,7 @@ static void heap(const char *what, struct heap_set *sets, uint32_t set_count, ui
 	if (r) {
 		printf("FAIL %s: vkCreateDescriptorPool = %d\n", what, r);
 		fails++;
-		return;
+		return VK_NULL_HANDLE;
 	}
 	char failed[256] = "";
 	for (uint32_t i = 0; i < set_count; i++) {
@@ -115,49 +126,201 @@ static void heap(const char *what, struct heap_set *sets, uint32_t set_count, ui
 			.descriptorSetCount = 1, .pDescriptorCounts = &num_descriptors };
 		VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, &vci, .descriptorPool = pool,
 			.descriptorSetCount = 1, .pSetLayouts = shader_visible ? &sets[i].layout : &sets[i].host };
-		VkDescriptorSet set;
-		r = vkAllocateDescriptorSets(dev, &ai, &set);
+		r = vkAllocateDescriptorSets(dev, &ai, &out[i]);
 		if (r) {
 			snprintf(failed + strlen(failed), sizeof(failed) - strlen(failed), " %s=%d", sets[i].name, r);
 			continue;
 		}
-		zero_initialize(set, sets[i].type, sets[i].extra, num_descriptors);
+		zero_initialize(out[i], sets[i].type, sets[i].extra, num_descriptors);
 	}
 	printf("%-4s %s: %u sets of %u descriptors allocated%s%s\n", failed[0] ? "FAIL" : "OK", what, set_count, num_descriptors,
 	       failed[0] ? ", failed:" : "", failed);
 	fails += failed[0] != 0;
+	if (keep && !failed[0])
+		return pool;
+	vkDestroyDescriptorPool(dev, pool, NULL);
+	return VK_NULL_HANDLE;
+}
+
+static VkShaderModule module(const char *name)
+{
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	FILE *f = fopen(path, "rb");
+	if (!f) { printf("FAIL open %s\n", path); exit(1); }
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	uint32_t *code = malloc(n);
+	if (fread(code, 1, n, f) != (size_t)n) { printf("FAIL read %s\n", path); exit(1); }
+	fclose(f);
+	VkShaderModuleCreateInfo ci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = n, .pCode = code };
+	VkShaderModule m;
+	CK(vkCreateShaderModule(dev, &ci, NULL, &m));
+	free(code);
+	return m;
+}
+
+/* Host-visible buffer, mapped. */
+static VkBuffer buffer(VkDeviceSize size, VkBufferUsageFlags usage, void **map)
+{
+	VkBufferCreateInfo ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = usage };
+	VkBuffer b;
+	CK(vkCreateBuffer(dev, &ci, NULL, &b));
+	VkMemoryRequirements mr;
+	vkGetBufferMemoryRequirements(dev, b, &mr);
+	VkPhysicalDeviceMemoryProperties mp;
+	vkGetPhysicalDeviceMemoryProperties(pd, &mp);
+	const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	uint32_t t = 0;
+	while (!(mr.memoryTypeBits & (1u << t)) || (mp.memoryTypes[t].propertyFlags & want) != want)
+		t++;
+	VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = t };
+	VkDeviceMemory m;
+	CK(vkAllocateMemory(dev, &ai, NULL, &m));
+	CK(vkBindBufferMemory(dev, b, m, 0));
+	CK(vkMapMemory(dev, m, 0, VK_WHOLE_SIZE, 0, map));
+	return b;
+}
+
+static void expect(const char *what, const uint32_t *got, const uint32_t *want, uint32_t count)
+{
+	uint32_t bad = 0;
+	for (uint32_t i = 0; i < count; i++)
+		if (got[i] != want[i]) {
+			if (!bad)
+				printf("     %s: [%u] = %u, want %u\n", what, i, got[i], want[i]);
+			bad++;
+		}
+	printf("%-4s %s (%u values, %u wrong)\n", bad ? "FAIL" : "OK", what, count, bad);
+	fails += bad != 0;
+}
+
+/* 2. dh_read.comp through a shader-visible heap of MAX_VIEWS. */
+static void read_heap(const struct heap_set *views, VkQueue queue)
+{
+	const uint32_t k = MAX_VIEWS - 3;
+	VkDescriptorSet sets[VIEW_SETS];
+	VkDescriptorPool pool = heap("shader-visible CBV_SRV_UAV heap of 1000000 for dh_read.comp", views, VIEW_SETS, MAX_VIEWS, 1, sets, 1);
+	if (!pool)
+		return;
+
+	uint32_t *data, *out;
+	VkBuffer dbuf = buffer(256, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+	                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, (void **)&data);
+	VkBuffer obuf = buffer(64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, (void **)&out);
+	for (uint32_t i = 0; i < 64; i++)
+		data[i] = 100 + i;
+	memset(out, 0xcd, 64);
+
+	VkBufferViewCreateInfo bvci = { VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = dbuf, .format = VK_FORMAT_R32_UINT,
+		.offset = 4, .range = 64 };
+	VkBufferView view;
+	CK(vkCreateBufferView(dev, &bvci, NULL, &view));
+	VkDescriptorBufferInfo raw = { dbuf, 16, 32 }, cbv = { dbuf, 0, 16 }, offs = { dbuf, 0, 64 }, aux = { dbuf, 0, 16 };
+	VkWriteDescriptorSet w[] = {
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[SRV_BUFFER], .dstBinding = 0, .dstArrayElement = k,
+		  .descriptorCount = 1, .descriptorType = views[SRV_BUFFER].type, .pTexelBufferView = &view },
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[RAW_SSBO], .dstBinding = 0, .dstArrayElement = k,
+		  .descriptorCount = 1, .descriptorType = views[RAW_SSBO].type, .pBufferInfo = &raw },
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[CBV], .dstBinding = EXTRA_SSBOS, .dstArrayElement = k,
+		  .descriptorCount = 1, .descriptorType = views[CBV].type, .pBufferInfo = &cbv },
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[CBV], .dstBinding = 0,
+		  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &aux },
+		{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = sets[CBV], .dstBinding = 1,
+		  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &offs },
+	};
+	vkUpdateDescriptorSets(dev, sizeof(w) / sizeof(*w), w, 0, NULL);
+
+	VkDescriptorSetLayoutBinding ob = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+	VkDescriptorSetLayoutCreateInfo oci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &ob };
+	VkDescriptorSetLayout olayout;
+	CK(vkCreateDescriptorSetLayout(dev, &oci, NULL, &olayout));
+	VkDescriptorPoolSize ops = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 };
+	VkDescriptorPoolCreateInfo opci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ops };
+	VkDescriptorPool opool;
+	CK(vkCreateDescriptorPool(dev, &opci, NULL, &opool));
+	VkDescriptorSetAllocateInfo oai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = opool,
+		.descriptorSetCount = 1, .pSetLayouts = &olayout };
+	VkDescriptorSet oset;
+	CK(vkAllocateDescriptorSets(dev, &oai, &oset));
+	VkDescriptorBufferInfo obi = { obuf, 0, VK_WHOLE_SIZE };
+	VkWriteDescriptorSet ow = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = oset, .dstBinding = 0, .descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi };
+	vkUpdateDescriptorSets(dev, 1, &ow, 0, NULL);
+
+	VkDescriptorSetLayout layouts[] = { views[SRV_BUFFER].layout, views[RAW_SSBO].layout, views[CBV].layout, olayout };
+	VkDescriptorSet bind[] = { sets[SRV_BUFFER], sets[RAW_SSBO], sets[CBV], oset };
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 };
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 4, .pSetLayouts = layouts,
+		.pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
+	VkPipelineLayout layout;
+	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+		           .module = module("dh_read.comp.spv"), .pName = "main" }, .layout = layout };
+	VkPipeline p;
+	VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
+	printf("%-4s create dh_read.comp.spv (VkResult %d)\n", r ? "FAIL" : "OK", r);
+	if (r) exit(1);
+
+	VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	VkCommandPool cpool;
+	CK(vkCreateCommandPool(dev, &cpci, NULL, &cpool));
+	VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cpool, .commandBufferCount = 1 };
+	VkCommandBuffer cmd;
+	CK(vkAllocateCommandBuffers(dev, &cai, &cmd));
+	VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+	CK(vkBeginCommandBuffer(cmd, &bi));
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 4, bind, 0, NULL);
+	vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &k);
+	vkCmdDispatch(cmd, 1, 1, 1);
+	VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT };
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+	CK(vkEndCommandBuffer(cmd));
+	VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd };
+	CK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+	CK(vkQueueWaitIdle(queue));
+
+	/* view at byte 4: texel 2 = word 3, 16 texels, texel 16 past the end; raw SSBO at byte 16: word 1 = 105,
+	 * 8 words; CBV v.y = 101; offset buffer 64 bytes = 16 words */
+	const uint32_t want[] = { 103, 16, 0, 105, 8, 101, 16 };
+	expect("element 999997: texel view at 4 (texel 2, size, past the end), raw SSBO at 16 (word 1, length), CBV, "
+	       "fixed offset buffer length", out, want, 7);
 	vkDestroyDescriptorPool(dev, pool, NULL);
 }
 
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	if (argc != 2) { fprintf(stderr, "usage: %s <spv dir>\n", argv[0]); return 2; }
+	dir = argv[1];
 	VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3 };
 	VkInstanceCreateInfo ici = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app };
 	VkInstance inst;
 	CK(vkCreateInstance(&ici, NULL, &inst));
 	uint32_t n = 1;
-	VkPhysicalDevice pd;
 	if (vkEnumeratePhysicalDevices(inst, &n, &pd) < 0 || !n) { printf("FAIL no physical device\n"); return 1; }
 
 	VkPhysicalDeviceVulkan12Properties p12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
 	VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p12 };
 	vkGetPhysicalDeviceProperties2(pd, &p2);
-	VkPhysicalDeviceRobustness2FeaturesEXT rb2q = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
-	VkPhysicalDeviceVulkan12Features v12q = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &rb2q };
-	VkPhysicalDeviceFeatures2 f2q = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12q };
+	VkPhysicalDeviceVulkan12Features v12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+	VkPhysicalDeviceFeatures2 f2q = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12 };
 	vkGetPhysicalDeviceFeatures2(pd, &f2q);
 
 	/* vkd3d_bindless_state_get_bindless_flags */
 	int cbv_as_ssbo = p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers < MAX_VIEWS ||
-	                  !v12q.descriptorBindingUniformBufferUpdateAfterBind || !v12q.shaderUniformBufferArrayNonUniformIndexing;
+	                  !v12.descriptorBindingUniformBufferUpdateAfterBind || !v12.shaderUniformBufferArrayNonUniformIndexing;
 	int raw_ssbo = p2.properties.limits.minStorageBufferOffsetAlignment <= 16;
 	printf("     vkd3d-proton legacy bindless: CBV as %s, raw SSBO set %s\n", cbv_as_ssbo ? "SSBO" : "UBO", raw_ssbo ? "yes" : "no");
+	if (!raw_ssbo) { printf("FAIL minStorageBufferOffsetAlignment %llu > 16\n", (unsigned long long)p2.properties.limits.minStorageBufferOffsetAlignment); return 1; }
 
+	/* vkd3d-proton's device enables robustness2 (nullDescriptor for zero_initialize) and all supported features */
 	VkPhysicalDeviceRobustness2FeaturesEXT rb2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
 		.robustBufferAccess2 = VK_TRUE, .robustImageAccess2 = VK_TRUE, .nullDescriptor = VK_TRUE };
-	VkPhysicalDeviceVulkan12Features v12 = v12q;
 	v12.pNext = &rb2;
 	VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12, .features = f2q.features };
 	const char *exts[] = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME };
@@ -166,18 +329,19 @@ int main(void)
 	VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
 		.enabledExtensionCount = 1, .ppEnabledExtensionNames = exts };
 	CK(vkCreateDevice(pd, &dci, NULL, &dev));
+	VkQueue queue;
+	vkGetDeviceQueue(dev, 0, 0, &queue);
 
 	/* vkd3d_bindless_state_init_legacy (sampler set first, then CBV, SRV buffer/image, UAV buffer/image, raw SSBO) */
 	struct heap_set sampler[] = { { "sampler", VK_DESCRIPTOR_TYPE_SAMPLER, 0 } };
-	struct heap_set views[6] = {
-		{ "cbv", cbv_as_ssbo ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, EXTRA_SSBOS },
-		{ "srv_buffer", VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 0 },
-		{ "srv_image", VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 0 },
-		{ "uav_buffer", VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 0 },
-		{ "uav_image", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0 },
-		{ "raw_ssbo", VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0 },
+	struct heap_set views[VIEW_SETS] = {
+		[CBV] =        { "cbv", cbv_as_ssbo ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, EXTRA_SSBOS },
+		[SRV_BUFFER] = { "srv_buffer", VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 0 },
+		[SRV_IMAGE] =  { "srv_image", VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 0 },
+		[UAV_BUFFER] = { "uav_buffer", VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 0 },
+		[UAV_IMAGE] =  { "uav_image", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0 },
+		[RAW_SSBO] =   { "raw_ssbo", VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0 },
 	};
-	uint32_t view_sets = raw_ssbo ? 6 : 5;
 	/* d3d12_max_host_descriptor_count_from_heap_type */
 	uint32_t host_views = min32(cbv_as_ssbo ? p12.maxDescriptorSetUpdateAfterBindStorageBuffers : p12.maxDescriptorSetUpdateAfterBindUniformBuffers,
 	                            min32(p12.maxDescriptorSetUpdateAfterBindSampledImages,
@@ -185,29 +349,39 @@ int main(void)
 	uint32_t host_samplers = p12.maxDescriptorSetUpdateAfterBindSamplers;
 	sampler[0].layout = heap_layout(VK_DESCRIPTOR_TYPE_SAMPLER, 0, MAX_SAMPLERS);
 	sampler[0].host = heap_layout(VK_DESCRIPTOR_TYPE_SAMPLER, 0, host_samplers);
-	for (uint32_t i = 0; i < view_sets; i++) {
+	for (uint32_t i = 0; i < VIEW_SETS; i++) {
 		views[i].layout = heap_layout(views[i].type, views[i].extra, MAX_VIEWS);
 		views[i].host = heap_layout(views[i].type, views[i].extra, host_views);
 	}
 	printf("OK   set layouts: %u view sets of %u (host %u), sampler set of %u (host %u)\n",
-	       view_sets, MAX_VIEWS, host_views, MAX_SAMPLERS, host_samplers);
+	       VIEW_SETS, MAX_VIEWS, host_views, MAX_SAMPLERS, host_samplers);
 
+	/* 1. */
+	VkDescriptorSet sets[VIEW_SETS];
+	char what[96];
 	static const uint32_t view_heaps[] = { 1, 64, 4096, 65536, 500000, MAX_VIEWS };
 	for (uint32_t i = 0; i < sizeof(view_heaps) / sizeof(*view_heaps); i++) {
-		char what[96];
 		snprintf(what, sizeof(what), "shader-visible CBV_SRV_UAV heap of %u", view_heaps[i]);
-		heap(what, views, view_sets, view_heaps[i], 1);
+		heap(what, views, VIEW_SETS, view_heaps[i], 1, sets, 0);
 		snprintf(what, sizeof(what), "host CBV_SRV_UAV heap of %u", view_heaps[i]);
-		heap(what, views, view_sets, view_heaps[i], 0);
+		heap(what, views, VIEW_SETS, view_heaps[i], 0, sets, 0);
 	}
 	static const uint32_t sampler_heaps[] = { 1, 16, MAX_SAMPLERS };
 	for (uint32_t i = 0; i < sizeof(sampler_heaps) / sizeof(*sampler_heaps); i++) {
-		char what[96];
 		snprintf(what, sizeof(what), "shader-visible sampler heap of %u", sampler_heaps[i]);
-		heap(what, sampler, 1, sampler_heaps[i], 1);
+		heap(what, sampler, 1, sampler_heaps[i], 1, sets, 0);
 		snprintf(what, sizeof(what), "host sampler heap of %u", sampler_heaps[i]);
-		heap(what, sampler, 1, sampler_heaps[i], 0);
+		heap(what, sampler, 1, sampler_heaps[i], 0, sets, 0);
 	}
+	static const uint32_t single[] = { 1, 63, 65536 };
+	for (uint32_t i = 0; i < VIEW_SETS; i++)
+		for (uint32_t j = 0; j < sizeof(single) / sizeof(*single); j++) {
+			snprintf(what, sizeof(what), "pool of one %s set of %u", views[i].name, single[j]);
+			heap(what, &views[i], 1, single[j], 1, sets, 0);
+		}
+
+	/* 2. */
+	read_heap(views, queue);
 
 	if (fails)
 		printf("descriptor_heap: %d failure(s)\n", fails);
