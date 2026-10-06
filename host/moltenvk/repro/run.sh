@@ -67,6 +67,8 @@
 #    shape: SPIRV-Cross declared their access chains as temporaries that Metal rejects); memory per pipeline
 #    over 16 specialized variants using the 1000000-descriptor heaps (< 4 MB: Metal kept a 32 MB table per
 #    inline array<T, 1000000> and program, ~100 MB per pipeline).
+# 17. msl_helpers.c: fragment helpers with an OpKill-only block, directly and through a nested caller
+#    (STEAMAC-1Q): discard left-half pixels, render right-half colors, suppress writes after discard.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
@@ -237,3 +239,6 @@ build wgsize
 spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
 build descriptor_heap
 "$work/descriptor_heap" "$gspv"
+
+build msl_helpers
+"$work/msl_helpers" "$gspv"

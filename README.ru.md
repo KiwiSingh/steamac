@@ -675,6 +675,10 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, режим рабочего стола (Plasma внутри gamescope), маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`) и его root-сервисы (`fx.clock`, `fx.sleep`, uinput-геймпад на `fx.pad`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), фоновая обработка шейдеров Steam включена по умолчанию (`steam-shader-defaults`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
+MoltenVK также исправляет fragment-хелперы с discard в иначе пустом блоке SPIR-V
+(STEAMAC-1Q). `host/moltenvk/repro/msl_helpers.c` проверяет прямой и вложенный вызовы:
+отброшенные пиксели остаются очищенными и не пишут в storage-буферы, остальные рисуются нормально.
+
 Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому
 официальные обновления Valve (RAUC + atomupd) ставятся в другой слот и откатываются штатно —
 проверено обновлением 20260922 → 20260928 и откатом.

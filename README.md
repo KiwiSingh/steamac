@@ -693,6 +693,10 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 | `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, Desktop Mode (Plasma nested in gamescope), masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port) and its root services (`fx.clock`, `fx.sleep`, the uinput gamepad on `fx.pad`), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam Shader Pre-Caching disabled by default (`steam-shader-defaults`) |
 | `scripts/` | build of `work/out/steamos.img`: GPT with Valve's partition layout (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev test of provisioning against a disk from Docker |
 
+MoltenVK also fixes fragment helpers that discard from an otherwise empty SPIR-V block
+(STEAMAC-1Q). `host/moltenvk/repro/msl_helpers.c` checks both direct and nested helpers:
+discarded pixels stay clear and do not write storage buffers; surviving pixels render normally.
+
 The SteamOS root filesystem is not modified: all changes come from initramfs and the layer. Thus
 official Valve updates (RAUC + atomupd) install into the other slot and roll back normally — verified
 with the 20260922 → 20260928 update and rollback.
