@@ -330,6 +330,18 @@ h1 em {
 .limits li { margin: 6px 0; }
 .limits b { color: var(--text); }
 
+/* Testimonials: player quotes (verbatim apart from spelling). */
+.voices { padding: clamp(64px, 9vh, 110px) 0; }
+.quotes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 20px; }
+.quote {
+  position: relative; margin: 0; padding: 30px 34px 26px; border-radius: 18px; border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(102, 192, 244, .07), rgba(255, 255, 255, .01)); box-shadow: inset 3px 0 0 var(--steam2);
+}
+.quote::before { content: "“"; position: absolute; top: 4px; right: 26px; font: 700 110px/1 Georgia, "Times New Roman", serif; color: var(--steam2); opacity: .16; pointer-events: none; }
+.quote blockquote { margin: 0 0 18px; }
+.quote blockquote p { margin: 0; max-width: 880px; font-size: clamp(20px, 2.4vw, 29px); line-height: 1.35; letter-spacing: -.01em; color: var(--text); }
+.quote figcaption { font: 500 13px/1.5 var(--mono); color: var(--muted); }
+
 /* Settings showcase: tab list + the real Settings window screenshots (clickable toolbar). */
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 600px); gap: clamp(24px, 4vw, 56px); align-items: center; }
 .settings-tabs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
@@ -432,6 +444,8 @@ pre .c { color: #5f7186; }
   .shots figure:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-window { order: -1; width: min(100%, 440px); margin: 0 auto; transform: none; }
+  .quote { padding: 52px 22px 22px 26px; }
+  .quote::before { font-size: 80px; top: 6px; right: auto; left: 22px; }
   .get-head { flex-wrap: wrap; gap: 14px; }
   .app-icon { width: 72px; height: 72px; }
 }
