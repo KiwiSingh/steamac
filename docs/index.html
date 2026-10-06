@@ -108,7 +108,7 @@
             <div class="chip" style="--x:5;--y:40;--w:27;--h:17"><b>Keyboard</b><small>AppKit key events</small></div>
             <div class="chip" style="--x:5;--y:65;--w:27;--h:17"><b>Mouse · Trackpad</b><small>1:1 cursor</small></div>
             <div class="chip chip-core" style="--x:39;--y:28;--w:22;--h:44"><b>Input router</b><small>steamac-vm</small></div>
-            <div class="chip" style="--x:68;--y:8;--w:27;--h:15"><b>Xbox 360 pad</b><small>evdev</small></div>
+            <div class="chip" style="--x:68;--y:8;--w:27;--h:15"><b>DualSense · Xbox pad</b><small>uinput · rumble</small></div>
             <div class="chip" style="--x:68;--y:30;--w:27;--h:13"><b>Keyboard</b></div>
             <div class="chip" style="--x:68;--y:50;--w:27;--h:13"><b>Mouse · relative</b></div>
             <div class="chip" style="--x:68;--y:70;--w:27;--h:13"><b>Tablet · absolute</b></div>
@@ -226,13 +226,13 @@
       <article class="info" data-i="1" style="--accent:#4ade80">
         <p class="info-kicker">02 · <span lang="en">Controls</span><span lang="ru">Управление</span></p>
         <h2><span lang="en">Any controller and a mouse that just works</span><span lang="ru">Любой геймпад и мышь, которая просто работает</span></h2>
-        <p class="info-lede"><span lang="en">Every gamepad macOS knows becomes an Xbox 360 pad inside SteamOS; keyboard and mouse go in through virtio-input.</span><span lang="ru">Любой геймпад, который видит macOS, становится в SteamOS геймпадом Xbox 360; клавиатура и мышь идут через virtio-input.</span></p>
+        <p class="info-lede"><span lang="en">Every gamepad macOS knows appears inside SteamOS as the same kind of controller — DualSense, DualShock 4 or Xbox — with rumble; keyboard and mouse go in through virtio-input.</span><span lang="ru">Любой геймпад, который видит macOS, появляется в SteamOS как контроллер того же типа — DualSense, DualShock 4 или Xbox — с вибрацией; клавиатура и мышь идут через virtio-input.</span></p>
         <ul>
-          <li><span lang="en">GameController.framework reads Xbox, DualSense, DualShock and MFi pads; the launcher drives a virtual Xbox 360 pad, so Steam Input and games see a standard controller.</span><span lang="ru">GameController.framework читает Xbox, DualSense, DualShock и MFi; лаунчер ведёт виртуальный Xbox 360 pad, поэтому Steam Input и игры видят стандартный контроллер.</span></li>
+          <li><span lang="en">GameController.framework reads Xbox, DualSense, DualShock and MFi pads. Inside SteamOS the launcher's agent creates a matching pad with the real driver's identity, so Steam shows the right button glyphs; rumble from games plays back on your controller.</span><span lang="ru">GameController.framework читает Xbox, DualSense, DualShock и MFi. Внутри SteamOS агент лаунчера создаёт такой же геймпад с идентификатором настоящего драйвера, поэтому Steam показывает правильные кнопки; вибрация из игр передаётся на ваш контроллер.</span></li>
           <li><span lang="en">Pick the controller, swap A/B and X/Y for Nintendo-style layouts, set a stick deadzone — while the game runs.</span><span lang="ru">Выбор контроллера, перестановка A/B и X/Y под раскладку Nintendo, мёртвая зона стиков — прямо во время игры.</span></li>
           <li><span lang="en">gamescope ignores absolute pointers, so the SteamOS cursor is moved with unaccelerated relative motion and tracks the Mac cursor 1:1. In a game the first click captures the mouse for mouse-look, Ctrl+Option releases it — remembered per game.</span><span lang="ru">gamescope не принимает абсолютные координаты, поэтому курсор SteamOS ведётся относительными сдвигами без ускорения и точно следует за курсором Mac. В игре первый щелчок захватывает мышь для обзора, Ctrl+Option отпускает — выбор запоминается для каждой игры.</span></li>
         </ul>
-        <p class="tags"><span>virtio-input</span><span>GameController</span><span>evdev</span></p>
+        <p class="tags"><span>virtio-input</span><span>GameController</span><span>uinput</span><span>rumble</span></p>
       </article>
 
       <article class="info" data-i="2" style="--accent:#c084fc">
@@ -351,8 +351,8 @@
       <ol class="settings-tabs" role="tablist" aria-label="Settings tabs">
         <li><button type="button" role="tab" data-tab="general" aria-selected="true">
           <b>General</b>
-          <span lang="en">Close the window to shut down or suspend SteamOS in memory (Ctrl+Cmd+S); boot overlay and a “still working” card when the GPU idles for 2 s; in the background, fade the sound out (default) or pause the game; crash reports with an opt-out; update check at startup; Report a Problem with the logs you choose.</span>
-          <span lang="ru">Закрытие окна выключает SteamOS или приостанавливает её в памяти (Ctrl+Cmd+S); оверлей загрузки и карточка «still working», если GPU простаивает 2 с; в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; отчёты о сбоях с возможностью отключить; проверка обновлений при запуске; Report a Problem с выбранными логами.</span>
+          <span lang="en">Close the window to shut down or suspend SteamOS in memory (Ctrl+Cmd+S); the Mac's time zone; a shared clipboard with SteamOS (text and images, password-manager items stay on the Mac); in the background, fade the sound out (default) or pause the game; boot overlay and a “still working” card; crash reports and the update check with an opt-out; Report a Problem.</span>
+          <span lang="ru">Закрытие окна выключает SteamOS или приостанавливает её в памяти (Ctrl+Cmd+S); часовой пояс Mac; общий с SteamOS буфер обмена (текст и картинки, элементы менеджеров паролей остаются на Mac); в фоне — плавно выключить звук (по умолчанию) или поставить игру на паузу; оверлей загрузки и карточка «still working»; отчёты о сбоях и проверка обновлений с возможностью отключить; Report a Problem.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="display" aria-selected="false">
           <b>Display</b>
@@ -366,8 +366,8 @@
         </button></li>
         <li><button type="button" role="tab" data-tab="controller" aria-selected="false">
           <b>Controller</b>
-          <span lang="en">Virtual Xbox 360 pad on or off, which controller drives it, A/B and X/Y swap, stick deadzone — plus a live input test for connected controllers.</span>
-          <span lang="ru">Виртуальный Xbox 360 pad, какой контроллер им управляет, перестановка A/B и X/Y, мёртвая зона стиков — и живой тест ввода подключённых контроллеров.</span>
+          <span lang="en">The controller appears in SteamOS as the same kind — DualSense, DualShock 4 or Xbox — with rumble, or as one you choose; which controller drives it, A/B and X/Y swap, stick deadzone — plus a live input test.</span>
+          <span lang="ru">Контроллер появляется в SteamOS того же типа — DualSense, DualShock 4 или Xbox — с вибрацией, или выбранного вами; какой контроллер им управляет, перестановка A/B и X/Y, мёртвая зона стиков — и живой тест ввода.</span>
         </button></li>
         <li><button type="button" role="tab" data-tab="sound" aria-selected="false">
           <b>Sound</b>
@@ -426,12 +426,14 @@
       </div>
 
       <div class="get-card">
-        <h3><span lang="en">New in 1.4</span><span lang="ru">Новое в 1.4</span></h3>
+        <h3><span lang="en">New in 1.5</span><span lang="ru">Новое в 1.5</span></h3>
         <ul class="news">
-          <li><span lang="en">Software Update: at startup the app asks GitHub for the newest release (at most every 6 hours, only the app version is sent) and shows its notes with Download / Skip / Later; Check for Updates… is in the app menu, and the check can be turned off in Settings → General</span><span lang="ru">Обновления: при запуске приложение спрашивает у GitHub последний релиз (не чаще раза в 6 часов, отправляется только версия приложения) и показывает его описание с кнопками Download / Skip / Later; Check for Updates… — в меню приложения, проверку можно выключить в Settings → General</span></li>
-          <li><span lang="en">The VM is sized for your Mac: one vCPU per performance core (2–8) and half of the RAM (4–16 GB); Custom in Settings → Advanced warns when you over-commit</span><span lang="ru">Размер ВМ подбирается под ваш Mac: vCPU по числу производительных ядер (2–8) и половина памяти (4–16 ГБ); в режиме Custom в Settings → Advanced есть предупреждение, если выделено слишком много</span></li>
-          <li><span lang="en">Steam's Shader Pre-Caching and background shader processing are off by default: replaying them costs minutes on Venus/MoltenVK and the shared caches barely match. Your own choice in Steam's settings wins</span><span lang="ru">Shader Pre-Caching и фоновая обработка шейдеров в Steam по умолчанию выключены: на Venus/MoltenVK их прогон занимает минуты, а общие кеши почти не подходят. Если включить их в настройках Steam, ваш выбор сохраняется</span></li>
-          <li><span lang="en">MoltenVK: vertex input Metal would reject now fails the pipeline cleanly instead of crashing the VM</span><span lang="ru">MoltenVK: вершинные данные, которые Metal отверг бы, теперь просто не создают конвейер, а не роняют ВМ</span></li>
+          <li><span lang="en">Controllers appear in SteamOS as what they are — DualSense, DualShock 4 or Xbox — with the right button glyphs, and rumble from games plays on your controller</span><span lang="ru">Контроллеры появляются в SteamOS такими, какие они есть, — DualSense, DualShock 4 или Xbox — с правильными кнопками, а вибрация из игр передаётся на ваш контроллер</span></li>
+          <li><span lang="en">Shared clipboard between the Mac and SteamOS: text and images both ways, also in Desktop Mode; password-manager items stay on the Mac</span><span lang="ru">Общий буфер обмена Mac и SteamOS: текст и картинки в обе стороны, в том числе в режиме рабочего стола; элементы менеджеров паролей остаются на Mac</span></li>
+          <li><span lang="en">Desktop Mode works: Steam → Power → Switch to Desktop opens KDE Plasma inside the window; SteamOS uses the Mac's time zone until you change it</span><span lang="ru">Работает режим рабочего стола: Steam → Power → Switch to Desktop открывает KDE Plasma прямо в окне; SteamOS берёт часовой пояс Mac, пока вы его не смените</span></li>
+          <li><span lang="en">One VM per disk: launching a second copy on the same steamos.img is refused instead of damaging it</span><span lang="ru">Одна ВМ на диск: второй запуск на том же steamos.img отклоняется, а не портит диск</span></li>
+          <li><span lang="en">Graphics: DXVK compute shaders run with their real workgroup size again (lighting, SSAO, bloom), vkd3d-proton (DirectX 12) passes device creation, Stellar Blade's pipelines compile, occlusion and transform feedback queries work</span><span lang="ru">Графика: compute-шейдеры DXVK снова работают со своим настоящим размером рабочей группы (освещение, SSAO, bloom), vkd3d-proton (DirectX 12) проходит создание устройства, конвейеры Stellar Blade компилируются, работают occlusion- и transform feedback-запросы</span></li>
+          <li><span lang="en">Steam Shader Pre-Caching is on again by default: cutscene videos need it</span><span lang="ru">Shader Pre-Caching в Steam снова включён по умолчанию: он нужен для видеороликов в играх</span></li>
         </ul>
         <h3><span lang="en">Or build everything from source</span><span lang="ru">Или соберите всё из исходников</span></h3>
 <pre><code><span class="c"># MoltenVK, virglrenderer, libkrun, launcher,</span>
