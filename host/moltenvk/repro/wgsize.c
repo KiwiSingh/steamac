@@ -9,7 +9,8 @@
  * Each 8x8 workgroup writes index+1 per invocation and the count of a zero-initialized shared counter; 4 workgroups.
  * The .spvasm files in shaders/wgsize (assembled by run.sh, SPIR-V 1.6):
  *   wg_localsize_init.spv        LocalSize 8 8 1 + initializer (control)
- *   wg_localsizeid_noinit.spv    LocalSizeId, no initializer (control)
+ *   wg_localsizeid_noinit.spv    LocalSizeId, no initializer (control: threadgroup size only; its counter starts
+ *                                from whatever the threadgroup memory held, garbage on M1)
  *   wg_localsizeid_init.spv      LocalSizeId + initializer (DXVK's pattern)
  *   wg_localsizeid_spec_init.spv LocalSizeId with specialization constant 0 (default 2, specialized to 8) + initializer
  */
@@ -136,9 +137,11 @@ int main(int argc, char **argv)
 			for (int k = 0; k < 64; k++) ran += map[g * 65 + k] == (uint32_t)k + 1;
 			bad_count += map[g * 65 + 64] != 64;
 		}
-		int ok = ran == GROUPS * 64 && !bad_count;
-		printf("%-4s %s: %d of %d invocations ran, shared count per workgroup %u (want 64)\n", ok ? "OK" : "FAIL", spv[i], ran,
-		       GROUPS * 64, map[64]);
+		/* Without an initializer the shared counter starts undefined: only the invocations are checked. */
+		const int initialized = !strstr(spv[i], "_noinit");
+		int ok = ran == GROUPS * 64 && (!initialized || !bad_count);
+		printf("%-4s %s: %d of %d invocations ran, shared count per workgroup %u (%s)\n", ok ? "OK" : "FAIL", spv[i], ran,
+		       GROUPS * 64, map[64], initialized ? "want 64" : "undefined, no initializer");
 		fails += !ok;
 	}
 	if (fails) { printf("wgsize: %d failure(s)\n", fails); return 1; }
