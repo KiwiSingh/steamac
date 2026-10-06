@@ -374,6 +374,12 @@ without which `--create-disk` prints the links and exits with code 2. Acceptance
 agreement URL) is stored in the settings domain and remains valid until the agreement URL in the
 code (`SteamOSLicense.eulaURL`) changes.
 
+External APFS, Mac OS Extended, and exFAT volumes can hold the disk. FAT32/MS-DOS is rejected
+before downloading because of its 4 GiB per-file limit (the temporary rootfs alone is 10 GiB).
+Read-only volumes are also rejected. Unlike APFS, exFAT has no sparse files: it needs space for the
+full selected disk size plus the temporary rootfs and download cache, even before games are installed;
+the launcher checks this space before reconstructing the rootfs.
+
 1. `https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/<branch>.json` → the latest
    candidate (`update_path`, `chunks_store_path`).
 2. The `.raucb` (~2 MB) is downloaded; Security.framework verifies its CMS signature only against
@@ -393,7 +399,10 @@ code (`SteamOSLicense.eulaURL`) changes.
    order, types, sizes, and alignment of `scripts/steps/40-disk.sh`, and random PARTUUIDs. In one
    pass, `rootfs.img` is hashed (sha256 must match the signed manifest), and nonzero blocks of 16
    KiB are written to rootfs-A and rootfs-B; the other partitions are zeros. The disk appears
-   under its final name only after all checks and never overwrites an existing file.
+   under its final name only after all checks. Existing files are not overwritten; on exFAT,
+   which lacks atomic exclusive rename, the launcher checks the destination while holding its
+   creation lock, then renames it. Do not create or move another file to that same destination
+   with a non-launcher program during creation: that check and rename are not atomic against it.
 5. `<disk without .img>.provision.img` is placed alongside it — cpio newc containing
    `provision.env` (build, PARTUUIDs, SHA-512 crypt password hash, machine-id) and `rootfs.caibx`
    (format: “Payload v1” in the provisioning contract). While this file exists, the launcher

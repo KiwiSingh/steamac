@@ -29,6 +29,40 @@ enum ProvisionSelfTest {
         check(DiskCreator.percent(in: "Attempt 1: Assembling   32.27% 1m2s") == 32.27, "desync progress parse")
         check(DiskCreator.percent(in: "Attempt 1: Validating ") == nil, "desync non-progress line")
 
+        attempt("disk publication") {
+            let fm = FileManager.default
+            let dir = NSTemporaryDirectory() + "steamac-publish-\(UUID().uuidString)"
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            let lock = open(dir + "/creation.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+            guard lock >= 0 else { throw OptionError("open creation.lock") }
+            defer { close(lock) }
+            guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw OptionError("flock creation.lock") }
+            _ = try DiskCreationFilesystem.preflight(directory: dir, diskBytes: 1 << 20, rootfsBytes: 1 << 20)
+            let partial = dir + "/disk.partial", final = dir + "/disk"
+            let original = Data("original disk".utf8), replacement = Data("replacement disk".utf8)
+            try original.write(to: URL(fileURLWithPath: partial))
+            try DiskCreationFilesystem.publish(partial: partial, destination: final)
+            check(try Data(contentsOf: URL(fileURLWithPath: final)) == original
+                  && !fm.fileExists(atPath: partial), "disk published without a partial file")
+            try replacement.write(to: URL(fileURLWithPath: partial))
+            var rejected = false
+            do { try DiskCreationFilesystem.publish(partial: partial, destination: final) }
+            catch { rejected = true }
+            let preserved = try Data(contentsOf: URL(fileURLWithPath: final))
+            check(rejected && preserved == original, "existing disk never replaced")
+            // Filesystems such as exFAT cannot create symlinks.
+            let link = dir + "/dangling-link"
+            if symlink(dir + "/missing", link) == 0 {
+                rejected = false
+                do { try DiskCreationFilesystem.publish(partial: partial, destination: link) }
+                catch { rejected = true }
+                var info = stat()
+                check(rejected && lstat(link, &info) == 0 && info.st_mode & S_IFMT == S_IFLNK,
+                      "dangling destination symlink never replaced")
+            }
+        }
+
         // GPT: writer -> reader round trip on a sparse temp file.
         let table = DiskLayout.table(homeGiB: DiskLayout.defaultHomeGiB)
         attempt("GPT round trip") {

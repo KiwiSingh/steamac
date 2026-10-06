@@ -130,6 +130,10 @@ final class DiskCreator {
         let path = (r.path as NSString).standardizingPath
         let dir = (path as NSString).deletingLastPathComponent
         try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let gpt = DiskLayout.table(homeGiB: r.homeGiB)
+        let diskBytes = gpt.sectors * DiskLayout.sector
+        let rootBytes = DiskLayout.rootMiB * DiskLayout.mib
+        let denseFiles = try DiskCreationFilesystem.preflight(directory: dir, diskBytes: diskBytes, rootfsBytes: rootBytes)
         // One creator per cache: another one would delete or extend the same chunk cache and
         // temporary files. Held until this function returns; the lock file stays while the cache
         // does (all creators must lock the same inode), a per-disk cache directory goes away after
@@ -175,7 +179,6 @@ final class DiskCreator {
         let manifest = try RaucBundle.parseManifest(String(decoding: try fs.file("manifest.raucm"), as: UTF8.self))
         guard manifest.compatible == "steamos-aarch64" else { throw OptionError("manifest: compatible=\(manifest.compatible), expected steamos-aarch64") }
         guard manifest.version == c.buildID else { throw OptionError("manifest: version \(manifest.version) != atomupd buildid \(c.buildID)") }
-        let rootBytes = DiskLayout.rootMiB * DiskLayout.mib
         guard manifest.rootfsSize == rootBytes else { throw OptionError("manifest: rootfs size \(manifest.rootfsSize) != slot size \(rootBytes)") }
         let caibx = try fs.file(manifest.rootfsFilename)
         let caibxPath = work + "/rootfs.img.caibx"
@@ -183,10 +186,11 @@ final class DiskCreator {
         log("create-disk: manifest OK: compatible=\(manifest.compatible) version=\(manifest.version) rootfs sha256=\(manifest.rootfsSHA256) size=\(manifest.rootfsSize), index \(caibx.count) bytes")
         try checkCancel()
 
-        // Disk space: rootfs data ~3x on the disk's volume (temp + rootfs-A + rootfs-B), the chunk
-        // cache (compressed chunks in small files, ~1.2x the data on APFS) in cacheRoot.
+        // Sparse volumes use rootfs data ~3x (temp + both slots); exFAT allocates the whole
+        // disk and temporary rootfs. The compressed chunk cache is additional on either FS.
         let dataBytes = try desyncDataSize(desync, caibxPath)
-        try checkSpace(disk: dir, need: 3 * dataBytes, cache: cacheRoot, cacheNeed: dataBytes * 13 / 10)
+        try checkSpace(disk: dir, need: denseFiles ? diskBytes + rootBytes : 3 * dataBytes,
+                       cache: cacheRoot, cacheNeed: dataBytes * 13 / 10)
 
         // 3. reconstruct
         let tmp = DiskCreator.rootfsTemp(path)
@@ -198,7 +202,6 @@ final class DiskCreator {
         try checkCancel()
 
         // 4. disk
-        let gpt = DiskLayout.table(homeGiB: r.homeGiB)
         let partial = DiskCreator.diskTemp(path)
         try? fm.removeItem(atPath: partial)
         let fd = open(partial, O_RDWR | O_CREAT | O_EXCL, 0o644)
@@ -208,7 +211,7 @@ final class DiskCreator {
             close(fd)
             if !keep { try? fm.removeItem(atPath: partial) }
         }
-        guard ftruncate(fd, off_t(gpt.sectors * DiskLayout.sector)) == 0 else { throw OptionError("ftruncate \(partial): \(String(cString: strerror(errno)))") }
+        guard ftruncate(fd, off_t(diskBytes)) == 0 else { throw OptionError("ftruncate \(partial): \(String(cString: strerror(errno)))") }
         try gpt.write(fd: fd)
         let a = gpt.entry("rootfs-A")!, b = gpt.entry("rootfs-B")!
         guard a.sectors * 512 == rootBytes, b.sectors * 512 == rootBytes else { throw OptionError("layout: rootfs slot size") }
@@ -229,9 +232,7 @@ final class DiskCreator {
         try Data(ProvisionPayload.image(env: try ProvisionPayload.env(values), caibx: caibx))
             .write(to: URL(fileURLWithPath: payloadTmp))
         guard rename(payloadTmp, payload) == 0 else { throw OptionError("rename \(payloadTmp): \(String(cString: strerror(errno)))") }
-        guard renamex_np(partial, path, UInt32(RENAME_EXCL)) == 0 else {
-            throw OptionError("rename \(partial) -> \(path): \(String(cString: strerror(errno)))")
-        }
+        try DiskCreationFilesystem.publish(partial: partial, destination: path)
         keep = true
         try? fm.removeItem(atPath: tmp)
         if !r.keepCache {
