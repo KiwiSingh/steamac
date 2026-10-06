@@ -308,7 +308,7 @@ h1 em {
 .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
 .section h2 { margin: 0 0 16px; font-size: clamp(32px, 4vw, 54px); letter-spacing: -.03em; line-height: 1.05; }
 .section-lede { max-width: 760px; color: #b6c4d4; font-size: 17px; margin: 0 0 36px; }
-.shots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 0 0 22px; }
+.shots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin: 0 0 22px; }
 .shots figure { margin: 0; }
 .shots img {
   display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 12px;
@@ -429,6 +429,7 @@ pre .c { color: #5f7186; }
   .scroll-hint { right: auto; left: 50%; transform: translateX(-50%); }
   .cards, .get-grid { grid-template-columns: 1fr; }
   .shots { grid-template-columns: 1fr 1fr; }
+  .shots figure:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-window { order: -1; width: min(100%, 440px); margin: 0 auto; transform: none; }
   .get-head { flex-wrap: wrap; gap: 14px; }
