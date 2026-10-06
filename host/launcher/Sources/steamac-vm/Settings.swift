@@ -88,13 +88,13 @@ final class LauncherSettings: ObservableObject {
     /// Steam client SteamOS starts (kernel cmdline `steamac.steam_client=`, read by the layer's
     /// /usr/lib/steamac/steam-client on every Steam start).
     enum SteamClient: String, CaseIterable, Identifiable {
-        /// Valve's Steam Frame client beta with -deckard -vrgamepadui (stock); the Steam Deck
-        /// client is used for sign-in until an account is remembered (sign-in mode).
-        case frame
-        /// Public ARM64 Steam Deck client (branch steamdeck_stable).
+        /// Public ARM64 Steam Deck client (branch steamdeck_stable). Default.
         case deck
         /// Steam Deck client beta (branch steamdeck_publicbeta).
         case deckbeta
+        /// Valve's Steam Frame client beta with -deckard -vrgamepadui (stock); the Steam Deck
+        /// client is used for sign-in until an account is remembered (sign-in mode).
+        case frame
         var id: String { rawValue }
 
         var title: String {
@@ -108,14 +108,12 @@ final class LauncherSettings: ObservableObject {
         var detail: String {
             switch self {
             case .frame:
-                return "Valve's ARM64 client for Steam Frame (a beta for a headset not yet released). Games are tested with it. "
+                return "Valve's ARM64 client for Steam Frame (a beta for a headset not yet released). "
                     + "Until an account is signed in with Remember me, the Steam Deck client shows the sign-in QR code."
             case .deck:
-                return "The public ARM64 Steam Deck client (steamdeck_stable). Standard sign-in with an on-screen QR code. "
-                    + "Games are not tested with it yet."
+                return "The public ARM64 Steam Deck client (steamdeck_stable). Standard sign-in with an on-screen QR code."
             case .deckbeta:
-                return "The Steam Deck client beta (steamdeck_publicbeta). Standard sign-in with an on-screen QR code. "
-                    + "Games are not tested with it yet."
+                return "The Steam Deck client beta (steamdeck_publicbeta). Standard sign-in with an on-screen QR code."
             }
         }
 
@@ -289,7 +287,7 @@ final class LauncherSettings: ObservableObject {
     /// SteamOS update branch "Create New Disk…" installs (atomupd vr/<branch>.json).
     @Published var steamosBranch = "stable" { didSet { save(.steamosBranch, steamosBranch) } }
     /// Steam client of the next start (`steamac.steam_client=`).
-    @Published var steamClient = SteamClient.frame { didSet { save(.steamClient, steamClient.rawValue) } }
+    @Published var steamClient = SteamClient.deck { didSet { save(.steamClient, steamClient.rawValue) } }
     /// Host Vulkan driver of the next start (VulkanDriver).
     @Published var vulkanDriver = VulkanDriver.moltenvk { didSet { save(.vulkanDriver, vulkanDriver.rawValue) } }
 

@@ -42,7 +42,7 @@ struct Options {
     var sound = true
     var sshPort = 2222
     /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
-    var steamClient = LauncherSettings.SteamClient.frame
+    var steamClient = LauncherSettings.SteamClient.deck
     /// Settings > General "Use the Mac's time zone": kernel cmdline steamac.tz= (MacTime).
     var macTime = true
     /// Host Vulkan driver of this boot (virglrenderer opens it; VM.start).
@@ -168,11 +168,11 @@ struct Options {
                            connected controller drives it; its rumble plays on that controller.
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
       --steam-client C     Steam client SteamOS starts (kernel cmdline steamac.steam_client=C, added on
-                           every boot; default: Settings > Advanced "Steam client"):
-                           frame: Valve's Steam Frame client beta (stock; until an account is remembered
-                           the Steam Deck client is used for its on-screen sign-in QR code);
+                           every boot; default: Settings > Advanced "Steam client", deck unless changed):
                            deck: public ARM64 Steam Deck client (steamdeck_stable);
-                           deckbeta: Steam Deck client beta (steamdeck_publicbeta).
+                           deckbeta: Steam Deck client beta (steamdeck_publicbeta);
+                           frame: Valve's Steam Frame client beta (stock; until an account is remembered
+                           the Steam Deck client is used for its on-screen sign-in QR code).
                            Switching downloads the other client (~1 GB) when Steam starts.
       --vulkan-driver D    host Vulkan driver behind Venus (default: Settings > Advanced "Vulkan driver"):
                            moltenvk: MoltenVK with steamac's patches (every Mac);

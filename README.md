@@ -423,9 +423,9 @@ layer.
 
 | Option | What it is | Pros and cons |
 |---|---|---|
-| **Steam Frame client** (`frame`, by default) | Valve's beta client for Steam Frame (`linux_arm64_beta_<hash>`, flags `-deckard -vrgamepadui`) — as in the image | games have been tested with it; this is an internal beta for a device not yet released; signing in uses sign-in mode (below) |
-| **Steam Deck client** (`deck`) | public ARM64 Steam Deck client, `steamdeck_stable` branch (the same build as the public `steam_client_linuxarm64`; not officially announced for ARM) | normal sign-in with an on-screen QR code; games have not yet been tested with it |
-| **Steam Deck client (beta)** (`deckbeta`) | `steamdeck_publicbeta` branch | like `deck`, but beta; games have not been tested |
+| **Steam Deck client** (`deck`, by default) | public ARM64 Steam Deck client, `steamdeck_stable` branch (the same build as the public `steam_client_linuxarm64`; not officially announced for ARM) | normal sign-in with an on-screen QR code; a public client branch rather than an internal beta |
+| **Steam Deck client (beta)** (`deckbeta`) | `steamdeck_publicbeta` branch | like `deck`, but beta |
+| **Steam Frame client** (`frame`) | Valve's beta client for Steam Frame (`linux_arm64_beta_<hash>`, flags `-deckard -vrgamepadui`) — as in the image | the client the image ships; an internal beta for a device not yet released; signing in uses sign-in mode (below) |
 
 Changing the option makes Steam download a different client on the next start (up to ~1 GB,
 progress in the boot overlay); when switching back to Frame, the Steam bootstrapper switches

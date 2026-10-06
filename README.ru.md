@@ -412,9 +412,9 @@ to apply»), для одного запуска — `--steam-client frame|deck|d
 
 | Вариант | Что это | Плюсы и минусы |
 |---|---|---|
-| **Steam Frame client** (`frame`, по умолчанию) | бета-клиент Valve для Steam Frame (`linux_arm64_beta_<hash>`, флаги `-deckard -vrgamepadui`) — как в образе | игры проверены на нём; это внутренняя бета ещё не вышедшего устройства; вход — через режим входа (ниже) |
-| **Steam Deck client** (`deck`) | публичный ARM64-клиент Steam Deck, ветка `steamdeck_stable` (та же сборка, что публичный `steam_client_linuxarm64`; официально для ARM не объявлен) | обычный вход с QR-кодом на экране; игры на нём пока не проверялись |
-| **Steam Deck client (beta)** (`deckbeta`) | ветка `steamdeck_publicbeta` | как `deck`, но бета; игры не проверялись |
+| **Steam Deck client** (`deck`, по умолчанию) | публичный ARM64-клиент Steam Deck, ветка `steamdeck_stable` (та же сборка, что публичный `steam_client_linuxarm64`; официально для ARM не объявлен) | обычный вход с QR-кодом на экране; публичная ветка клиента, а не внутренняя бета |
+| **Steam Deck client (beta)** (`deckbeta`) | ветка `steamdeck_publicbeta` | как `deck`, но бета |
+| **Steam Frame client** (`frame`) | бета-клиент Valve для Steam Frame (`linux_arm64_beta_<hash>`, флаги `-deckard -vrgamepadui`) — как в образе | клиент, который идёт в образе; внутренняя бета ещё не вышедшего устройства; вход — через режим входа (ниже) |
 
 Смена варианта при следующем старте Steam скачивает другой клиент (до ~1 ГБ, прогресс в оверлее
 загрузки); обратно на Frame загрузчик Steam переключается сам по флагу `-deckard`. Ручной

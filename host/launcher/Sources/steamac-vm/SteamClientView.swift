@@ -18,7 +18,7 @@ struct SteamClientPicker: View {
     }
 
     static func itemTitle(_ c: LauncherSettings.SteamClient) -> String {
-        c == .frame ? c.title + " (default)" : c.title
+        c == .deck ? c.title + " (default)" : c.title
     }
 
     /// First-run alert accessory: the Steam client choice above the crash reports checkbox.
