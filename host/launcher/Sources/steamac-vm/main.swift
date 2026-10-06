@@ -207,6 +207,7 @@ do {
         CrashReporting.consoleLine(line)
     }
     let progressPort = try ProgressPort()
+    let gamepadPort = options.gamepad ? try GamepadPort() : nil
     // Log bundles requested by Report a Problem arrive on the same port.
     let guestLogs = GuestLogs(port: progressPort)
     progressPort.start { line in if !guestLogs.handle(line) { progress.guestLine(line) } }
@@ -235,7 +236,7 @@ do {
     }
 
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    inputs: inputs, netSocket: Supervisor.netSocket)
+                    gamepadPort: gamepadPort, inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
     let sound = SoundControl()
     if vm.hasSound {
@@ -356,7 +357,7 @@ do {
                      metalHUD: #selector(Lifecycle.menuMetalHUD))
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
-    let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings) }
+    let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings, gamepadPort: gamepadPort) }
     wc.show()
     // Not active after all (launched in the background): start muted / paused; the activation
     // notifications take over from here.
@@ -367,6 +368,7 @@ do {
     if settings.showOverlay { wc.overlay.show() }
     if options.fullscreen && !wc.window.styleMask.contains(.fullScreen) { wc.window.toggleFullScreen(nil) }
     gamepad?.start()
+
     if let d = options.inputSelftestDelay { InputSelfTest.schedule(after: d, window: wc, gamepad: gamepad) }
     if let d = options.resizeSelftestDelay {
         ResizeSelfTest.start(after: d, window: wc, display: display, progress: progress,
@@ -377,7 +379,7 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, activity, progressPort, supervisorWatch, perfSubscription, gamePause)) { app.run() }
+    withExtendedLifetime((presenter, gamepad, gamepadPort, activity, progressPort, supervisorWatch, perfSubscription, gamePause)) { app.run() }
 } catch {
     fatal("\(error)")
 }

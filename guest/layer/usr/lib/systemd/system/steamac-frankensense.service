@@ -1,0 +1,19 @@
+# steamac: FrankenSense DualSense compatibility bridge.
+# Converts host DualSense events that cannot be represented correctly by the
+# generic virtio-input controller into a Linux UHID DualSense handled by
+# hid-playstation. The bridge waits for the host steamac.gamepad transport
+# before creating the UHID device.
+[Unit]
+Description=Steamac FrankenSense DualSense bridge
+After=systemd-udevd.service
+Before=display-manager.service
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /usr/lib/steamac/frankensense/steamac-gamepad-bridge.py
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

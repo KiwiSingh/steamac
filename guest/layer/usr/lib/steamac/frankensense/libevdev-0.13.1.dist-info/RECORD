@@ -1,0 +1,10 @@
+libevdev/__init__.py,sha256=9cOdBAy37PpUPXpD-zPjNSFAqDUBAjn48ZH1SdGEm8U,1591
+libevdev/__init__.pyi,sha256=PRJwWRznF99llXTl8FxAqG5PjFHsdzy3tA2vqd2ggnc,71933
+libevdev/_clib.py,sha256=H1m8j0qxPgUCVqGZagp3_eKir-kR8hMpKufEqj5bgTw,36042
+libevdev/const.py,sha256=U9W7UXfI2BVsX-z39Y0P-EF0n3S0puoOGYnl5DPu1K0,17517
+libevdev/device.py,sha256=hvO0FayFyYiReMonSN_KILROHtyHPqmV7ZaLH12hHfo,31114
+libevdev/event.py,sha256=7JXQ0w9MU9Ht-aWGxbtkEZB8VqRFQrKhCXUVvUnjApM,4784
+libevdev-0.13.1.dist-info/METADATA,sha256=9_tS6X3nxyCb0WgJ7PqHz5OVPMHP3wKKGGX4X1zk5is,2162
+libevdev-0.13.1.dist-info/WHEEL,sha256=qtCwoSJWgHk21S1Kb4ihdzI2rlJ1ZKaIurTj_ngOhyQ,87
+libevdev-0.13.1.dist-info/licenses/COPYING,sha256=pUexltpOW7lYim4k8fNq6eI0nKU3Xiz5wxUYbiN9n20,1093
+libevdev-0.13.1.dist-info/RECORD,,

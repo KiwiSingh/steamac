@@ -9,6 +9,7 @@ import GameController
 final class GamepadBridge {
     private let device: InputDevice
     private let settings: LauncherSettings
+    private let gamepadPort: GamepadPort?
     private var controller: GCController?
     private var state = PadState()
     private var observers: [NSObjectProtocol] = []
@@ -30,9 +31,10 @@ final class GamepadBridge {
                                         BTN.SELECT, BTN.START, BTN.MODE, BTN.THUMBL, BTN.THUMBR]
     static let axisCodes: [UInt16] = [ABS.X, ABS.Y, ABS.Z, ABS.RX, ABS.RY, ABS.RZ, ABS.HAT0X, ABS.HAT0Y]
 
-    init(device: InputDevice, settings: LauncherSettings) {
+    init(device: InputDevice, settings: LauncherSettings, gamepadPort: GamepadPort? = nil) {
         self.device = device
         self.settings = settings
+        self.gamepadPort = gamepadPort
         for c in deviceButtons { state.buttons[c] = false }
         for a in GamepadBridge.axisCodes { state.axes[a] = 0 }
     }
@@ -243,14 +245,28 @@ final class GamepadBridge {
         var events: [(UInt16, UInt16, Int32)] = []
         for c in deviceButtons where (next.buttons[c] ?? false) != (state.buttons[c] ?? false) {
             let pressed = next.buttons[c] ?? false
-            if c == BTN.TOUCHPAD {
-                log("gamepad: touchpad button \(pressed ? "pressed" : "released")")
-            }
             events.append((EV.KEY, c, pressed ? 1 : 0))
         }
         for a in GamepadBridge.axisCodes where (next.axes[a] ?? 0) != (state.axes[a] ?? 0) {
             events.append((EV.ABS, a, next.axes[a] ?? 0))
         }
+        if let gamepadPort {
+            let buttons = next.buttons
+                .filter { $0.value }
+                .map { String($0.key) }
+                .sorted()
+                .joined(separator: ",")
+
+            let axes = next.axes
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: ",")
+
+            if !gamepadPort.send("STATE buttons=\(buttons) axes=\(axes)") {
+                log("gamepad transport: controller state could not be queued")
+            }
+        }
+
         state = next
         device.send(events)
     }
