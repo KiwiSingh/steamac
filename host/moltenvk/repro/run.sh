@@ -54,7 +54,9 @@
 #    allocates and is written null (variable sets with buffer sizes counted the size of each element twice, and
 #    texel offsets made it worse: Stellar Blade's first heap failed with VK_ERROR_OUT_OF_POOL_MEMORY and Venus
 #    stopped the game's command stream); descriptors at element 999997 read back (dh_read.comp), the raw SSBO
-#    through two declarations of its binding, restrict and not (the alias's cast dropped __restrict).
+#    through two declarations of its binding, restrict and not (the alias's cast dropped __restrict); a graphics
+#    pipeline whose fragment shader loads heap descriptors in a loop header block (shaders/heap/, Stellar Blade's
+#    shape: SPIRV-Cross declared their access chains as temporaries that Metal rejects).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
@@ -196,6 +198,7 @@ xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/wgsize.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/wgsize"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/wgsize" "$wspv"
 
+spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
 xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/descriptor_heap.c" \
 	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/descriptor_heap"
 MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/descriptor_heap" "$gspv"

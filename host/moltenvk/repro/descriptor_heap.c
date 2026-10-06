@@ -18,6 +18,10 @@
  *    uvec4[]: the second one's cast dropped __restrict and the pipeline did not compile), a CBV, and the CBV set's
  *    fixed offset buffer (sizes and texel offset come from the sets' aux buffers, which start after the variable
  *    descriptors).
+ * 3. A graphics pipeline whose fragment shader (heap/dh_loop_header.spvasm, Stellar Blade's shape) loads heap
+ *    descriptors in a loop header block and uses them in the loop body: SPIRV-Cross declared their access chains
+ *    as temporaries ("constant texture3d<float> _45;"), Metal rejected the shader, vkd3d-proton's pipeline failed
+ *    and the game exited with "Out of video memory".
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -293,6 +297,48 @@ static void read_heap(const struct heap_set *views, VkQueue queue)
 	vkDestroyDescriptorPool(dev, pool, NULL);
 }
 
+/* 3. */
+static void loop_header_pipeline(const struct heap_set *views, const struct heap_set *sampler)
+{
+	VkDescriptorSetLayout layouts[] = { views[SRV_IMAGE].layout, sampler[0].layout };
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 };
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2, .pSetLayouts = layouts,
+		.pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
+	VkPipelineLayout layout;
+	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkPipelineShaderStageCreateInfo stages[] = {
+		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+		  .module = module("dh_fullscreen.vert.spv"), .pName = "main" },
+		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+		  .module = module("dh_loop_header.spv"), .pName = "main" },
+	};
+	VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+	VkViewport vp = { 0, 0, 4, 4, 0, 1 };
+	VkRect2D sc = { { 0, 0 }, { 4, 4 } };
+	VkPipelineViewportStateCreateInfo vps = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		.viewportCount = 1, .pViewports = &vp, .scissorCount = 1, .pScissors = &sc };
+	VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
+	VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+	VkPipelineColorBlendAttachmentState cba = { .colorWriteMask = 0xf };
+	VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		.attachmentCount = 1, .pAttachments = &cba };
+	VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
+	VkPipelineRenderingCreateInfo rci = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt };
+	VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &rci, .stageCount = 2, .pStages = stages,
+		.pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vps, .pRasterizationState = &rs,
+		.pMultisampleState = &ms, .pColorBlendState = &cb, .layout = layout };
+	VkPipeline p;
+	VkResult r = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
+	printf("%-4s graphics pipeline with heap descriptors loaded in a loop header (dh_loop_header.spv, VkResult %d)\n",
+	       r ? "FAIL" : "OK", r);
+	fails += r != VK_SUCCESS;
+}
+
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
 int main(int argc, char **argv)
@@ -324,7 +370,8 @@ int main(int argc, char **argv)
 	VkPhysicalDeviceRobustness2FeaturesEXT rb2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
 		.robustBufferAccess2 = VK_TRUE, .robustImageAccess2 = VK_TRUE, .nullDescriptor = VK_TRUE };
 	v12.pNext = &rb2;
-	VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12, .features = f2q.features };
+	VkPhysicalDeviceVulkan13Features v13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &v12, .dynamicRendering = VK_TRUE };
+	VkPhysicalDeviceFeatures2 f2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v13, .features = f2q.features };
 	const char *exts[] = { VK_EXT_ROBUSTNESS_2_EXTENSION_NAME };
 	float prio = 1;
 	VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio };
@@ -384,6 +431,9 @@ int main(int argc, char **argv)
 
 	/* 2. */
 	read_heap(views, queue);
+
+	/* 3. */
+	loop_header_pipeline(views, sampler);
 
 	if (fails)
 		printf("descriptor_heap: %d failure(s)\n", fails);

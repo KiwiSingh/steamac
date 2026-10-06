@@ -1,0 +1,94 @@
+; Fragment shader in dxil-spirv's shape (Stellar Blade): descriptors of vkd3d-proton's heaps (one binding declared as
+; 2D and 3D textures, a sampler heap) loaded in a loop header block that also holds other code, used in the loop body.
+; SPIRV-Cross declared their access chains as temporaries before the loop ("constant texture3d<float> _45;"), which
+; Metal rejects (descriptor_heap.c).
+               OpCapability Shader
+               OpCapability RuntimeDescriptorArray
+               OpExtension "SPV_EXT_descriptor_indexing"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %uv_in %out %t2 %t3 %s %pc
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %t2 DescriptorSet 0
+               OpDecorate %t2 Binding 0
+               OpDecorate %t3 DescriptorSet 0
+               OpDecorate %t3 Binding 0
+               OpDecorate %s DescriptorSet 1
+               OpDecorate %s Binding 0
+               OpDecorate %uv_in Location 0
+               OpDecorate %out Location 0
+               OpDecorate %pc_t Block
+               OpMemberDecorate %pc_t 0 Offset 0
+               OpMemberDecorate %pc_t 1 Offset 4
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+       %bool = OpTypeBool
+         %v4 = OpTypeVector %float 4
+         %v3 = OpTypeVector %float 3
+         %v2 = OpTypeVector %float 2
+     %v4zero = OpConstantNull %v4
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+    %float_0 = OpConstant %float 0
+  %float_0_5 = OpConstant %float 0.5
+    %image2d = OpTypeImage %float 2D 0 0 0 1 Unknown
+    %image3d = OpTypeImage %float 3D 0 0 0 1 Unknown
+    %sampler = OpTypeSampler
+       %si2d = OpTypeSampledImage %image2d
+       %si3d = OpTypeSampledImage %image3d
+      %arr2d = OpTypeRuntimeArray %image2d
+      %arr3d = OpTypeRuntimeArray %image3d
+      %arr_s = OpTypeRuntimeArray %sampler
+    %p_arr2d = OpTypePointer UniformConstant %arr2d
+    %p_arr3d = OpTypePointer UniformConstant %arr3d
+    %p_arr_s = OpTypePointer UniformConstant %arr_s
+      %p_i2d = OpTypePointer UniformConstant %image2d
+      %p_i3d = OpTypePointer UniformConstant %image3d
+        %p_s = OpTypePointer UniformConstant %sampler
+       %pc_t = OpTypeStruct %uint %uint
+       %p_pc = OpTypePointer PushConstant %pc_t
+  %p_pc_uint = OpTypePointer PushConstant %uint
+    %p_in_v3 = OpTypePointer Input %v3
+      %p_out = OpTypePointer Output %v4
+         %t2 = OpVariable %p_arr2d UniformConstant
+         %t3 = OpVariable %p_arr3d UniformConstant
+          %s = OpVariable %p_arr_s UniformConstant
+         %pc = OpVariable %p_pc PushConstant
+      %uv_in = OpVariable %p_in_v3 Input
+        %out = OpVariable %p_out Output
+       %main = OpFunction %void None %fn
+      %entry = OpLabel
+               OpBranch %header
+     %header = OpLabel
+       %tptr = OpAccessChain %p_pc_uint %pc %uint_0
+      %tbase = OpLoad %uint %tptr
+         %i3 = OpIAdd %uint %tbase %uint_1
+         %p3 = OpAccessChain %p_i3d %t3 %i3
+       %img3 = OpLoad %image3d %p3
+         %p2 = OpAccessChain %p_i2d %t2 %tbase
+       %img2 = OpLoad %image2d %p2
+       %sptr = OpAccessChain %p_pc_uint %pc %uint_1
+      %sbase = OpLoad %uint %sptr
+         %ps = OpAccessChain %p_s %s %sbase
+        %smp = OpLoad %sampler %ps
+        %uvw = OpLoad %v3 %uv_in
+         %uv = OpVectorShuffle %v2 %uvw %uvw 0 1
+          %x = OpCompositeExtract %float %uvw 0
+       %cond = OpFOrdGreaterThan %bool %x %float_0_5
+               OpStore %out %v4zero
+               OpLoopMerge %merge %cont None
+               OpBranchConditional %cond %then %merge
+       %then = OpLabel
+        %si3 = OpSampledImage %si3d %img3 %smp
+         %c3 = OpImageSampleImplicitLod %v4 %si3 %uvw
+        %si2 = OpSampledImage %si2d %img2 %smp
+         %c2 = OpImageSampleImplicitLod %v4 %si2 %uv
+          %c = OpFAdd %v4 %c3 %c2
+               OpStore %out %c
+               OpBranch %merge
+       %cont = OpLabel
+               OpBranch %header
+      %merge = OpLabel
+               OpReturn
+               OpFunctionEnd

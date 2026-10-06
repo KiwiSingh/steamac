@@ -310,6 +310,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0023 = steamac: no __restrict on buffers sharing an argument buffer binding (the cast of a non-restrict"
 	echo "         declaration dropped the member's qualifier and Metal rejected it: vkd3d-proton's raw SSBO heap,"
 	echo "         Stellar Blade's compute pipelines)"
+	echo "  0024 = steamac: access chains are not declared as potential loop temporaries (MSL declared descriptor"
+	echo "         pointers loaded in a loop header, 'constant texture3d<float> _45;', which Metal rejects:"
+	echo "         Stellar Blade's fragment pipelines, 'Out of video memory')"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"
