@@ -3,7 +3,7 @@ import Carbon.HIToolbox
 
 /// `--input-selftest SECONDS`: after the delay, synthesize AppKit key/mouse events and route them
 /// through the normal NSApplication.sendEvent path (no Accessibility permission needed), and
-/// feed a scripted state into the virtual Xbox pad. The smoke initramfs prints what the guest
+/// feed a scripted state into the virtual gamepad. The smoke initramfs prints what the guest
 /// receives ("input[<device>] type= code= value="). Finally it closes the window via
 /// performClose (the real close-button path -> guest power key) a few seconds later.
 enum InputSelfTest {

@@ -7,8 +7,9 @@ import QuartzCore
 /// focus (`focus game <appid>`; the idle Steam UI legitimately sends none for minutes), or —
 /// whatever has focus — when the guest's heartbeat has also stopped for `heartbeatTimeout`.
 /// Hidden as soon as GPU work arrives, the game loses focus or the guest answers again. No
-/// heartbeat is expected in desktop mode (the agent runs in the gamescope session only), and
-/// both clocks start over after the VM was paused (suspend, guest sleep) or the Mac slept.
+/// heartbeat is expected between sessions (the agent ends with each gamescope session, gaming or
+/// Desktop Mode), and both clocks start over after the VM was paused (suspend, guest sleep) or
+/// the Mac slept.
 ///
 /// GPU work = libkrun's krun_gpu_get_activity counters (libkrun patch 0015), sampled every
 /// `tick`: virtio-gpu control-queue commands (SUBMIT_3D, RESOURCE_FLUSH, SET_SCANOUT*, …) and
@@ -102,8 +103,8 @@ final class StallMonitor {
         guestLoad = load
     }
 
-    /// The agent ended with the gamescope session (`focus desktop`: Switch to Desktop, relogin):
-    /// no heartbeat is expected until the next session's agent sends one.
+    /// The agent ended with the gamescope session (bare `focus desktop`: Switch to Desktop, Return
+    /// to Gaming Mode, relogin): no heartbeat is expected until the next session's agent sends one.
     func heartbeatsEnded() {
         guard lastAlive > 0 else { return }
         lastAlive = 0

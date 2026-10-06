@@ -21,14 +21,14 @@ final class LauncherSettings: ObservableObject {
     enum Key: String, CaseIterable {
         // General
         case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground,
-             closeAction, checkForUpdates
+             closeAction, checkForUpdates, followMacTime
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
              windowSizePreset, metalHUD
         // Mouse
         case autoCaptureGames, gameNames
         // Controller
-        case virtualPad, controllerID, swapABXY, stickDeadzone
+        case virtualPad, padType, controllerID, swapABXY, stickDeadzone
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
@@ -37,9 +37,9 @@ final class LauncherSettings: ObservableObject {
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .soundEnabled, .cpus, .memMiB, .sshEnabled,
+                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .padType, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network,
-                 .diskImage, .steamClient:
+                 .diskImage, .steamClient, .followMacTime:
                 return true
             default:
                 return false
@@ -71,6 +71,16 @@ final class LauncherSettings: ObservableObject {
         case shutDown = "shutdown"
         /// Suspend the VM in memory (SuspendController); the app keeps running.
         case suspend
+        var id: String { rawValue }
+    }
+
+    /// Which gamepad SteamOS sees (virtio-input identity, fixed at boot; Settings > Controller).
+    enum PadType: String, CaseIterable, Identifiable {
+        /// DualSense / DualShock 4 when one is connected to the Mac at start, else Xbox 360.
+        case auto
+        case xbox360
+        case dualSense = "dualsense"
+        case dualShock4 = "dualshock4"
         var id: String { rawValue }
     }
 
@@ -172,6 +182,9 @@ final class LauncherSettings: ObservableObject {
     @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
     /// New-version check when the app starts (UpdateChecker; never in development builds); applies now.
     @Published var checkForUpdates = true { didSet { save(.checkForUpdates, checkForUpdates) } }
+    /// The guest's time zone follows the Mac (MacTime: kernel cmdline steamac.tz=) until it is
+    /// changed inside SteamOS; next start.
+    @Published var followMacTime = true { didSet { save(.followMacTime, followMacTime) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }
     @Published var fixedDPI = 110 { didSet { save(.fixedDPI, fixedDPI) } }
@@ -190,6 +203,7 @@ final class LauncherSettings: ObservableObject {
     @Published private(set) var games: [Game] = []
     // Controller
     @Published var virtualPad = true { didSet { save(.virtualPad, virtualPad) } }
+    @Published var padType = PadType.auto { didSet { save(.padType, padType.rawValue) } }
     /// "" = first connected controller, else GamepadBridge.identifier(of:).
     @Published var controllerID = "" { didSet { save(.controllerID, controllerID) } }
     @Published var swapABXY = false { didSet { save(.swapABXY, swapABXY) } }
@@ -250,6 +264,7 @@ final class LauncherSettings: ObservableObject {
         bool(.pauseInBackground, &pauseInBackground)
         if let s = d.string(forKey: Key.closeAction.rawValue).flatMap(CloseAction.init(rawValue:)) { closeAction = s }
         bool(.checkForUpdates, &checkForUpdates)
+        bool(.followMacTime, &followMacTime)
         if let s = d.string(forKey: Key.dpiSource.rawValue).flatMap(DPISource.init(rawValue:)) { dpiSource = s }
         int(.fixedDPI, &fixedDPI)
         int(.fixedWidthMM, &fixedWidthMM)
@@ -268,6 +283,7 @@ final class LauncherSettings: ObservableObject {
         bool(.metalHUD, &metalHUD)
         bool(.autoCaptureGames, &autoCaptureGames)
         bool(.virtualPad, &virtualPad)
+        if let s = d.string(forKey: Key.padType.rawValue).flatMap(PadType.init(rawValue:)) { padType = s }
         string(.controllerID, &controllerID)
         bool(.swapABXY, &swapABXY)
         int(.stickDeadzone, &stickDeadzone)
@@ -316,6 +332,7 @@ final class LauncherSettings: ObservableObject {
         case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
         case .closeAction: guard let v = CloseAction(rawValue: text) else { return false }; closeAction = v
         case .checkForUpdates: guard let b else { return false }; checkForUpdates = b
+        case .followMacTime: guard let b else { return false }; followMacTime = b
         case .dpiSource: guard let v = DPISource(rawValue: text) else { return false }; dpiSource = v
         case .fixedDPI: guard let i else { return false }; fixedDPI = i
         case .fixedWidthMM: guard let i else { return false }; fixedWidthMM = i
@@ -332,6 +349,7 @@ final class LauncherSettings: ObservableObject {
         case .autoCaptureGames: guard let b else { return false }; autoCaptureGames = b
         case .gameNames: return false
         case .virtualPad: guard let b else { return false }; virtualPad = b
+        case .padType: guard let v = PadType(rawValue: text) else { return false }; padType = v
         case .controllerID: controllerID = text
         case .swapABXY: guard let b else { return false }; swapABXY = b
         case .stickDeadzone: guard let i else { return false }; stickDeadzone = i
@@ -363,13 +381,13 @@ final class LauncherSettings: ObservableObject {
         showOverlay = fresh.showOverlay; showStallIndicator = fresh.showStallIndicator
         openFullscreen = fresh.openFullscreen; perfStats = fresh.perfStats; sendCrashReports = fresh.sendCrashReports
         muteInBackground = fresh.muteInBackground; pauseInBackground = fresh.pauseInBackground
-        closeAction = fresh.closeAction; checkForUpdates = fresh.checkForUpdates
+        closeAction = fresh.closeAction; checkForUpdates = fresh.checkForUpdates; followMacTime = fresh.followMacTime
         dpiSource = fresh.dpiSource; fixedDPI = fresh.fixedDPI; fixedWidthMM = fresh.fixedWidthMM
         fixedHeightMM = fresh.fixedHeightMM; refreshRate = fresh.refreshRate; followWindowSize = fresh.followWindowSize
         windowWidth = fresh.windowWidth; windowHeight = fresh.windowHeight; windowSizePreset = fresh.windowSizePreset
         metalHUD = fresh.metalHUD
         autoCaptureGames = fresh.autoCaptureGames
-        virtualPad = fresh.virtualPad; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
+        virtualPad = fresh.virtualPad; padType = fresh.padType; controllerID = fresh.controllerID; swapABXY = fresh.swapABXY
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
         cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network
@@ -403,10 +421,10 @@ final class LauncherSettings: ObservableObject {
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
-            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad,
+            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad, .padType: padType.rawValue,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
-            .diskImage: diskImage, .steamClient: steamClient.rawValue,
+            .diskImage: diskImage, .steamClient: steamClient.rawValue, .followMacTime: followMacTime,
         ]
         var s: [Key: String] = [:]
         for (k, v) in values where k.nextStart && overrides[k] == nil { s[k] = "\(v)" }

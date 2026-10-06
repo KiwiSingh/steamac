@@ -73,8 +73,11 @@ copy_lib() {
             copy_lib "$dep"
         fi
     done < <(otool -L "$FW/$name" | awk 'NR > 1 {print $1}')
-    # Dependencies resolve next to each other.
-    otool -l "$FW/$name" | grep -q '@loader_path$' || install_name_tool -add_rpath @loader_path "$FW/$name" 2>/dev/null
+    # Dependencies resolve next to each other. otool -l prints an LC_RPATH entry as
+    # "path @loader_path (offset 12)"; adding an existing one is an error.
+    if ! otool -l "$FW/$name" | awk '$1 == "path" && $2 == "@loader_path" { found = 1 } END { exit !found }'; then
+        install_name_tool -add_rpath @loader_path "$FW/$name"
+    fi
 }
 
 for lib in libkrun.1.dylib libvirglrenderer.1.dylib libMoltenVK.dylib; do

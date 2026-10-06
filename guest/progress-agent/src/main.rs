@@ -1,22 +1,24 @@
 //! fx-progress-agent — steamac guest side of the "FX STEAM LAUNCHER" overlay.
 //!
 //! Runs as the session user inside the gamescope session
-//! (fx-progress-agent.service, pulled in by gamescope-session.target) and
+//! (fx-progress-agent.service, pulled in by gamescope-session.target and, in
+//! Desktop Mode, plasma-session.target) and
 //! writes the line protocol of local://overlay-contract.md to the
 //! virtio-console port /dev/virtio-ports/fx.progress:
 //!
 //!   stage <id> <percent> <text>   ids: session steam-check steam-download
 //!                                 steam-install steam-start; percent -1 = indeterminate
 //!   log <text>                    detail line ("583 / 662 MB · 12.4 MB/s")
-//!   ready                         Steam UI is on screen
+//!   ready                         Steam UI (Desktop Mode: the desktop) is on screen
 //!   shutdown <poweroff|reboot>    session torn down by a system shutdown
 //!   game <appid> <name>           display name from the appmanifest, once per app id and
 //!                                 boot, right after its first `focus game <appid>`
-//!   focus steam | focus game <appid> | focus desktop   gamescope's focused app (GAMESCOPE_FOCUSED_APP;
-//!                                 0 and 769 = Steam UI; desktop = session ended without a
-//!                                 system shutdown), for the launcher's pointer handling
+//!   focus steam | focus game <appid> | focus desktop [<w>x<h>]   gamescope's focused app
+//!                                 (GAMESCOPE_FOCUSED_APP; 0 and 769 = Steam UI), for the
+//!                                 launcher's pointer handling; `focus desktop <w>x<h>` = the
+//!                                 Desktop Mode session's Plasma window of that size, bare
+//!                                 `focus desktop` = the session ended without a system shutdown
 //!   alive <uptime_ms> <loadavg1>  heartbeat, once a second from agent start
-//!                                 (alive.rs; the launcher's "not responding" hint)
 //!   logs-begin / logs / logs-end / logs-failed   log bundle answering the
 //!                                 host's `collect-logs <id>` (collect.rs; the
 //!                                 launcher's Report a Problem)
@@ -33,7 +35,9 @@
 //!   2. `stage session 100`, then follow the Steam bootstrapper log
 //!      (steamlog.rs, messages in any Steam language: steamstrings.rs) and the
 //!      X11 window list (ui.rs) until a Steam UI window has been full-screen
-//!      and focused for 1.5 s -> `ready`.
+//!      and focused for 1.5 s -> `ready`. Desktop Mode (GAMESCOPE_SESSION_TARGET
+//!      plasma-session.target, no Steam): `ready` once the desktop window has
+//!      gamescope's focus (focus.rs).
 //!   3. `ready` is sent at most once per boot (marker in /tmp, keyed by
 //!      boot_id): a restarted session/agent goes straight to step 4.
 //!   4. Idle in ppoll(2) on the X connection and the heartbeat timerfd (no
@@ -415,14 +419,22 @@ fn main() {
         msgs: steamstrings::Messages::new(steam_root, format!("{home}/.steam/registry.vdf")),
     };
 
-    let mut focus = focus::Focus::new();
+    // Desktop Mode: Plasma instead of Steam in this gamescope session (focus.rs).
+    let desktop = std::env::var("GAMESCOPE_SESSION_TARGET").is_ok_and(|t| t == "plasma-session.target");
+    let mut focus = focus::Focus::new(desktop);
     let heartbeat = alive::Heartbeat::new();
     let mut collector = collect::Collector::new();
     let mut freezer = freeze::Freezer::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
     let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
+    let mut desktop_ready_pending = false;
     if already {
         eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
+    } else if desktop {
+        // Booted straight into Desktop Mode (steamos-session-select plasma-persistent):
+        // `ready` once the desktop is on screen (main loop).
+        rep.stage(Stage::Session, 100, "Session started");
+        desktop_ready_pending = true;
     } else {
         report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector, &mut freezer);
     }
@@ -448,6 +460,12 @@ fn main() {
             serve_host(&mut rep.port, &mut collector, &mut freezer, &focus);
             collector.pump(&mut rep.port);
             focus.pump(&mut rep.port, false);
+            if desktop_ready_pending && focus.desktop_shown() {
+                desktop_ready_pending = false;
+                rep.port.send("ready");
+                eprintln!("fx-progress: ready: desktop on screen");
+                let _ = std::fs::write(ready_marker(), boot_id());
+            }
             if let Some(hb) = heartbeat.as_ref() {
                 hb.pump(&mut rep.port);
             }

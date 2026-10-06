@@ -30,8 +30,18 @@ fi
 AGENT=/work/cache/progress-agent/fx-progress-agent
 [[ -x $AGENT ]] || { echo "[layer] $AGENT missing: run step 25 (scripts/build-image.sh layer does)" >&2; exit 1; }
 install -m 0755 "$AGENT" "$ST/usr/lib/steamac/fx-progress-agent"
-[[ -L $ST/usr/lib/systemd/user/gamescope-session.target.wants/fx-progress-agent.service ]] \
-    || { echo "[layer] fx-progress-agent.service is not wanted by gamescope-session.target" >&2; exit 1; }
+for target in gamescope-session.target plasma-session.target; do
+    [[ -L $ST/usr/lib/systemd/user/$target.wants/fx-progress-agent.service ]] \
+        || { echo "[layer] fx-progress-agent.service is not wanted by $target" >&2; exit 1; }
+done
+# Desktop Mode: our plasma-session.target replaces the Frame's VR desktop target
+# (SteamVR units are masked); gamescope-session runs the nested desktop, whose
+# Steam autostart keeps the selected client.
+[[ -f $ST/usr/lib/systemd/user/plasma-session.target && -f $ST/usr/lib/systemd/user/steamac-nested-desktop.service ]] \
+    && ! grep -q '^Wants=.*steamvr' "$ST/usr/lib/systemd/user/plasma-session.target" \
+    && grep -q 'steamac-nested-desktop.service' "$ST/usr/lib/steamos/gamescope-session" \
+    && grep -q '^Exec=/usr/lib/steamac/steam-client --desktop' "$ST/usr/lib/steamac/desktop-xdg/autostart/steam.desktop" \
+    || { echo "[layer] Desktop Mode units (plasma-session.target, steamac-nested-desktop.service, Steam autostart) missing" >&2; exit 1; }
 # Same binary, root mode: started by udev for the launcher's fx.clock port.
 grep -q 'fx-progress-agent clock-sync' "$ST/usr/lib/systemd/system/fx-clock-sync.service" \
     && grep -q 'fx-clock-sync.service' "$ST/usr/lib/udev/rules.d/70-fx-progress.rules" \
@@ -44,7 +54,8 @@ grep -q 'fx-progress-agent sleep suspend$' "$ST/usr/lib/systemd/system/systemd-s
 for f in usr/bin/splctl usr/lib/rauc/post-install.sh usr/lib/steamac/kernelsetup.sh \
          usr/lib/steamac/rauc-shims/steamos-chroot usr/lib/steamac/steam-gfx-env \
          usr/lib/steamac/steam-shader-defaults usr/lib/steamac/steam-client \
-         usr/lib/steamos/gamescope-session; do
+         usr/lib/steamac/nested-desktop usr/lib/steamac/desktop-bin/kwin_wayland_wrapper \
+         usr/lib/steamac/desktop-bin/steamosctl usr/lib/steamos/gamescope-session; do
     [[ -x $ST/$f ]] || { echo "[layer] $f missing or not executable" >&2; exit 1; }
     bash -n "$ST/$f"
 done

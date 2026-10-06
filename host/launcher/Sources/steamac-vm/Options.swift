@@ -7,10 +7,12 @@ struct DiskSpec {
 
 enum MouseMode: String {
     /// Default. The host pointer drives the guest cursor 1:1 through the relative mouse
-    /// (gamescope ignores absolute pointer motion); while a game is focused in the guest, a click
-    /// captures the pointer (raw relative motion for mouse-look), Ctrl+Option releases.
+    /// (gamescope ignores absolute pointer motion; Desktop Mode's Plasma runs inside it too); while
+    /// a game is focused in the guest, a click captures the pointer (raw relative motion for
+    /// mouse-look), Ctrl+Option releases.
     case auto
-    /// Absolute virtio tablet (for compositors that support absolute pointers, e.g. KDE desktop).
+    /// Absolute virtio tablet, for a guest compositor that accepts absolute pointers (gamescope,
+    /// and so both SteamOS modes, does not).
     case tablet
     /// Always click-to-capture (relative mouse only).
     case capture
@@ -41,6 +43,8 @@ struct Options {
     var sshPort = 2222
     /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
     var steamClient = LauncherSettings.SteamClient.frame
+    /// Settings > General "Use the Mac's time zone": kernel cmdline steamac.tz= (MacTime).
+    var macTime = true
     var shmMiB = 8192
     var gpuFlags: UInt32? = nil
     var gvproxyPath: String?
@@ -49,6 +53,8 @@ struct Options {
     var controlFifo: String?
     var autoCapture: Bool?
     var gamepad = true
+    /// Identity of the guest gamepad (Settings > Controller "Appears in SteamOS as").
+    var padType = LauncherSettings.PadType.auto
     var krunLogLevel: UInt32 = 2
     var selftestDisplay = false
     var selftestOut: String?
@@ -89,7 +95,8 @@ struct Options {
                       [--cpus N] [--mem MiB] [--display WxH] [--refresh HZ] [--headless]
                       [--log FILE] [--no-net] [--no-sound] [--ssh-port PORT | --no-ssh] [--shm-mib MiB]
                       [--gpu-flags HEX] [--gvproxy PATH] [--frame-dump PNG]
-                      [--mouse auto|tablet|capture] [--no-gamepad] [--krun-log-level 0-5] [--perf-stats]
+                      [--mouse auto|tablet|capture] [--no-gamepad] [--pad auto|xbox360|dualsense|dualshock4]
+                      [--krun-log-level 0-5] [--perf-stats]
                       [--no-crash-reports] [--steam-client frame|deck|deckbeta]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
@@ -103,8 +110,10 @@ struct Options {
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
     vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
-    fullscreen, perf stats, Steam client. Inside FX Steam Launcher.app, --kernel/--initrd/--disk
-    default to the bundled Image, initramfs and layer plus the disk image chosen in Settings > Advanced.
+    fullscreen, perf stats, Steam client, Mac time zone (Settings > General: adds steamac.tz=<the
+    Mac's zone> to the kernel cmdline unless --cmdline sets it).
+    Inside FX Steam Launcher.app, --kernel/--initrd/--disk default to the bundled Image, initramfs and
+    layer plus the disk image chosen in Settings > Advanced.
 
       --kernel PATH        raw arm64 Image (KRUN_KERNEL_FORMAT_RAW)
       --initrd PATH        initramfs
@@ -138,12 +147,18 @@ struct Options {
       --gpu-flags HEX      virglrenderer flags (default VENUS|NO_VIRGL = 0xc0)
       --gvproxy PATH       gvproxy binary (default: <exe dir>/host/bin/gvproxy, Homebrew, PATH)
       --frame-dump PNG     where SIGUSR1 writes the current frame (default ./steamac-frame.png)
-      --mouse MODE         auto (default): pointer follows the host cursor 1:1; while a game has focus
-                           a click captures the mouse (relative, for mouse-look), Ctrl+Option releases.
-                           tablet: absolute virtio tablet (KDE desktop mode). capture: always click-to-capture.
+      --mouse MODE         auto (default): pointer follows the host cursor 1:1 (also in Desktop Mode);
+                           while a game has focus a click captures the mouse (relative, for mouse-look),
+                           Ctrl+Option releases. tablet: absolute virtio tablet (ignored by gamescope, so
+                           only for other guest compositors). capture: always click-to-capture.
       --auto-capture on|off  auto mode: capture on click in games, for this run (default: the saved
                            setting, menu Mouse > Auto-Capture Mouse in Games; per-game overrides apply)
-      --no-gamepad         do not create the virtual Xbox 360 pad
+      --no-gamepad         do not create the virtual gamepad
+      --pad TYPE           what the virtual gamepad is in SteamOS (default: Settings > Controller):
+                           auto: DualSense / DualShock 4 when one is connected to the Mac at start, else
+                           xbox360; xbox360: Microsoft X-Box 360 pad (xpad); dualsense, dualshock4: Sony
+                           pad as the Linux hid-playstation / hid-sony drivers expose it (PlayStation
+                           button glyphs in Steam). Any connected controller drives it.
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
       --steam-client C     Steam client SteamOS starts (kernel cmdline steamac.steam_client=C, added on
                            every boot; default: Settings > Advanced "Steam client"):
@@ -156,9 +171,10 @@ struct Options {
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
       --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
                            else stable), verify it against Valve's CA, rebuild the rootfs with desync
-                           (cache: ~/Library/Caches/es.fxgam.steamac/desync, resumable), write a sparse
-                           GPT disk to PATH (never overwritten) plus PATH's .provision.img payload, which
-                           the first boot uses to format and fill the remaining partitions
+                           (resumable; cache in ~/Library/Caches/es.fxgam.steamac when PATH is on the home
+                           volume, else in PATH.cache), write a sparse GPT disk to PATH (never
+                           overwritten) plus PATH's .provision.img payload, which the first boot uses to
+                           format and fill the remaining partitions. One creation per cache at a time.
       --home-gib N         size of the home partition (default 64; sparse)
       --password PW        password of the guest user steamos (default: steamos for this dev launcher,
                            none in the release .app; "" = none)
@@ -296,6 +312,12 @@ struct Options {
                 guard v == "on" || v == "off" else { throw OptionError("--auto-capture: on or off") }
                 o.autoCapture = v == "on"
             case "--no-gamepad": o.gamepad = false
+            case "--pad":
+                let v = try value(a)
+                guard let t = LauncherSettings.PadType(rawValue: v) else {
+                    throw OptionError("--pad: auto, xbox360, dualsense or dualshock4")
+                }
+                o.padType = t
             case "--krun-log-level": o.krunLogLevel = UInt32(clamping: try int(a))
             case "--perf-stats": o.perfStats = true
             case "--no-crash-reports": o.noCrashReports = true
@@ -363,12 +385,14 @@ struct Options {
             AppBundle.fill(&o, settings: settings, overrides: &overrides)
             Provision.attachPending(&o)
             Provision.attachConfig(&o)
-            if !o.cmdline.split(separator: " ").contains(where: { $0.hasPrefix("steamac.ssh=") }) {
-                o.cmdline += " steamac.ssh=\(o.sshPort == 0 ? 0 : 1)"
+            let words = o.cmdline.split(separator: " ")
+            func add(_ key: String, _ value: @autoclosure () -> String?) {
+                guard !words.contains(where: { $0.hasPrefix(key + "=") }), let v = value() else { return }
+                o.cmdline += " \(key)=\(v)"
             }
-            if !o.cmdline.split(separator: " ").contains(where: { $0.hasPrefix("steamac.steam_client=") }) {
-                o.cmdline += " steamac.steam_client=\(o.steamClient.rawValue)"
-            }
+            add("steamac.ssh", o.sshPort == 0 ? "0" : "1")
+            add("steamac.steam_client", o.steamClient.rawValue)
+            if o.macTime { add("steamac.tz", MacTime.zone) }
         }
         try o.validate()
         return (o, overrides)
@@ -408,9 +432,11 @@ struct Options {
             sshPort = !s.sshEnabled || s.sshPort == 0 ? 0 : (1024...65535).contains(s.sshPort) ? s.sshPort : 2222
         }
         if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
+        macTime = s.followMacTime
         if given("--steam-client") { ov[.steamClient] = "--steam-client \(steamClient.rawValue)" } else { steamClient = s.steamClient }
         if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
         if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" } else { gamepad = s.virtualPad }
+        if given("--pad") { ov[.padType] = "--pad \(padType.rawValue)" } else { padType = s.padType }
         if given("--refresh") { ov[.refreshRate] = "--refresh \(refreshRate)" } else { refreshRate = min(240, max(24, s.refreshRate)) }
         if given("--display") {
             ov[.windowWidth] = "--display \(displayWidth)x\(displayHeight)"
@@ -457,6 +483,37 @@ struct Options {
             }
         }
         if disks.count > 26 { throw OptionError("at most 26 disks") }
+    }
+}
+
+/// The Mac's time zone for the guest (Settings > General "Use the Mac's time zone"): kernel cmdline
+/// steamac.tz=, which the initramfs points /etc/localtime at until the zone is changed inside
+/// SteamOS. Each VM process reads it when it starts, so every boot gets the Mac's current zone.
+enum MacTime {
+    /// IANA identifier (e.g. Europe/Moscow); nil when it cannot be a kernel parameter.
+    static var zone: String? {
+        let id = TimeZone.current.identifier
+        return isZone(id) ? id : nil
+    }
+
+    /// The same check as the initramfs: zoneinfo-relative path characters only.
+    static func isZone(_ s: String) -> Bool {
+        !s.isEmpty && !s.hasPrefix("/") && !s.contains("..")
+            && s.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_+-/".unicodeScalars.contains($0)) }
+    }
+
+    /// --selftest-settings: zone validation and this Mac's values.
+    static func selfCheck() -> [String] {
+        var failures: [String] = []
+        for good in ["Europe/Moscow", "America/Argentina/Buenos_Aires", "Etc/GMT+3", "UTC"] where !isZone(good) {
+            failures.append("mac time: \(good) rejected")
+        }
+        for bad in ["", "/etc/passwd", "Europe/../../x", "Europe/Moscow x", "Europe/Moskva\u{0301}"] where isZone(bad) {
+            failures.append("mac time: \(bad) accepted")
+        }
+        if zone == nil { failures.append("mac time: time zone \(TimeZone.current.identifier) is no kernel parameter") }
+        log("selftest-settings: mac time: steamac.tz=\(zone ?? "-")")
+        return failures
     }
 }
 

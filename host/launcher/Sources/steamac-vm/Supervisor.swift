@@ -141,6 +141,8 @@ enum Supervisor {
             gvproxy?.stop()
             if CrashReporting.terminationSignals.contains(vmExit.signal) {
                 log("VM process terminated by \(CrashReporting.signalName(vmExit.signal)) (a termination request, not a crash)")
+            } else if vmExit.signal == SIGPIPE {
+                log("VM process ended by SIGPIPE (an output pipe closed; not a crash)")
             }
             CrashReporting.vmExited(vmExit)
 
@@ -176,10 +178,11 @@ enum Supervisor {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
-        // Default signal dispositions in the child (we ignore the forwarded ones here).
+        // Default signal dispositions in the child (we ignore the forwarded ones here). SIGPIPE
+        // stays ignored, as in this process (main.swift).
         var defaults = sigset_t()
         sigemptyset(&defaults)
-        for sig in [SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGPIPE] { sigaddset(&defaults, sig) }
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGUSR1] { sigaddset(&defaults, sig) }
         posix_spawnattr_setsigdefault(&attr, &defaults)
         var noMask = sigset_t()
         sigemptyset(&noMask)

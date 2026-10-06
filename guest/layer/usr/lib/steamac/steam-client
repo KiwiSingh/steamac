@@ -2,6 +2,13 @@
 # steamac: prepare the OS's stock RUNSTEAM.sh for the selected Steam client.
 # The Frame client retains the unmodified stock script; Deck and sign-in modes
 # omit only the two Frame-specific arguments from a per-user copy.
+#
+# --desktop [ARGS]: Desktop Mode's Steam autostart (/usr/lib/steamac/desktop-xdg/
+# autostart/steam.desktop shadows the stock /etc/xdg/autostart/steam.desktop).
+# The stock entry runs `steam -silent -vrdisable -deckard`, and -deckard switches
+# the client to the Frame beta: with the Deck client selected, every switch to
+# the desktop and back would download the other client (~570 MB). Here the
+# selected Deck branch is kept and only the Frame client gets -deckard.
 set -euo pipefail
 
 steamroot="${HOME}/.local/share/Steam"
@@ -29,8 +36,14 @@ if [[ ${1:-} == --watch ]]; then
     ) </dev/null >/dev/null &
     exit 0
 fi
-[[ $# == 0 ]] || { echo 'usage: steam-client [--watch MAINPID]' >&2; exit 2; }
-rm -f "$signin_marker"
+desktop=0
+if [[ ${1:-} == --desktop ]]; then
+    desktop=1
+    shift
+else
+    [[ $# == 0 ]] || { echo 'usage: steam-client [--watch MAINPID | --desktop [STEAM-ARGS]]' >&2; exit 2; }
+    rm -f "$signin_marker"
+fi
 
 client=""
 read -r -a cmdline < /proc/cmdline || true
@@ -54,6 +67,26 @@ if [[ -z $branch && -r $branch_conf ]]; then
     else
         echo "steamac: ignoring invalid branch '${configured_branch:-}' in $branch_conf" >&2
     fi
+fi
+
+# Steam reads the client branch from package/beta on every start.
+write_branch() {
+    local beta_file="$steamroot/package/beta" current
+    current=$(head -n1 "$beta_file" 2>/dev/null || true)
+    if [[ $current != "$branch" ]]; then
+        echo "steamac: Steam client branch '${current:-<none>}' -> '$branch' ($branch_source)"
+        mkdir -p "$steamroot/package"
+        printf '%s\n' "$branch" > "$beta_file"
+    fi
+}
+
+if [[ $desktop == 1 ]]; then
+    # The stock autostart's arguments; -deckard only for the Frame client.
+    if [[ -n $branch ]]; then
+        write_branch
+        exec /usr/bin/steam -silent -vrdisable "$@"
+    fi
+    exec /usr/bin/steam -silent -vrdisable -deckard "$@"
 fi
 
 signin=0
@@ -85,13 +118,7 @@ if [[ -n $branch || $signin == 1 ]]; then
 fi
 
 if [[ -n $branch ]]; then
-    beta_file="$steamroot/package/beta"
-    current=$(head -n1 "$beta_file" 2>/dev/null || true)
-    if [[ $current != "$branch" ]]; then
-        echo "steamac: Steam client branch '${current:-<none>}' -> '$branch' ($branch_source)"
-        mkdir -p "$steamroot/package"
-        printf '%s\n' "$branch" > "$beta_file"
-    fi
+    write_branch
 elif [[ $signin == 1 ]]; then
     : > "$signin_marker"
 fi

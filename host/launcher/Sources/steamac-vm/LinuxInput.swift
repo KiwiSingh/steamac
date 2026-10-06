@@ -36,13 +36,17 @@ enum BTN {
     static let MIDDLE: UInt16 = 0x112
     static let SIDE: UInt16 = 0x113
     static let EXTRA: UInt16 = 0x114
-    // Gamepad (xpad naming: BTN_A/B/X/Y = SOUTH/EAST/NORTH/WEST codes)
+    // Gamepad. xpad (Xbox) reports its X/Y buttons as BTN_X/BTN_Y = 0x133/0x134 ("NORTH"/"WEST"
+    // below, numerically); hid-playstation reports the face buttons by position: triangle
+    // BTN_NORTH (0x133), square BTN_WEST (0x134).
     static let SOUTH: UInt16 = 0x130   // BTN_A
     static let EAST: UInt16 = 0x131    // BTN_B
     static let NORTH: UInt16 = 0x133   // BTN_X
     static let WEST: UInt16 = 0x134    // BTN_Y
     static let TL: UInt16 = 0x136
     static let TR: UInt16 = 0x137
+    static let TL2: UInt16 = 0x138
+    static let TR2: UInt16 = 0x139
     static let SELECT: UInt16 = 0x13a
     static let START: UInt16 = 0x13b
     static let MODE: UInt16 = 0x13c

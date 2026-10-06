@@ -7,7 +7,7 @@ import Foundation
 ///  2. download the signed RAUC bundle, verify its CMS signature against the pinned Valve CA
 ///     (RaucBundle), read manifest.raucm + rootfs.img.caibx from its squashfs (Squashfs);
 ///  3. rebuild rootfs.img with the bundled desync from Valve's chunk stores (chunk cache in
-///     ~/Library/Caches/es.fxgam.steamac/desync: cancel + resume re-extracts from the cache);
+///     `cacheRoot(forDisk:)`: cancel + resume re-extracts from the cache);
 ///  4. sparse disk file with protective MBR + GPT of scripts/steps/40-disk.sh (GPT/DiskLayout),
 ///     rootfs.img copied into rootfs-A and rootfs-B (non-zero 16 KiB blocks only) while its
 ///     sha256 is checked against the signed manifest; everything else stays zero;
@@ -53,9 +53,20 @@ final class DiskCreator {
     static let branches = ["stable", "rc", "beta", "preview", "main"]
     static let metaURL = "https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/"
     static let imagesURL = "https://steamdeck-images.steamos.cloud/"
-    static var cacheRoot: String { NSHomeDirectory() + "/Library/Caches/" + LauncherSettings.defaultDomain }
-    static var chunkCache: String { cacheRoot + "/desync" }
-    static var bundleCache: String { cacheRoot + "/bundles" }
+    /// Download caches (bundles/, desync/) and creation.lock for a disk at `path`: the user's
+    /// Caches folder when the disk is on the home directory's volume, else next to the disk, like
+    /// its other temporary files (a disk on an external drive needs no internal space for the
+    /// ~1.3x-the-rootfs chunk cache). The disk's directory must exist.
+    static func cacheRoot(forDisk path: String) -> String {
+        let volume = { (p: String) in
+            (try? URL(fileURLWithPath: p).resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+        }
+        if let home = volume(NSHomeDirectory()), let disk = volume((path as NSString).deletingLastPathComponent),
+           home.isEqual(disk) {
+            return NSHomeDirectory() + "/Library/Caches/" + LauncherSettings.defaultDomain
+        }
+        return path + ".cache"
+    }
     static var defaultPath: String { AppBundle.appSupportDir + "/steamos.img" }
     /// Temporary rootfs.img (sparse desync output) and the disk while it is written.
     static func rootfsTemp(_ path: String) -> String { path + ".rootfs-tmp" }
@@ -117,9 +128,25 @@ final class DiskCreator {
         guard DiskCreator.branches.contains(r.branch) else { throw OptionError("unknown branch \(r.branch) (\(DiskCreator.branches.joined(separator: ", ")))") }
         guard (8...4096).contains(r.homeGiB) else { throw OptionError("home size must be 8..4096 GiB") }
         let path = (r.path as NSString).standardizingPath
-        guard !fm.fileExists(atPath: path) else { throw OptionError("\(path) already exists (never overwritten; delete it or choose another path)") }
         let dir = (path as NSString).deletingLastPathComponent
         try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        // One creator per cache: another one would delete or extend the same chunk cache and
+        // temporary files. Held until this function returns; the lock file stays while the cache
+        // does (all creators must lock the same inode), a per-disk cache directory goes away after
+        // its disk was created.
+        let cacheRoot = DiskCreator.cacheRoot(forDisk: path)
+        let chunkCache = cacheRoot + "/desync"
+        try fm.createDirectory(atPath: cacheRoot, withIntermediateDirectories: true)
+        let lockPath = cacheRoot + "/creation.lock"
+        let lockFD = open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        guard lockFD >= 0 else { throw OptionError("\(lockPath): \(String(cString: strerror(errno)))") }
+        defer { close(lockFD) }
+        guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+            let busy = errno == EWOULDBLOCK
+            throw OptionError(busy ? "another SteamOS disk is being created with the download cache \(cacheRoot): wait for it to finish or cancel it"
+                                   : "\(lockPath): \(String(cString: strerror(errno)))")
+        }
+        guard !fm.fileExists(atPath: path) else { throw OptionError("\(path) already exists (never overwritten; delete it or choose another path)") }
         let ca = try RaucBundle.loadCA(caPath)
 
         // 1. metadata
@@ -129,7 +156,7 @@ final class DiskCreator {
         try checkCancel()
 
         // 2. bundle
-        let work = DiskCreator.bundleCache + "/" + c.buildID
+        let work = cacheRoot + "/bundles/" + c.buildID
         try fm.createDirectory(atPath: work, withIntermediateDirectories: true)
         let bundlePath = work + "/" + (c.updatePath as NSString).lastPathComponent
         var bundle: RaucBundle
@@ -157,17 +184,17 @@ final class DiskCreator {
         try checkCancel()
 
         // Disk space: rootfs data ~3x on the disk's volume (temp + rootfs-A + rootfs-B), the chunk
-        // cache (compressed chunks in small files, ~1.2x the data on APFS) in ~/Library/Caches.
+        // cache (compressed chunks in small files, ~1.2x the data on APFS) in cacheRoot.
         let dataBytes = try desyncDataSize(desync, caibxPath)
-        try checkSpace(disk: dir, need: 3 * dataBytes, cache: DiskCreator.cacheRoot, cacheNeed: dataBytes * 13 / 10)
+        try checkSpace(disk: dir, need: 3 * dataBytes, cache: cacheRoot, cacheNeed: dataBytes * 13 / 10)
 
         // 3. reconstruct
         let tmp = DiskCreator.rootfsTemp(path)
-        try fm.createDirectory(atPath: DiskCreator.chunkCache, withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: chunkCache, withIntermediateDirectories: true)
         let stores = [DiskCreator.imagesURL + (c.updatePath as NSString).deletingPathExtension + ".castr/",
                       DiskCreator.imagesURL + c.chunksStorePath + "/"]
-        log("create-disk: desync extract -> \(tmp) (stores: \(stores.joined(separator: ", ")); cache \(DiskCreator.chunkCache))")
-        try reconstruct(desync, caibxPath, tmp, stores: stores, dataBytes: dataBytes)
+        log("create-disk: desync extract -> \(tmp) (stores: \(stores.joined(separator: ", ")); cache \(chunkCache))")
+        try reconstruct(desync, caibxPath, tmp, stores: stores, cache: chunkCache, dataBytes: dataBytes)
         try checkCancel()
 
         // 4. disk
@@ -208,8 +235,12 @@ final class DiskCreator {
         keep = true
         try? fm.removeItem(atPath: tmp)
         if !r.keepCache {
-            try? fm.removeItem(atPath: DiskCreator.chunkCache)
-            try? fm.removeItem(atPath: work)
+            if cacheRoot == path + ".cache" {
+                try? fm.removeItem(atPath: cacheRoot)
+            } else {
+                try? fm.removeItem(atPath: chunkCache)
+                try? fm.removeItem(atPath: work)
+            }
         }
         let check = try GPT.read(path: path)
         guard check == gpt else { throw OptionError("\(path): GPT read back differs from what was written") }
@@ -307,10 +338,10 @@ final class DiskCreator {
         return n
     }
 
-    private func reconstruct(_ desync: String, _ caibx: String, _ out: String, stores: [String], dataBytes: UInt64) throws {
+    private func reconstruct(_ desync: String, _ caibx: String, _ out: String, stores: [String], cache: String, dataBytes: UInt64) throws {
         status("reconstruct", "Downloading SteamOS…", "starting desync")
         // No --in-place: that preallocates all 10 GiB; a fresh extract keeps the null chunks as holes.
-        var args = ["extract", "--concurrency", "16", "--error-retry", "10", "--cache", DiskCreator.chunkCache]
+        var args = ["extract", "--concurrency", "16", "--error-retry", "10", "--cache", cache]
         for s in stores { args += ["--store", s] }
         args += [caibx, out]
         // desync draws its progress bar only on a terminal: give it a pty and parse "NN.NN%".

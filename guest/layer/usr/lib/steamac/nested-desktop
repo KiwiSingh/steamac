@@ -1,0 +1,56 @@
+#!/bin/bash
+# steamac Desktop Mode (ExecStart of steamac-nested-desktop.service): Plasma
+# (Wayland) runs as a single X11 window of KWin inside the gamescope session.
+# Same approach as the Frame's /usr/bin/steamos-nested-desktop (own runtime
+# directory and session bus, so Plasma's services cannot collide with the
+# gaming session's), with these differences:
+#   - KWin's window has the size of the display (the launcher window) instead of
+#     a fixed 1280x800, so gamescope shows it 1:1 rather than scaled;
+#   - /usr/lib/steamac/desktop-bin comes first in PATH: kwin_wayland_wrapper
+#     passes that size to KWin, steamosctl talks to the outer session bus where
+#     steamos-manager runs (the desktop's "Return to Gaming Mode" runs
+#     `steamosctl switch-to-game-mode`);
+#   - /usr/lib/steamac/desktop-xdg comes first in XDG_CONFIG_DIRS: its
+#     autostart/steam.desktop starts Steam with the client the launcher selected.
+set -euo pipefail
+
+# The performance overlay preload and the gamescope-only portal directory are
+# for the gaming session; Plasma brings its own portals.
+unset LD_PRELOAD XDG_DESKTOP_PORTAL_DIR
+export XDG_CONFIG_DIRS=/usr/lib/steamac/desktop-xdg:${XDG_CONFIG_DIRS:-/etc/xdg}
+
+# The display's mode: the connected virtio-gpu connector's preferred mode, which
+# gamescope also uses for its output. Fallback: the launcher's default size.
+size=1280x800
+for status in /sys/class/drm/card*-*/status; do
+    [[ -r $status && $(<"$status") == connected ]] || continue
+    read -r mode < "${status%/status}/modes" || continue
+    if [[ $mode =~ ^[0-9]+x[0-9]+$ ]]; then
+        size=$mode
+        break
+    fi
+done
+export STEAMAC_DESKTOP_WIDTH=${size%x*} STEAMAC_DESKTOP_HEIGHT=${size#*x}
+
+outer=$XDG_RUNTIME_DIR
+export STEAMAC_OUTER_BUS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$outer/bus}
+nested=$outer/nested_plasma
+
+cleanup() {
+    # Plasma's FUSE mounts (document portal, kio-fuse) live under it.
+    umount --recursive "$nested" 2>/dev/null || true
+    rm -rf "$nested"
+}
+trap cleanup EXIT
+cleanup
+mkdir -m 0700 "$nested" "$nested/pulse"
+# Audio stays with the session's PipeWire.
+ln -s "$outer/pulse/native" "$nested/pulse/native"
+for socket in "$outer"/pipewire-*; do
+    if [[ -e $socket ]]; then ln -s "$socket" "$nested/"; fi
+done
+
+export XDG_RUNTIME_DIR=$nested
+export PATH=/usr/lib/steamac/desktop-bin:$PATH
+echo "steamac: Plasma desktop ${size} on $DISPLAY"
+dbus-run-session startplasma-wayland

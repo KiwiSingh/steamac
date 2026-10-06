@@ -6,7 +6,13 @@
 //! Steam client UI; anything else is a game's Steam app id. The watcher selects
 //! PropertyChange on the root window, so it only wakes when that changes.
 //!
-//! Messages (line protocol, see main.rs): `focus steam` | `focus game <appid>`.
+//! Desktop Mode (plasma-session.target): there is no Steam and the only client
+//! is the nested Plasma desktop, one KWin window that gamescope scales into the
+//! display. Its size (GAMESCOPE_FOCUSED_WINDOW's geometry) is what the launcher
+//! needs: gamescope moves the cursor in the focused surface's pixels.
+//!
+//! Messages (line protocol, see main.rs): `focus steam` | `focus game <appid>` |
+//! `focus desktop <w>x<h>`.
 
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
@@ -40,6 +46,7 @@ struct Conn {
     conn: RustConnection,
     root: Window,
     atom: u32,
+    window_atom: u32,
 }
 
 pub struct Focus {
@@ -50,11 +57,18 @@ pub struct Focus {
     /// App ids whose `game <appid> <name>` was already handled this boot
     /// (also those without a manifest: looked up once).
     named: std::collections::HashSet<u32>,
+    /// Desktop Mode session (see the module doc).
+    desktop: bool,
 }
 
 impl Focus {
-    pub fn new() -> Focus {
-        Focus { conn: None, next_connect: Instant::now(), last: None, named: load_named() }
+    pub fn new(desktop: bool) -> Focus {
+        Focus { conn: None, next_connect: Instant::now(), last: None, named: load_named(), desktop }
+    }
+
+    /// Desktop Mode: the desktop window has had gamescope's focus (it is on screen).
+    pub fn desktop_shown(&self) -> bool {
+        self.desktop && self.last.is_some()
     }
 
     /// Persist the per-boot set so a restarted agent does not resend names.
@@ -104,7 +118,7 @@ impl Focus {
             match self.conn.as_ref().unwrap().conn.poll_for_event() {
                 Ok(Some(Event::PropertyNotify(e))) => {
                     let c = self.conn.as_ref().unwrap();
-                    if e.window == c.root && e.atom == c.atom {
+                    if e.window == c.root && (e.atom == c.atom || (self.desktop && e.atom == c.window_atom)) {
                         changed = true;
                     }
                 }
@@ -124,6 +138,20 @@ impl Focus {
 
     fn report(&mut self, port: &mut Port, force: bool) {
         let Some(c) = self.conn.as_ref() else { return };
+        if self.desktop {
+            let Some(size) = focused_size(c) else {
+                self.conn = None;
+                return;
+            };
+            // Nothing focused yet (KWin starting): nothing to report.
+            let Some((w, h)) = size else { return };
+            let msg = format!("focus desktop {w}x{h}");
+            if force || self.last.as_deref() != Some(msg.as_str()) {
+                port.send(&msg);
+                self.last = Some(msg);
+            }
+            return;
+        }
         let value = c
             .conn
             .get_property(false, c.root, c.atom, AtomEnum::CARDINAL, 0, 1)
@@ -152,14 +180,24 @@ impl Focus {
     }
 }
 
+/// Size of gamescope's focused window: None = the connection broke, Some(None) =
+/// nothing has the focus (or the window vanished in the meantime).
+fn focused_size(c: &Conn) -> Option<Option<(u16, u16)>> {
+    let r = c.conn.get_property(false, c.root, c.window_atom, AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?;
+    let Some(w) = r.value32().and_then(|mut v| v.next()).filter(|&w| w != 0) else { return Some(None) };
+    let geometry = c.conn.get_geometry(w).ok()?.reply().ok();
+    Some(geometry.map(|g| (g.width, g.height)))
+}
+
 fn connect() -> Option<Conn> {
     let (conn, screen) = RustConnection::connect(None).ok()?;
     let root = conn.setup().roots.get(screen)?.root;
     let atom = conn.intern_atom(false, b"GAMESCOPE_FOCUSED_APP").ok()?.reply().ok()?.atom;
+    let window_atom = conn.intern_atom(false, b"GAMESCOPE_FOCUSED_WINDOW").ok()?.reply().ok()?.atom;
     conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))
         .ok()?
         .check()
         .ok()?;
     conn.flush().ok()?;
-    Some(Conn { conn, root, atom })
+    Some(Conn { conn, root, atom, window_atom })
 }

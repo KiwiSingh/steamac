@@ -357,7 +357,7 @@ final class NoPictureGuard {
     /// Guest heartbeat (`alive <uptime_ms> <loadavg1>`).
     func alive() { lastAlive = CACurrentMediaTime() }
 
-    /// The agent ended with the gamescope session (`focus desktop`): no heartbeat is expected.
+    /// The agent ended with the gamescope session (bare `focus desktop`): no heartbeat is expected.
     func heartbeatsEnded() { lastAlive = 0 }
 
     /// Closed: hide at once. Opened: the clocks start now (stale dark time never counts).

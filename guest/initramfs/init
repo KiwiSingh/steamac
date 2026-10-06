@@ -10,6 +10,8 @@
 #   - read-only /usr overlay with the steamac layer (vdb) on top,
 #   - synthesized /proc/cmdline (root=, rauc.slot=, steamos.efi=) bind-mounted
 #     over the real one, because the launcher's cmdline cannot know the slot,
+#     plus an untouched procfs at /run/steamac/proc for user-namespace
+#     sandboxes (Flatpak/bubblewrap, see "switch_root"),
 #   - os-release VARIANT_ID=steamdeck (bind mount, per booted slot),
 #   - no-op /boot/kernelsetup.sh (bind mount),
 #   - runtime unit masks in /run/systemd/{system,user} from the layer's list.
@@ -40,6 +42,7 @@
 #                      the blank partitions from the payload disk (see "provisioning")
 #   steamac.config=1   apply the launcher's config payload disk (see "config payload")
 #   steamac.ssh=0|1    0: no SSH server this boot (see "SSH switch"); 1/absent: as enabled
+#   steamac.tz=ZONE    the Mac's time zone: /etc/localtime follows it (see "time zone")
 #   init=PATH          init in the new root (default /sbin/init)
 
 PATH=/bin
@@ -815,6 +818,44 @@ else
     warn "no os-release in rootfs-$SLOT"
 fi
 
+# ---------------------------------------------------------------- time zone
+# Contract "Mac time": with Settings > General "Use the Mac's time zone" the launcher
+# passes steamac.tz=<the Mac's IANA zone> on every boot. /etc/localtime - what
+# timedatectl, Steam's Settings > Time and date > Time zone (steamos-set-timezone) and
+# Steam's clock use - follows the Mac until it is changed inside SteamOS:
+# /etc/steamac/mac-timezone holds the zone last seen applied here, and a different
+# /etc/localtime is the user's choice, which stays (until it is the Mac's zone again).
+# Both live in var-X's /etc overlay upper.
+MAC_TZ=$(getarg steamac.tz)
+if [ -n "$MAC_TZ" ]; then
+    _state=/newroot/etc/steamac/mac-timezone
+    _cur=$(readlink /newroot/etc/localtime 2>/dev/null)
+    _cur=${_cur#*zoneinfo/}
+    _last=$(cat "$_state" 2>/dev/null)
+    case $MAC_TZ in
+        *[!A-Za-z0-9_+/-]*|/*|*..*)
+            warn "ignoring steamac.tz='$MAC_TZ'" ;;
+        *)
+            if [ ! -f "/newroot/usr/share/zoneinfo/$MAC_TZ" ]; then
+                warn "steamac.tz=$MAC_TZ: no such zone in rootfs-$SLOT; time zone stays ${_cur:-unset}"
+            elif [ -n "$_last" ] && [ "$_cur" != "$_last" ]; then
+                msg "time zone ${_cur:-unset} chosen in SteamOS (Mac: $MAC_TZ), kept"
+            else
+                _set=1
+                if [ "$_cur" != "$MAC_TZ" ]; then
+                    if ln -sfn "../usr/share/zoneinfo/$MAC_TZ" /newroot/etc/localtime; then
+                        msg "time zone $MAC_TZ (the Mac's; was ${_cur:-unset})"
+                    else
+                        warn "cannot set /etc/localtime to $MAC_TZ"; _set=0
+                    fi
+                fi
+                if [ $_set = 1 ] && [ "$_last" != "$MAC_TZ" ]; then
+                    { mkdir -p /newroot/etc/steamac && echo "$MAC_TZ" > "$_state"; } || warn "cannot write $_state"
+                fi
+            fi ;;
+    esac
+fi
+
 # ---------------------------------------------------------------- cmdline
 # What U-Boot would have passed ("%s %s %s init=/sbin/init rauc.slot=%c noresume
 # rootwait earlycon %s", root=PARTLABEL=rootfs-X, steamos.efi=PARTUUID=<efi-X>).
@@ -873,6 +914,15 @@ fi
 # The synthesized cmdline is bound while /proc is still ours (the remount step
 # of bind_ro needs /proc/mounts); `mount --move` carries the submount along.
 bind_ro /run/steamac/cmdline /proc/cmdline || warn "cannot bind synthesized cmdline"
+# A procfs with a file mounted over one of its entries is not "fully visible",
+# and the kernel lets an unprivileged user namespace mount a new procfs only
+# while some procfs in its mount namespace is (fs/namespace.c
+# mnt_already_visible). bubblewrap mounts one for every Flatpak app (Discover's
+# apps: "bwrap: Can't mount proc on /newroot/proc: Operation not permitted"),
+# as does `unshare --mount-proc`. This untouched instance, moved along with
+# /run, keeps that possible; its flags match what bwrap/unshare request.
+mkdir -p /run/steamac/proc
+mount -t proc -o nosuid,nodev,noexec proc /run/steamac/proc || warn "cannot mount /run/steamac/proc (Flatpak apps will not start)"
 for _m in dev proc sys run; do
     mount -o move "/$_m" "/newroot/$_m" || fatal "cannot move /$_m"
 done

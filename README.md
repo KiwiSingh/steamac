@@ -59,6 +59,16 @@ DXVK creates on MoltenVK, they contained 4 of 86 (Heroes of Might and Magic: Old
 Proton videos (`transcoded_video.foz`), so videos that Proton cannot decode itself may show a
 placeholder. To re-enable: Steam → Settings → Downloads → Enable Shader Pre-caching.
 
+SteamOS takes the Mac's time zone (Settings > General **Use the Mac's time zone**, on by default,
+applies on the next start). On every boot the launcher adds `steamac.tz=<IANA zone of the Mac>`
+(`TimeZone.current`) to the kernel cmdline, and the initramfs points `/etc/localtime` at it (what
+`timedatectl`, Steam's Time zone setting via `steamos-set-timezone` and Steam's clock use). It keeps
+following the Mac until the zone is changed inside SteamOS or Steam: the zone applied last is kept
+in `/etc/steamac/mac-timezone`, and a different current zone is the user's choice, which stays
+(until it is the Mac's zone again). With the setting off, nothing is touched. Steam's 12/24-hour
+clock is not taken from the Mac: Steam keeps it per account (Settings → Time and date → 24-hour
+clock).
+
 Boot and shutdown progress does not disappear before `ready`: the first click or keypress in the
 window collapses the full-screen overlay into a progress pill at the bottom center (stage,
 percentage, bar, detail line such as `378 / 564 MB · 1.9 MB/s`; input reaches the guest). Clicking
@@ -85,10 +95,11 @@ guest agent has also stopped sending heartbeats (> 5 s), it says “SteamOS is n
 (this applies regardless of focus). An idle Steam interface sends no GPU commands for minutes and
 does not trigger the indicator. It disappears on the very next GPU command or when focus leaves the
 game; every occurrence is logged (`stall: gpu idle 3.1 s (guest alive, …)`). With `--perf-stats`, a line
-`perf: gpu ctrl/s=… ring/s=… longest-idle=…` is added every 5 s. Disable it in Settings > General. The agent runs only in the gamescope session:
-after `focus desktop` (Switch to Desktop), no heartbeat is expected until the new session's agent
-sends one; while the VM is suspended or asleep the indicator is off, and after resume, guest wake,
-and Mac sleep, idle and heartbeat timers start over.
+`perf: gpu ctrl/s=… ring/s=… longest-idle=…` is added every 5 s. Disable it in Settings > General. The agent runs in each
+gamescope session (gaming and Desktop Mode): when a session ends (Switch to Desktop, Return to Gaming
+Mode), no heartbeat is expected until the new session's agent sends one; while the VM is suspended or
+asleep the indicator is off, and after resume, guest wake, and Mac sleep, idle and heartbeat timers
+start over.
 
 | Keys in the window | |
 |---|---|
@@ -112,8 +123,8 @@ These and all other settings are in the **Settings** window (see below), domain
 the previous domain `dev.steamac.vm`. Metal stores the shader cache by app identifier, so after
 changing the identifier, the first launch of games compiles shaders again (one “cold” start).
 `--auto-capture on|off` overrides the default for one launch.
-`--mouse tablet` — absolute tablet (for KDE desktop mode; it also activates automatically on
-`focus desktop`), `--mouse capture` — always capture on click.
+`--mouse tablet` — absolute tablet (gamescope ignores it, so only for other guest compositors),
+`--mouse capture` — always capture on click.
 
 Guest access: `ssh -p 2222 steamos@127.0.0.1`, password `steamos` (change via
 `STEAMOS_PASSWORD=... scripts/build-image.sh disk`). The hvc0 console is in the terminal running
@@ -146,10 +157,10 @@ over saved values, but only for that launch: the field displays “overridden by
 
 | Tab | Applies now | On next start |
 |---|---|---|
-| General | boot/shutdown overlay; “Still working…” indicator on GPU idle; “When FX Steam Launcher is in the background”: **Mute sound** (on by default: `krun_snd_set_volume(…, mute)` with a gradual ~150 ms fade-out; volume is restored when returning to the window) and **Pause the game** (off by default: the guest agent freezes only the game in focus — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, downloads, and updates continue running; online games may disconnect). While the agent confirms the freeze (`game-frozen`/`game-thawed`), the window is dimmed, with a “Game paused · Click to resume” card and “— paused” in the title; clicking the window resumes the game and is not passed to the guest; crash reports (`--no-crash-reports`, see below); **Check for updates at startup** (on by default, see “Update check”); frame statistics logging (`--perf-stats`) | full screen at startup |
+| General | boot/shutdown overlay; “Still working…” indicator on GPU idle; “When FX Steam Launcher is in the background”: **Mute sound** (on by default: `krun_snd_set_volume(…, mute)` with a gradual ~150 ms fade-out; volume is restored when returning to the window) and **Pause the game** (off by default: the guest agent freezes only the game in focus — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, downloads, and updates continue running; online games may disconnect). While the agent confirms the freeze (`game-frozen`/`game-thawed`), the window is dimmed, with a “Game paused · Click to resume” card and “— paused” in the title; clicking the window resumes the game and is not passed to the guest; crash reports (`--no-crash-reports`, see below); **Check for updates at startup** (on by default, see “Update check”); frame statistics logging (`--perf-stats`) | full screen at startup; **Use the Mac's time zone** (on by default, see above) |
 | Display | guest follows window size; Apple's Metal Performance HUD in the upper-right corner of the window (Ctrl+Cmd+P, View → Show Metal Performance HUD) | physical size source (auto from display / DPI / mm — `--dpi`, `--display-mm`), refresh rate (`--refresh`), window size (`--display`): standard resolutions from 1280 × 800 (Steam Deck) to 3840 × 2160 (those that do not fit on the display are marked “larger than this screen”; the window is shrunk as before), “Fit to screen” (largest size for the display, recalculated on every launch), or “Custom…” (W × H fields) |
 | Mouse | auto-capture in games; game list (name from `appmanifest_<appid>.acf`, Default/Auto/Off, remove) | — |
-| Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), swap A/B and X/Y, stick dead zone, live input test | virtual Xbox 360 pad (`--no-gamepad`) |
+| Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), swap A/B and X/Y, stick dead zone, live input test | virtual pad (`--no-gamepad`) and what it appears as (`--pad`, see “Controller”) |
 | Sound | output device (System default follows macOS, or a specific CoreAudio device), volume/mute, Low/Normal/Safe buffer — via `krun_snd_set_*` (looked up with `dlsym`; with an older libkrun the fields are disabled with an explanation) | sound (`--no-sound`) |
 | Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH enable/disable + port (`--ssh-port`, `--no-ssh`) and generated password, network (`--no-net`), disk image (`--disk`), Create New Disk…, Steam client (`--steam-client`, see “Steam client”) |
 
@@ -216,6 +227,47 @@ For tests with `--control-fifo`: `close`, `suspend`, `resume` (also wakes a slee
 `reopen`, `quit`, `wake` (like waking the Mac), `quit-prompt shutdown|cancel|dump PNG`,
 `status open|close|dump PNG|item TITLE`.
 
+## Desktop Mode
+
+Steam → Power → **Switch to Desktop** starts KDE Plasma; the desktop's **Return to Gaming Mode** icon
+goes back. On the Steam Frame image this mode is a VR desktop (`plasma-session.target` wants
+SteamVR, which the VM masks), so the layer replaces it: `plasma-session.target` and
+`steamac-nested-desktop.service` run Plasma as one KWin window inside the same gamescope
+(`/usr/lib/steamac/nested-desktop`, like Valve's `steamos-nested-desktop`), sized to the display, so
+gamescope shows it 1:1. `gamescope-onready` waits for that service: when Plasma exits, the session
+ends and SDDM logs back in. Plasma gets its own runtime directory and D-Bus session bus; the layer's
+`steamosctl` shim (`/usr/lib/steamac/desktop-bin`, first in its PATH) sends SteamOS commands such as
+Return to Gaming Mode to the outer session bus, where steamos-manager runs. The desktop's Steam
+autostart (`/usr/lib/steamac/desktop-xdg/autostart/steam.desktop`) keeps the client chosen in the
+launcher instead of the stock `-deckard` (Frame client), which would download the other client on
+every switch. The progress agent reports `focus desktop <w>x<h>` (the Plasma window): the launcher
+keeps the relative pointer and maps it onto that window as gamescope scales it, and a boot straight
+into Desktop Mode (`steamos-session-select plasma-persistent`) reports `ready` when the desktop is up.
+
+Flatpak apps (Discover) run in bubblewrap, which mounts its own procfs in a user namespace. The kernel
+allows that only while some procfs in the mount namespace is fully visible, and the initramfs binds
+the synthesized `/proc/cmdline` over the real one; so it also mounts an untouched procfs at
+`/run/steamac/proc` (`nosuid,nodev,noexec`). Without it every Flatpak app exits with `bwrap: Can't mount
+proc on /newroot/proc: Operation not permitted`.
+
+## Controller
+
+Any controller macOS's GameController framework supports (Xbox, DualSense, DualShock 4, MFi, …)
+drives one virtual pad in SteamOS (Settings → Controller picks which one; connecting and switching
+controllers works while the VM runs). What that pad is in SteamOS is fixed at boot — Settings →
+Controller → **Appears in SteamOS as** (`--pad auto|xbox360|dualsense|dualshock4`):
+
+- **Automatic** (default): a DualSense (or Edge) / DualShock 4 connected to the Mac at start makes it
+  a DualSense / DualShock 4 (read from the IORegistry, so the start does not wait for GameController's
+  discovery), otherwise an Xbox 360 controller;
+- **Xbox 360 controller**: what the kernel's `xpad` driver exposes (`045e:028e`);
+- **DualSense** / **DualShock 4**: what `hid-playstation` / `hid-sony` expose for a USB pad
+  (`054c:0ce6` / `054c:09cc`, version `0x8111`, face buttons by position, digital L2/R2 besides the
+  analog triggers). Steam's SDL maps it as a PS5 / PS4 controller and shows PlayStation glyphs.
+
+Only buttons, sticks, triggers and the d-pad are forwarded: the touchpad, gyro, rumble, lightbar
+and adaptive triggers are HID features of the real controller that an evdev device does not carry.
+
 ## FX Steam Launcher.app
 
 `host/launcher/build.sh` (and `./build.sh host`) builds `work/out/FX Steam Launcher.app` in
@@ -243,6 +295,13 @@ If the image is on an external disk, on the first launch from Finder macOS asks 
 would like to access files on a removable volume” — allow it (the VM waits for the disk to open
 until you respond). Signing is ad-hoc, so macOS may ask again after the bundle is rebuilt.
 
+One disk image can only be used by one VM at a time: the VM process holds an exclusive lock
+(`flock`) on the writable disk until it exits, and a second launcher (another copy of the app, e.g.
+a source build next to `/Applications`, or `steamac-vm`) refuses to start with “SteamOS is already
+running” instead of mounting the same file systems twice (that corrupts `/home` and `/var`). The lock
+outlives a killed launcher while the guest is still shutting down. Launchers built before the lock do
+not check it.
+
 ## Creating the SteamOS disk without Docker
 
 The app user does not need Docker: the launcher creates the disk itself — through the first-launch
@@ -253,13 +312,6 @@ without a window:
 ```sh
 work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache] [--accept-eula]
 ```
-One disk image can only be used by one VM at a time: the VM process holds an exclusive lock
-(`flock`) on the writable disk until it exits, and a second launcher (another copy of the app, e.g.
-a source build next to `/Applications`, or `steamac-vm`) refuses to start with “SteamOS is already
-running” instead of mounting the same file systems twice (that corrupts `/home` and `/var`). The lock
-outlives a killed launcher while the guest is still shutting down. Launchers built before the lock do
-not check it.
-
 
 Nothing is downloaded until the user accepts Valve's terms: “End User License Agreement for
 SteamOS and Steam Client Back-Up Image” (the same text as on the Steam Frame image page,
@@ -278,9 +330,13 @@ code (`SteamOSLicense.eulaURL`) changes.
    from the pinned zstd release, `fetch-zstd.sh`) extracts `manifest.raucm` and `rootfs.img.caibx`;
    `compatible=steamos-aarch64`, the version, and the slot size are checked.
 3. Official desync (`fetch-desync.sh`, pinned version and sha256) assembles the 10 GB `rootfs.img`
-   from Valve's chunk stores (~4.4 GB of data); the chunk cache is
-   `~/Library/Caches/es.fxgam.steamac/desync`, and the partial `<disk>.rootfs-tmp` remains, so
-   Stop/Resume (or rerunning the command after Ctrl+C) continues where it left off.
+   from Valve's chunk stores (~4.4 GB of data); the chunk cache is `desync/` in
+   `~/Library/Caches/es.fxgam.steamac` for a disk on the home volume, otherwise in `<disk>.cache` next
+   to the disk (an external drive then needs no internal space for it; the folder is removed after
+   success). The partial `<disk>.rootfs-tmp` remains too, so Stop/Resume (or rerunning the command
+   after Ctrl+C) continues where it left off. One creation per cache at a time: a second one (another
+   window or `--create-disk`) stops with “another SteamOS disk is being created” (`flock` on
+   `creation.lock` in the cache folder) instead of sharing the chunk cache and temporary files.
 4. A sparse disk file: protective MBR + GPT (primary and backup, CRC32) with exactly the names,
    order, types, sizes, and alignment of `scripts/steps/40-disk.sh`, and random PARTUUIDs. In one
    pass, `rootfs.img` is hashed (sha256 must match the signed manifest), and nonzero blocks of 16
@@ -401,7 +457,11 @@ What is sent:
   failed`), failure to create a disk, unexpected VM exit (nonzero exit code or signal when shutdown
   was not requested by the user), and the idle indicator's “SteamOS is not responding”;
 - VM exit due to SIGTERM/SIGINT/SIGHUP (logging out, `kill`, ^C before handlers are installed) is not
-  a crash: only a log line, with no event and no Report a Problem window. SIGKILL generates a
+  a crash: only a log line, with no event and no Report a Problem window. Neither is SIGPIPE (both
+  processes ignore it: a closed output pipe — the terminal, or the supervisor's stderr channel after
+  the supervisor was killed — only fails the write; the VM process then logs to
+  `~/Library/Logs/es.fxgam.steamac/steamac-vm.log` or drops the lines, and lets the guest finish
+  shutting down; STEAMAC-10). SIGKILL generates a
   warning-level `vm-killed` event, “VM process killed (SIGKILL — memory pressure or force quit)”: 
   whether the kernel killed it for memory (jetsam, `NOTE_EXIT_DETAIL` from the supervisor's kqueue),
   VM memory and the VM process footprint at exit/peak, host `vm_stat` numbers (free/compressed/wired,
@@ -557,7 +617,10 @@ Verified:
   and display output through KMS match the reference pixel for pixel;
 - all required DXVK features from Proton 11 / DXVK 3.x are visible in the guest (geometryShader,
   shaderCullDistance, depthClipEnable, robustness2 + nullDescriptor, maintenance5/6, …);
-- keyboard, tablet, mouse, and virtual Xbox 360 pad are visible in SteamOS;
+- keyboard, tablet, mouse, and the virtual pad are visible in SteamOS; as a DualSense, Steam's SDL
+  maps it as `PS5 Controller` (type PS5) and shows PlayStation glyphs;
+- Desktop Mode: Switch to Desktop, the Plasma desktop with mouse input (also letterboxed), Return to
+  Gaming Mode, booting straight into the desktop; Flatpak sandboxes start;
 - A→B update via official OTA and rollback;
 - GL via zink (glamor in Xwayland, glxgears ~60 FPS), Steam UI (gamepad UI, CEF with GPU)
   renders in the VM window;
@@ -582,7 +645,7 @@ Stutters on the first pass are Metal compilation (~50–100 ms per new pipeline)
 
 The project code is licensed under Apache License 2.0 (`LICENSE`), © 2026 FX GAMES FZ LLC. Exceptions
 are listed in `NOTICE`: Linux kernel patches and configuration — GPL-2.0-only, virglrenderer and Mesa
-patches — MIT (as in those projects), four gamescope session files derived from Valve's
+patches — MIT (as in those projects), five gamescope session files derived from Valve's
 `deckard-steamvr-session` package — MIT © Valve Corporation; the Valve CA certificate and screenshots
 in `docs/media` are not covered by the project license. License texts are in `LICENSES/`.
 

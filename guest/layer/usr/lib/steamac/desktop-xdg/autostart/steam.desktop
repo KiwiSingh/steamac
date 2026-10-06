@@ -1,0 +1,11 @@
+[Desktop Entry]
+# steamac Desktop Mode: shadows the stock /etc/xdg/autostart/steam.desktop
+# (/usr/lib/steamac/nested-desktop puts this directory first in XDG_CONFIG_DIRS)
+# so the autostarted Steam keeps the client selected in the launcher; see
+# /usr/lib/steamac/steam-client --desktop.
+Name=Steam
+Exec=/usr/lib/steamac/steam-client --desktop %U
+Icon=steam
+Terminal=false
+Type=Application
+OnlyShowIn=KDE

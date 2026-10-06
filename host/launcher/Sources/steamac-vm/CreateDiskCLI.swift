@@ -49,7 +49,7 @@ enum CreateDiskCLI {
             log("create-disk: done: \(r.path) = SteamOS \(r.buildID) (\(r.version)); first-boot payload \(r.payload)")
             exit(0)
         } catch is DiskCreator.Cancelled {
-            log("create-disk: cancelled (run the same command again to resume; cache \(DiskCreator.chunkCache))")
+            log("create-disk: cancelled (run the same command again to resume; cache \(DiskCreator.cacheRoot(forDisk: (request.path as NSString).standardizingPath)))")
             exit(130)
         } catch {
             log("create-disk: error: \(error)")

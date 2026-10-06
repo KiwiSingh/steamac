@@ -253,7 +253,9 @@ enum CrashReporting {
             o.enableCoreDataTracing = false
             o.enableMetricKit = false
             o.sendClientReports = false
-            o.beforeSend = { scrub(event: $0) }
+            // A SIGPIPE kill is a lost output pipe, not a crash (reports saved by builds that did
+            // not ignore SIGPIPE yet are sent at the next start: STEAMAC-10).
+            o.beforeSend = { event in isSIGPIPE(event) ? nil : scrub(event: event) }
             o.beforeBreadcrumb = { crumb in
                 crumb.message = crumb.message.map(scrub)
                 return crumb
@@ -430,13 +432,18 @@ enum CrashReporting {
 
     /// The VM process ended in a way the user did not ask for: a crash signal, SIGKILL, or a
     /// non-zero exit without a user request (window close, menu, signal, restart; Force Quit in
-    /// the app menu exits with status 1 after one).
+    /// the app menu exits with status 1 after one). SIGPIPE (its output pipe closed; ignored since
+    /// STEAMAC-10, see main.swift) is no crash either.
     static func unexpectedExit(status: Int32, runDir dir: String) -> Bool {
         guard status != 0 else { return false }
         let signal = status > 128 ? status - 128 : 0
-        if terminationSignals.contains(signal) { return false }
+        if terminationSignals.contains(signal) || signal == SIGPIPE { return false }
         let userExit = FileManager.default.fileExists(atPath: dir + "/user-exit")
         return !(userExit && (signal == 0 || signal == SIGKILL))
+    }
+
+    private static func isSIGPIPE(_ event: Event) -> Bool {
+        event.exceptions?.contains { ($0.mechanism?.meta?.signal?["number"] as? NSNumber)?.int32Value == SIGPIPE } ?? false
     }
 
     static let killedSummary = "VM process killed (SIGKILL — memory pressure or force quit)"
@@ -652,6 +659,9 @@ enum CrashReporting {
     private static let emailRegex = try! NSRegularExpression(
         pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.(?!(?:service|socket|target|mount|automount|timer|path|slice|scope|device|swap)\\b)[A-Za-z]{2,}")
     private static let ipv4Regex = try! NSRegularExpression(pattern: "(?<![\\w.~-])(?:\\d{1,3}\\.){3}\\d{1,3}(?![\\w.~-])")
+    /// The Mac's time zone on the kernel cmdline (MacTime; the `booting …` log line): like the
+    /// culture context, never sent.
+    private static let timeZoneRegex = try! NSRegularExpression(pattern: "steamac\\.tz=[^\\s\"']*")
     /// Names that identify the user or the Mac (whole words, 4+ characters). Built once, on first
     /// use: a breadcrumb or report while reporting is on (start() builds them in the background)
     /// or a Report a Problem bundle (built off the main thread). Never touched otherwise.
@@ -701,7 +711,10 @@ enum CrashReporting {
             }
             checked.append(source)
         }
-        log("selftest-settings: scrub check: \(checked.joined(separator: ", ")) names: "
+        if scrub("cmdline=\"rootwait steamac.tz=America/Argentina/Buenos_Aires steamac.ssh=0\"").contains("Buenos_Aires") {
+            failures.append("scrub: steamac.tz not redacted")
+        }
+        log("selftest-settings: scrub check: \(checked.joined(separator: ", ")) names, steamac.tz: "
             + (failures.isEmpty ? "all redacted" : failures.joined(separator: "; ")))
         return failures
     }
@@ -740,6 +753,7 @@ enum CrashReporting {
         if out.contains("/Users/") { replace(homeRegex) { _ in "~" } }
         if out.contains("@") { replace(emailRegex) { m in m.hasPrefix(LauncherSettings.defaultDomain) ? m : "<email>" } }
         replace(ipv4Regex) { ip in ip.hasPrefix("127.") || ip.hasPrefix("192.168.127.") || ip == "0.0.0.0" ? ip : "<ip>" }
+        if out.contains("steamac.tz=") { replace(timeZoneRegex) { _ in "steamac.tz=<redacted>" } }
         for re in identityRegexes { replace(re) { _ in "<redacted>" } }
         return out
     }

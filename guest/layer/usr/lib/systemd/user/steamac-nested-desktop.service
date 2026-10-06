@@ -1,0 +1,16 @@
+# steamac Desktop Mode: the Plasma desktop as a window of the gamescope session
+# (in place of the Frame's steamvr-nested-desktop.service, which requires
+# SteamVR). Started by gamescope-onready (plasma-session.target, see
+# /usr/lib/steamos/gamescope-session) after gamescope has published DISPLAY to
+# the user manager; the session ends when this service does.
+[Unit]
+Description=Plasma desktop nested in gamescope (steamac Desktop Mode)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/steamac/nested-desktop
+Slice=session.slice
+TimeoutStopSec=5
+EnvironmentFile=/usr/share/deckard/mesavars.sh

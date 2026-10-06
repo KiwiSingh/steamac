@@ -16,7 +16,12 @@ struct ProgressState: Equatable {
 enum GuestFocus: Equatable {
     case steam
     case game(Int)
-    case desktop
+    /// Desktop Mode (`focus desktop <w>x<h>`): the Plasma desktop, one window of this size that
+    /// gamescope scales into the display.
+    case desktop(width: Int, height: Int)
+    /// The gamescope session ended without a system shutdown (bare `focus desktop`: Switch to
+    /// Desktop, Return to Gaming Mode, relogin); nothing reports until the next session's agent.
+    case sessionEnded
 }
 
 /// Boot / shutdown progress model (local://overlay-contract.md). Fed with hvc0 console lines
@@ -40,7 +45,7 @@ final class BootProgress {
     var onShutdown: ((_ reboot: Bool) -> Void)?
     /// The guest is going to reboot (and the host did not ask for a power-off).
     var onRebootIntent: (() -> Void)?
-    /// Which guest app has focus (`focus steam` / `focus game <appid>` / `focus desktop`).
+    /// Which guest app has focus (`focus steam` / `focus game <appid>` / `focus desktop [<w>x<h>]`).
     var onFocus: ((GuestFocus) -> Void)?
     /// `game <appid> <name>`: the display name of a game the guest focused.
     var onGameName: ((Int, String) -> Void)?
@@ -147,7 +152,13 @@ final class BootProgress {
             guard parts.count >= 2 else { return }
             switch parts[1] {
             case "steam": onFocus?(.steam)
-            case "desktop": onFocus?(.desktop)
+            case "desktop":
+                let size = parts.count >= 3 ? parts[2].split(separator: "x").compactMap { Int($0) } : []
+                if size.count == 2, size[0] > 0, size[1] > 0 {
+                    onFocus?(.desktop(width: size[0], height: size[1]))
+                } else {
+                    onFocus?(.sessionEnded)
+                }
             case "game": onFocus?(.game(parts.count >= 3 ? (Int(parts[2]) ?? 0) : 0))
             default: break
             }

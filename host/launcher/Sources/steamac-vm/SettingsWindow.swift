@@ -12,7 +12,7 @@ final class SettingsContext: ObservableObject {
     let sound: SoundControl?
     /// Graceful guest power-off + relaunch with the new settings; nil without a VM.
     var restart: (() -> Void)?
-    /// Whether the running VM has the virtual Xbox pad / a sound device (next-start state).
+    /// Whether the running VM has the virtual gamepad / a sound device (next-start state).
     var vmHasPad: Bool
     var vmHasSound: Bool
     /// The running VM's main disk (nil without a VM).
@@ -284,6 +284,13 @@ private struct GeneralTab: View {
                 }
             }
             Section {
+                Toggle(isOn: $settings.followMacTime) {
+                    Label2(title: "Use the Mac's time zone",
+                           detail: "SteamOS gets the Mac's time zone at every start, until you change it in SteamOS or Steam.",
+                           now: false, key: .followMacTime)
+                }
+            }
+            Section {
                 Toggle(isOn: $settings.muteInBackground) {
                     Label2(title: "Mute sound", detail: "Short fade; the volume comes back when you switch back.", now: true)
                 }
@@ -533,10 +540,23 @@ private struct ControllerTab: View {
         Form {
             Section {
                 Toggle(isOn: $settings.virtualPad) {
-                    Label2(title: "Virtual Xbox 360 controller",
+                    Label2(title: "Virtual controller",
                            detail: "The guest's gamepad (virtio-input devices are fixed at boot).",
                            now: false, key: .virtualPad)
                 }
+                Picker(selection: $settings.padType) {
+                    Text("Automatic").tag(LauncherSettings.PadType.auto)
+                    Text("Xbox 360 controller").tag(LauncherSettings.PadType.xbox360)
+                    Text("DualSense").tag(LauncherSettings.PadType.dualSense)
+                    Text("DualShock 4").tag(LauncherSettings.PadType.dualShock4)
+                } label: {
+                    Label2(title: "Appears in SteamOS as",
+                           detail: "Button glyphs and layout in Steam. Automatic: DualSense or DualShock 4 when one is "
+                               + "connected at start, else Xbox 360. Buttons, sticks and triggers only (no touchpad, gyro "
+                               + "or rumble).",
+                           now: false, key: .padType)
+                }
+                .disabled(!settings.virtualPad)
                 Picker(selection: $settings.controllerID) {
                     Text("First connected").tag("")
                     ForEach(monitor.controllers, id: \.self) { c in

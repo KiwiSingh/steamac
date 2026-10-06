@@ -1,0 +1,5 @@
+#!/bin/sh
+# steamac Desktop Mode (PATH of /usr/lib/steamac/nested-desktop): startplasma-wayland
+# starts KWin through kwin_wayland_wrapper; KWin's X11 window takes the display size.
+exec /usr/bin/kwin_wayland_wrapper --width "${STEAMAC_DESKTOP_WIDTH:-1280}" \
+    --height "${STEAMAC_DESKTOP_HEIGHT:-800}" --no-lockscreen "$@"

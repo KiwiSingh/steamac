@@ -5,9 +5,42 @@ import UniformTypeIdentifiers
 
 /// Launcher diagnostics go to stderr; stdout carries the guest console.
 func log(_ message: String) {
-    let line = "[steamac-vm] \(message)\n"
-    line.withCString { p in _ = Darwin.write(STDERR_FILENO, p, strlen(p)) }
+    LogOutput.write("[steamac-vm] \(message)\n")
     CrashReporting.logged(message)
+}
+
+/// Where log() writes: stderr until a write fails with EPIPE. The VM process's stderr is the
+/// supervisor's tap pipe, gone if the supervisor was killed (STEAMAC-10); SIGPIPE is ignored
+/// (main.swift), so the VM process keeps running and the guest finishes its shutdown. Later
+/// lines go to the app's log file (app bundle) or are dropped.
+enum LogOutput {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var fd = STDERR_FILENO
+
+    static func write(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard fd >= 0, !writeAll(fd, line), errno == EPIPE else { return }
+        fd = AppBundle.resources == nil ? -1
+            : open(AppBundle.logPath, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { return }
+        _ = writeAll(fd, "[steamac-vm] stderr is closed (pid \(getpid())): the launcher log continues here\n" + line)
+    }
+
+    /// False on a write error (errno set).
+    private static func writeAll(_ fd: Int32, _ text: String) -> Bool {
+        var text = text
+        return text.withUTF8 { p in
+            var off = 0
+            while off < p.count {
+                let n = Darwin.write(fd, p.baseAddress! + off, p.count - off)
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { return false }
+                off += n
+            }
+            return true
+        }
+    }
 }
 
 func fatal(_ message: String) -> Never {

@@ -3,6 +3,12 @@ import CKrun
 import Darwin
 import Foundation
 
+// Both processes: a write to a closed pipe or socket fails with EPIPE instead of killing the
+// process (STEAMAC-10: the VM process died in log() once the supervisor's stderr tap was gone,
+// in the middle of the guest's shutdown). Before CrashReporting.setUp: Sentry's crash handler
+// leaves an ignored SIGPIPE alone. The VM process gets it ignored from the supervisor too.
+signal(SIGPIPE, SIG_IGN)
+
 // Finder / `open` launch of the .app: console + launcher log go to ~/Library/Logs/es.fxgam.steamac.
 if !Supervisor.isChild { AppBundle.redirectOutputIfLaunchedFromFinder() }
 
@@ -112,6 +118,18 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         window?.setStatus("shutting down… (close again to force quit)")
         startGraceTimer()
         if let suspender { suspender.whenAwake(pressPowerKey) } else { pressPowerKey() }
+    }
+
+    /// The supervisor is gone (killed; gvproxy went with it): shut the guest down cleanly. Never a
+    /// force quit: exiting cuts a shutdown already under way short (the guest's disk), so that one
+    /// just continues.
+    func supervisorExited() {
+        guard requestedAt == nil else {
+            log("launcher supervisor exited; the guest's shutdown continues")
+            return
+        }
+        log("launcher supervisor exited; shutting the guest down")
+        requestShutdown()
     }
 
     /// "Restart VM" (menu / Settings): power the guest off cleanly, then the supervisor boots it
@@ -270,9 +288,15 @@ do {
     if let c = options.configPayload { log("config: new SteamOS password pending: \(c.path) attached read-only, \(Provision.configFlag)") }
 
     var inputs: VMInputs?
+    var guestPad = GuestPad.xbox360
     if !options.headless {
+        if options.gamepad {
+            let (pad, why) = GuestPad.resolve(options.padType)
+            guestPad = pad
+            log("gamepad: SteamOS sees a \(pad.title) (\(why))")
+        }
         inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(),
-                          mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.xbox360Pad() : nil)
+                          mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.gamepad(guestPad) : nil)
     }
 
     let clockPort = try ClockPort()
@@ -326,10 +350,7 @@ do {
     // If the supervisor dies (e.g. SIGKILL), gvproxy goes with it: shut the guest down cleanly
     // instead of leaving an orphaned VM without networking.
     let supervisorWatch = DispatchSource.makeProcessSource(identifier: getppid(), eventMask: .exit, queue: .main)
-    supervisorWatch.setEventHandler {
-        log("launcher supervisor exited; shutting the guest down")
-        lifecycle.requestShutdown()
-    }
+    supervisorWatch.setEventHandler { lifecycle.supervisorExited() }
     supervisorWatch.resume()
 
     log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.displayWidth)x\(options.displayHeight)"
@@ -431,7 +452,7 @@ do {
                      overlay: #selector(Lifecycle.menuOverlay), metalHUD: #selector(Lifecycle.menuMetalHUD))
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
-    let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, settings: settings) }
+    let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, pad: guestPad, settings: settings) }
     // Nothing reaches a paused VM; while SteamOS sleeps (window up) a button press wakes it.
     gamepad?.intercept = { pressed in
         guard suspender.paused else { return false }

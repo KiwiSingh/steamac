@@ -7,7 +7,9 @@
 # virtio-gpu KMS device (card0, one connector whose preferred mode is the
 # launcher's window/display size) with the DRM backend, like a Steam Deck.
 # Output size is therefore not hard-coded: gamescope uses the connector's
-# preferred mode and sizes the nested (Steam) surface to it.
+# preferred mode and sizes the nested (Steam) surface to it. The same script
+# runs Desktop Mode (plasma-session.target): Plasma nested in gamescope, see
+# /usr/lib/steamac/nested-desktop.
 #
 # Overrides without rebuilding the layer: /etc/steamac/gamescope-session.conf
 # (EnvironmentFile of gamescope-session.service), e.g.
@@ -66,12 +68,18 @@ GAMESCOPE_ARGS=(
 )
 
 GAMESCOPE_SESSION_TARGET="${GAMESCOPE_SESSION_TARGET:-gamescope-session.target}"
+WATCH_SERVICE=
 if [[ "${GAMESCOPE_SESSION_TARGET}" == "gamescope-session.target" ]]; then
   GAMESCOPE_ARGS+=(--keep-alive --steam)
   [[ "${STEAMAC_GAMESCOPE_MANGOAPP:-1}" == 1 ]] && GAMESCOPE_ARGS+=(--mangoapp)
+elif [[ "${GAMESCOPE_SESSION_TARGET}" == "plasma-session.target" ]]; then
+  # Desktop Mode (stock logic): gamescope-onready starts the nested Plasma
+  # desktop once DISPLAY is published and waits for it; without --keep-alive
+  # gamescope, and with it the session, ends when Plasma does.
+  WATCH_SERVICE=steamac-nested-desktop.service
 fi
 
 # shellcheck disable=SC2206 # intentional word splitting of the override
 GAMESCOPE_ARGS+=(${STEAMAC_GAMESCOPE_EXTRA_ARGS:-})
 
-exec gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready
+exec gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready ${WATCH_SERVICE:+"$WATCH_SERVICE"}

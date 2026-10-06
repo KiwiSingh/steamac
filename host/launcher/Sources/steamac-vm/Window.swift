@@ -617,19 +617,43 @@ final class WindowController: NSObject, NSWindowDelegate {
     //
     // gamescope (SteamOS gaming mode) ignores absolute pointer motion: wlserver only handles
     // wlr_pointer `motion` (relative), never `motion_absolute`, so a virtio tablet's ABS_X/ABS_Y
-    // never moves its cursor. It applies relative motion *unaccelerated* (unaccel_dx/dy) and clamps
-    // the cursor to the focused surface. So in `auto` mode the host pointer is mirrored with exact
-    // relative deltas through the virtio mouse, after anchoring the guest cursor at the top-left
-    // corner with one large negative delta whenever its position is unknown (pointer entered the
-    // picture, idle, after a capture). The absolute tablet is used only in `tablet` mode and in KDE
-    // desktop mode (`focus desktop`), where the compositor supports absolute pointers.
+    // never moves its cursor. It applies relative motion *unaccelerated* (unaccel_dx/dy) in the
+    // focused surface's pixels and clamps the cursor to that surface. So in `auto` mode the host
+    // pointer is mirrored with exact relative deltas through the virtio mouse, after anchoring the
+    // guest cursor at the top-left corner with one large negative delta whenever its position is
+    // unknown (pointer entered the picture, idle, after a capture). Desktop Mode runs inside the
+    // same gamescope (Plasma is one KWin window, `focus desktop <w>x<h>`), so it takes the same
+    // path, mapped onto that window as gamescope shows it. The absolute tablet is used only in
+    // `tablet` mode.
 
     /// Idle time after which the guest cursor may have been moved by the guest (warps, a game's
     /// smaller surface clamping); the next motion re-anchors.
     static let reanchorAfterIdle: TimeInterval = 1.5
+    /// gamescope's `--max-scale` (guest/layer/usr/lib/steamos/gamescope-session): a smaller
+    /// surface is shown at most this many times its size.
+    static let gamescopeMaxScale = 2.0
 
     private var usesTablet: Bool {
-        mouseMode == .tablet || (mouseMode == .auto && guestFocus == .desktop)
+        mouseMode == .tablet
+    }
+
+    /// The surface relative motion lands on, in its pixels: the Desktop Mode desktop window, else
+    /// the display (Steam's UI and games fill it).
+    private var pointerSurface: (Int, Int) {
+        if case .desktop(let w, let h) = guestFocus { return (w, h) }
+        return scanoutSize
+    }
+
+    /// Where `pointerSurface` appears in the view: gamescope fits it into the display (aspect kept,
+    /// centred, upscaled at most `gamescopeMaxScale` times).
+    private var pointerRect: CGRect {
+        let fit = view.fitRect
+        let (w, h) = pointerSurface, (sw, sh) = scanoutSize
+        guard (w, h) != (sw, sh), w > 0, h > 0, sw > 0, sh > 0 else { return fit }
+        let scale = min(Double(sw) / Double(w), Double(sh) / Double(h), WindowController.gamescopeMaxScale)
+        let pw = fit.width * CGFloat(Double(w) * scale / Double(sw))
+        let ph = fit.height * CGFloat(Double(h) * scale / Double(sh))
+        return CGRect(x: fit.midX - pw / 2, y: fit.midY - ph / 2, width: pw, height: ph)
     }
 
     /// "Name (appid)" when the guest told us the game's name.
@@ -651,8 +675,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     func guestFocusChanged(_ f: GuestFocus) {
-        // The agent ends with the gamescope session: no heartbeats in desktop mode.
-        if f == .desktop {
+        // The agent ended with the gamescope session: no heartbeats until the next session's agent.
+        if f == .sessionEnded {
             stall?.heartbeatsEnded()
             noPicture?.heartbeatsEnded()
         }
@@ -801,13 +825,17 @@ extension WindowController {
     }
 
     private func inPicture(_ e: NSEvent) -> Bool {
-        view.fitRect.contains(view.convert(e.locationInWindow, from: nil))
+        (usesTablet ? view.fitRect : pointerRect).contains(view.convert(e.locationInWindow, from: nil))
     }
 
-    /// Host pointer position in guest pixels (scanout size), clamped to the picture.
+    /// Host pointer position in pixels of `pointerSurface`, clamped to it.
     private func guestPoint(_ e: NSEvent) -> (Int, Int) {
-        let (ux, uy) = view.unitPoint(for: e)
-        let (w, h) = scanoutSize
+        let p = view.convert(e.locationInWindow, from: nil)
+        let r = pointerRect
+        guard r.width > 0, r.height > 0 else { return (0, 0) }
+        let ux = Double((p.x - r.minX) / r.width)
+        let uy = 1 - Double((p.y - r.minY) / r.height)   // AppKit views are bottom-left origin
+        let (w, h) = pointerSurface
         return (min(w - 1, max(0, Int(ux * Double(w)))), min(h - 1, max(0, Int(uy * Double(h)))))
     }
 
