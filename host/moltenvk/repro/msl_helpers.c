@@ -1,6 +1,8 @@
 /* STEAMAC-1Q: an OpKill-only block in a fragment helper must receive the implicit
  * helper-invocation state (also through nested callers). Check discarded pixels,
- * surviving colors, and storage writes after discard. Run: msl_helpers <spv dir>.
+ * surviving colors, and storage writes after discard. STEAMAC-1R: a user helper
+ * named log10 must not collide with metal::log10, or silently call the builtin.
+ * Run: msl_helpers <spv dir> [log10] (optional compute-only case).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -190,9 +192,55 @@ static void draw(VkShaderModule vs, VkShaderModule fs, const char *what)
 	fails += bad != 0;
 }
 
+static void dispatch(VkShaderModule mod)
+{
+	VkDescriptorSetLayoutBinding binding = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+	VkDescriptorSetLayoutCreateInfo slci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &binding };
+	VkDescriptorSetLayout sl;
+	CK(vkCreateDescriptorSetLayout(dev, &slci, NULL, &sl));
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &sl };
+	VkPipelineLayout layout;
+	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = mod, .pName = "main" }, .layout = layout };
+	VkPipeline p;
+	VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
+	printf("%-4s log10_helper: compute pipeline with a user-defined log10(float) (VkResult %d)\n", r ? "FAIL" : "OK", r);
+	if (r) { fails++; return; }
+	float *values;
+	VkBuffer buf = host_buffer(3 * sizeof(*values), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, (void **)&values);
+	memset(values, 0, 3 * sizeof(*values));
+	VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 };
+	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps };
+	VkDescriptorPool dp;
+	CK(vkCreateDescriptorPool(dev, &dpci, NULL, &dp));
+	VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &sl };
+	VkDescriptorSet set;
+	CK(vkAllocateDescriptorSets(dev, &dsai, &set));
+	VkDescriptorBufferInfo bi = { buf, 0, VK_WHOLE_SIZE };
+	VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi };
+	vkUpdateDescriptorSets(dev, 1, &write, 0, NULL);
+	VkCommandBuffer cmd = begin();
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
+	vkCmdDispatch(cmd, 1, 1, 1);
+	submit(cmd);
+	const float want[3] = { 1.125f, 2.125f, -0.875f };
+	int bad = 0;
+	for (int i = 0; i < 3; i++)
+		bad += !(values[i] >= want[i] - 0.0001f && values[i] <= want[i] + 0.0001f);
+	printf("%-4s log10_helper: values (%g %g %g), expected (1.125 2.125 -0.875), not Metal's builtin\n",
+		bad ? "FAIL" : "OK", values[0], values[1], values[2]);
+	fails += bad != 0;
+}
+
 int main(int argc, char **argv)
 {
-	if (argc != 2) { fprintf(stderr, "usage: %s <spv dir>\n", argv[0]); return 2; }
+	if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "log10"))) {
+		fprintf(stderr, "usage: %s <spv dir> [log10]\n", argv[0]); return 2;
+	}
 	VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3 };
 	VkInstanceCreateInfo ici = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app };
 	VkInstance inst;
@@ -212,10 +260,12 @@ int main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/msl_helpers.vert.spv", argv[1]);
 	VkShaderModule vs = module(path);
 	const char *shaders[] = { "helper_discard.frag", "nested_helper_discard.frag" };
-	for (unsigned i = 0; i < sizeof(shaders) / sizeof(shaders[0]); i++) {
+	for (unsigned i = 0; argc == 2 && i < sizeof(shaders) / sizeof(shaders[0]); i++) {
 		snprintf(path, sizeof(path), "%s/%s.spv", argv[1], shaders[i]);
 		draw(vs, module(path), shaders[i]);
 	}
+	snprintf(path, sizeof(path), "%s/log10_helper.comp.spv", argv[1]);
+	dispatch(module(path));
 	CK(vkDeviceWaitIdle(dev));
 	vkDestroyDevice(dev, NULL);
 	vkDestroyInstance(inst, NULL);

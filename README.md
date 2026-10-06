@@ -707,6 +707,8 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 MoltenVK also fixes fragment helpers that discard from an otherwise empty SPIR-V block
 (STEAMAC-1Q). `host/moltenvk/repro/msl_helpers.c` checks both direct and nested helpers:
 discarded pixels stay clear and do not write storage buffers; surviving pixels render normally.
+It renames user-defined `log10(float)` helpers to avoid Metal's builtin overload (STEAMAC-1R);
+the same repro reads back the compute helper's results, not just successful pipeline creation.
 
 The SteamOS root filesystem is not modified: all changes come from initramfs and the layer. Thus
 official Valve updates (RAUC + atomupd) install into the other slot and roll back normally — verified

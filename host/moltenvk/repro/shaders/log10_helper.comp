@@ -1,0 +1,20 @@
+#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Results { float values[]; } results;
+// Same reference-parameter signature as the ACES spline helper in STEAMAC-1R.
+// A bias makes accidentally calling Metal's builtin distinguishable in readback.
+float log10(float f)
+{
+    return log2(f) / 3.3219280242919921875 + 0.125;
+}
+float segmented_spline(float x)
+{
+    float param = x;
+    return log10(param);
+}
+void main()
+{
+    results.values[0] = segmented_spline(10.0);
+    results.values[1] = segmented_spline(100.0);
+    results.values[2] = segmented_spline(0.1);
+}

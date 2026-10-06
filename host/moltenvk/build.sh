@@ -328,6 +328,8 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "         runtime binding declared as a sized array in the shader uses the shader's size"
 	echo "  0031 = steamac: propagate manual helper-invocation state for empty discard blocks in fragment"
 	echo "         helpers (STEAMAC-1Q), including nested callers; check terminators outside the instruction loop"
+	echo "  0032 = steamac: rename user-defined log10 helpers, which clash with metal::log10(float)"
+	echo "         (STEAMAC-1R, compute ACES spline); preserve the helper implementation and callsites"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

@@ -68,7 +68,8 @@
 #    over 16 specialized variants using the 1000000-descriptor heaps (< 4 MB: Metal kept a 32 MB table per
 #    inline array<T, 1000000> and program, ~100 MB per pipeline).
 # 17. msl_helpers.c: fragment helpers with an OpKill-only block, directly and through a nested caller
-#    (STEAMAC-1Q): discard left-half pixels, render right-half colors, suppress writes after discard.
+#    (STEAMAC-1Q): discard left-half pixels, render right-half colors, suppress writes after discard;
+#    a compute helper named log10(float) (STEAMAC-1R), its implementation's values read back.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
