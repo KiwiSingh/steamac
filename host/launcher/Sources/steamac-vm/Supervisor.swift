@@ -66,8 +66,10 @@ enum Supervisor {
         }
 
         var gvproxy: Gvproxy?
+        var remotePlay: RemotePlayRelay?
 
         func cleanup() {
+            remotePlay?.stop()
             gvproxy?.stop()
             try? FileManager.default.removeItem(atPath: dir)
             if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
@@ -134,6 +136,15 @@ enum Supervisor {
                     cleanup()
                     exit(1)
                 }
+                if o.lanRemotePlay {
+                    let relay = RemotePlayRelay(proxy: g)
+                    do {
+                        try relay.start()
+                        remotePlay = relay
+                    } catch {
+                        log("remote-play: disabled for this boot: \(error); port conflict or Local Network/firewall permission may block discovery")
+                    }
+                }
             }
             var env = ProcessInfo.processInfo.environment
             env[childEnv] = "1"
@@ -146,6 +157,8 @@ enum Supervisor {
             let status = vmExit.status
             childPid = 0
             if var t = savedTermios { tcsetattr(STDIN_FILENO, TCSANOW, &t) }
+            remotePlay?.stop()
+            remotePlay = nil
             gvproxy?.stop()
             if CrashReporting.terminationSignals.contains(vmExit.signal) {
                 log("VM process terminated by \(CrashReporting.signalName(vmExit.signal)) (a termination request, not a crash)")

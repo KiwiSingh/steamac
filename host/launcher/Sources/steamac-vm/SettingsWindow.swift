@@ -948,6 +948,12 @@ private struct AdvancedTab: View {
                     Label2(title: "Network", detail: "Off: no virtio-net / gvproxy (offline guest, also no SSH).",
                            now: false, key: .network)
                 }
+                Toggle(isOn: $settings.lanRemotePlay) {
+                    Label2(title: "LAN Remote Play",
+                           detail: "Let Steam Link discover this VM on the same subnet. Opens UDP 27031–27036 and TCP 27036–27037 on the Mac. Allow Local Network access; quit Mac Steam if it uses these ports.",
+                           now: false, key: .lanRemotePlay)
+                }
+                .disabled(!settings.network)
             }
             Section {
                 VStack(alignment: .leading, spacing: 6) {

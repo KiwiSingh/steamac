@@ -32,13 +32,13 @@ final class LauncherSettings: ObservableObject {
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
-        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch, steamClient, vulkanDriver
+        case cpus, memMiB, sshEnabled, sshPort, network, lanRemotePlay, diskImage, steamosBranch, steamClient, vulkanDriver
 
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
                  .windowWidth, .windowHeight, .windowSizePreset, .soundEnabled, .cpus, .memMiB, .sshEnabled,
-                 .sshPort, .network,
+                 .sshPort, .network, .lanRemotePlay,
                  .diskImage, .steamClient, .followMacTime, .vulkanDriver:
                 return true
             default:
@@ -295,6 +295,8 @@ final class LauncherSettings: ObservableObject {
     @Published var sshEnabled = !AppBundle.releaseDefaults { didSet { save(.sshEnabled, sshEnabled) } }
     @Published var sshPort = 2222 { didSet { save(.sshPort, sshPort) } }
     @Published var network = true { didSet { save(.network, network) } }
+    /// Opt-in: exposes Remote Play to the local network, unlike ordinary user-mode NAT.
+    @Published var lanRemotePlay = false { didSet { save(.lanRemotePlay, lanRemotePlay) } }
     /// "" = default (see AppBundle.defaultDisk()).
     @Published var diskImage = "" { didSet { save(.diskImage, diskImage) } }
     /// SteamOS update branch "Create New Disk…" installs (atomupd vr/<branch>.json).
@@ -371,6 +373,7 @@ final class LauncherSettings: ObservableObject {
         bool(.sshEnabled, &sshEnabled)
         int(.sshPort, &sshPort)
         bool(.network, &network)
+        bool(.lanRemotePlay, &lanRemotePlay)
         string(.diskImage, &diskImage)
         string(.steamosBranch, &steamosBranch)
         if !DiskCreator.branches.contains(steamosBranch) {
@@ -443,6 +446,7 @@ final class LauncherSettings: ObservableObject {
         case .sshEnabled: guard let b else { return false }; sshEnabled = b
         case .sshPort: guard let i else { return false }; sshPort = i
         case .network: guard let b else { return false }; network = b
+        case .lanRemotePlay: guard let b else { return false }; lanRemotePlay = b
         case .diskImage: diskImage = text == "default" ? "" : text
         case .steamosBranch: guard DiskCreator.branches.contains(text) else { return false }; steamosBranch = text
         case .steamClient: guard let v = SteamClient(rawValue: text) else { return false }; steamClient = v
@@ -473,6 +477,7 @@ final class LauncherSettings: ObservableObject {
         stickDeadzone = fresh.stickDeadzone; soundEnabled = fresh.soundEnabled; soundOutputUID = fresh.soundOutputUID
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
         cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network
+        lanRemotePlay = fresh.lanRemotePlay
         diskImage = fresh.diskImage; steamosBranch = fresh.steamosBranch; steamClient = fresh.steamClient
         vulkanDriver = fresh.vulkanDriver
         loading = false
@@ -506,7 +511,7 @@ final class LauncherSettings: ObservableObject {
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
             .windowSizePreset: windowSizePreset,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
-            .network: network,
+            .network: network, .lanRemotePlay: lanRemotePlay,
             .diskImage: diskImage, .steamClient: steamClient.rawValue, .followMacTime: followMacTime,
             .vulkanDriver: vulkanDriver.rawValue,
         ]

@@ -39,6 +39,8 @@ struct Options {
     var headless = false
     var logFile: String?
     var network = true
+    var lanRemotePlay = false
+    var selftestRemotePlay = false
     var sound = true
     var sshPort = 2222
     /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
@@ -103,13 +105,14 @@ struct Options {
                       [--mouse auto|tablet|capture] [--no-gamepad] [--pad auto|xbox360|dualsense|dualshock4]
                       [--krun-log-level 0-5] [--perf-stats]
                       [--no-crash-reports] [--steam-client frame|deck|deckbeta]
-                      [--vulkan-driver moltenvk|kosmickrisp]
+                      [--vulkan-driver moltenvk|kosmickrisp] [--lan-remote-play | --no-lan-remote-play]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-stall [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-pill [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
+           steamac-vm --selftest-remote-play
            steamac-vm --create-disk PATH [--branch stable|rc] [--home-gib N]
                       [--password PW] [--keep-cache] [--accept-eula]
            steamac-vm --ssh-password DISK
@@ -143,6 +146,8 @@ struct Options {
       --headless           no window and no input devices; SIGUSR1 dumps the latest frame
       --log FILE           also append the hvc0 console to FILE
       --no-net             no virtio-net / gvproxy
+      --lan-remote-play    expose Steam Remote Play on the LAN (Settings > Advanced; off by default)
+      --no-lan-remote-play disable the LAN discovery relay and Remote Play forwards for this boot
       --no-sound           no virtio-snd (default: guest audio plays on the Mac's default output
                            device and follows it when it changes; guest recording uses the default
                            input device, asking for microphone permission the first time)
@@ -302,6 +307,8 @@ struct Options {
             case "--headless": o.headless = true
             case "--log": o.logFile = try value(a)
             case "--no-net": o.network = false
+            case "--lan-remote-play": o.lanRemotePlay = true
+            case "--no-lan-remote-play": o.lanRemotePlay = false
             case "--no-sound": o.sound = false
             case "--ssh-port": o.sshPort = try int(a)
             case "--no-ssh": o.sshPort = 0
@@ -357,6 +364,7 @@ struct Options {
             case "--selftest-stall": o.selftestStall = true
             case "--selftest-pill": o.selftestPill = true
             case "--selftest-settings": o.selftestSettings = true
+            case "--selftest-remote-play": o.selftestRemotePlay = true
             case "--selftest-provision": o.selftestProvision = true
             case "--reference-disk": o.referenceDisk = try value(a)
             case "--create-disk": o.createDisk = try value(a)
@@ -398,7 +406,7 @@ struct Options {
     }
 
     var isSelftest: Bool {
-        selftestDisplay || selftestOverlay || selftestStall || selftestPill || selftestSettings || selftestProvision
+        selftestDisplay || selftestOverlay || selftestStall || selftestPill || selftestSettings || selftestProvision || selftestRemotePlay
             || createDisk != nil || growDisk != nil
             || showSSHPassword != nil
     }
@@ -470,6 +478,9 @@ struct Options {
             sshPort = !s.sshEnabled || s.sshPort == 0 ? 0 : (1024...65535).contains(s.sshPort) ? s.sshPort : 2222
         }
         if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
+        if given("--lan-remote-play") || given("--no-lan-remote-play") {
+            ov[.lanRemotePlay] = lanRemotePlay ? "--lan-remote-play" : "--no-lan-remote-play"
+        } else { lanRemotePlay = s.lanRemotePlay }
         macTime = s.followMacTime
         if given("--steam-client") { ov[.steamClient] = "--steam-client \(steamClient.rawValue)" } else { steamClient = s.steamClient }
         if given("--vulkan-driver") { ov[.vulkanDriver] = "--vulkan-driver \(vulkanDriver.rawValue)" } else { vulkanDriver = s.vulkanDriver }

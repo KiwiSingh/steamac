@@ -42,6 +42,7 @@ if options.selftestStall { StallSelfTest.run(options) }
 if options.selftestPill { PillSelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
 if options.selftestProvision { ProvisionSelfTest.run(options) }
+if options.selftestRemotePlay { RemotePlaySelfTest.run() }
 if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
 if let disk = options.growDisk {
     do {

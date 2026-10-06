@@ -32,5 +32,7 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>The SteamOS virtual machine records from the microphone while a game or Steam voice chat in it uses one.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Discover Steam Link and Remote Play devices on your local network and connect them to Steam in the SteamOS virtual machine when LAN Remote Play is enabled.</string>
 </dict>
 </plist>

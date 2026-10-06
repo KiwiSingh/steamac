@@ -167,6 +167,37 @@ in the dev launcher, the password is generated only via the button (Docker-built
 password. From the terminal, `steamac-vm --ssh-password <disk>` prints the user, password, and
 status.
 
+### LAN networking and Steam Remote Play
+
+Ordinary networking uses gvproxy user-mode NAT (`192.168.127.2` in SteamOS); LAN broadcasts
+do not cross that NAT. **Settings → Advanced → LAN Remote Play** (next start), or
+`--lan-remote-play`, enables a launcher-side discovery relay and same-port forwards:
+UDP **27031–27036**, TCP **27036–27037**, from the Mac to the guest. It is **off by default**:
+enabling it exposes Steam's Remote Play services to other machines, independently of SSH.
+`--no-lan-remote-play` disables it for one boot; Network off disables it too.
+
+Allow macOS's **Local Network** permission and incoming traffic in the Mac/SteamOS firewall.
+Steam Link and the Mac must be on the **same IPv4 subnet** (Wi-Fi client isolation, guest
+networks, VLANs, routed discovery and IPv6-only LANs are not supported). Enable Remote Play
+in guest Steam; use the Mac's LAN address for manual pairing, not `192.168.127.2`.
+Quit the Mac's own Steam client if it owns these ports: the launcher never shares or steals
+UDP 27036, logs conflicts as `remote-play: disabled for this boot`, and rolls back its forwards.
+The Mac Steam client's own UDP 27036 broadcasts are not relayed back into the guest.
+
+The relay preserves Steam client identity and unknown protobuf fields, replaces status
+address hints with the Mac's LAN IPv4 address, and retains ports because the forwards use
+the same port numbers. Guest status announcements are refreshed by real discovery queries
+every five seconds (gvproxy does not export unsolicited guest-subnet broadcasts); no status
+is invented when Steam does not answer. Steam may not advertise a signed-out host.
+`--selftest-remote-play` checks packet parsing and address rewriting without booting a VM.
+For a real LAN probe (on the Mac or a second machine), run
+`python3 scripts/test/remote-play-discovery.py --bind <LAN-IP> --broadcast <subnet-broadcast> --expect-host <Mac-LAN-IP>`.
+It uses an ephemeral port, prints the actual Steam reply and rewritten address, and fails if
+no host answers; it does not claim pairing or streaming success.
+Protocol references: [Valve's Remote Play network settings](https://help.steampowered.com/en/faqs/view/3E3D-BE6B-787D-A5D2),
+[Steam remote-client protobufs](https://github.com/SteamDatabase/Protobufs/blob/master/steam/steammessages_remoteclient_discovery.proto),
+and [discovery envelope framing](https://github.com/OpenSourceLAN/steam-discover/blob/master/listener.js).
+
 ## Settings window
 
 **FX Steam Launcher → Settings…** (Cmd+, — also works when the guest has the keyboard). Each field
