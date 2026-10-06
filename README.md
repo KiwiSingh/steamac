@@ -712,8 +712,9 @@ Stutters on the first pass are Metal compilation (~50–100 ms per new pipeline)
 
 ## Limitations
 
-- DirectX 12 (vkd3d-proton): MoltenVK on the host passes all `D3D12CreateDevice` checks in vkd3d-proton
-  (feature level 11_0, SM 6.0), but this has not yet been tested with games in the guest.
+- DirectX 12 (vkd3d-proton): feature level 11_0, SM 6.0 (no tiled resources, no SM 6.2+ on Apple GPUs). Stellar
+  Blade Demo (UE4) runs at 1280×800, ~35 FPS on an M4 Max; the first run spends minutes compiling shaders. The
+  x86 emulator in Proton ARM64 (FEX) stopped it once after 20 minutes (DEP check in its protected .exe).
 - Audio: virtio-snd → CoreAudio (default device or one selected in settings), latency ≈65 ms on built-in
   speakers; the microphone is advertised but has not been tested.
 - Anti-cheat systems that block VMs will not work.
