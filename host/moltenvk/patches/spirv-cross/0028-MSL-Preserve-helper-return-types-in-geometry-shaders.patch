@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000026 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000028 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Tue, 6 Oct 2026 18:00:00 +0300
-Subject: [PATCH 26/26] MSL: Preserve helper return types in geometry shaders
+Subject: [PATCH 28/28] MSL: Preserve helper return types in geometry shaders
 
 STEAMAC-1B, STEAMAC-1D: DXVK 2.7's dxbc-spirv compiler emits dot-product
 and conversion helper functions. The fork's func_type_decl() forced every

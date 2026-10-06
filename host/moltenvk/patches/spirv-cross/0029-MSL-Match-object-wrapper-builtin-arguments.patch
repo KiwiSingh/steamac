@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000027 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000029 Mon Sep 17 00:00:00 2001
 From: steamac <steamac@localhost>
 Date: Tue, 6 Oct 2026 18:01:00 +0300
-Subject: [PATCH 27/27] MSL: Match object wrapper builtin arguments to the vertex function
+Subject: [PATCH 29/29] MSL: Match object wrapper builtin arguments to the vertex function
 
 STEAMAC-1E: Stellar Blade's emulated geometry pipeline fails to compile
 because the object wrapper passes five arguments to a four-argument vertex
