@@ -1,13 +1,16 @@
 #version 450
 // Descriptors near the end of vkd3d-proton-style heap sets (variable-count update-after-bind arrays) read on the GPU
 // (descriptor_heap.c): an unaligned texel buffer view, a raw SSBO, a CBV and the CBV set's fixed offset buffer.
-// Their sizes and the texel offset come from the sets' aux buffers. Output words in order, see descriptor_heap.c.
+// Their sizes and the texel offset come from the sets' aux buffers. The raw SSBO binding is declared twice, restrict
+// and not (dxil-spirv aliases one heap binding per access type); the second declaration is a cast of the first in
+// the argument buffer, which must not drop __restrict. Output words in order, see descriptor_heap.c.
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_samplerless_texture_functions : require
 layout(local_size_x = 1) in;
 
 layout(set = 0, binding = 0) uniform utextureBuffer srv[];
-layout(set = 1, binding = 0) buffer raw_t { uint data[]; } raw[];
+layout(set = 1, binding = 0) restrict readonly buffer raw_t { uint data[]; } raw[];
+layout(set = 1, binding = 0) readonly buffer raw4_t { uvec4 data[]; } raw4[];
 layout(set = 2, binding = 1) buffer offs_t { uint w[]; } offs;
 layout(set = 2, binding = 2) uniform cbv_t { uvec4 v; } cbv[];
 layout(set = 3, binding = 0) buffer out_t { uint o[]; };
@@ -25,4 +28,5 @@ void main()
 	o[4] = uint(raw[nonuniformEXT(k)].data.length());
 	o[5] = cbv[nonuniformEXT(k)].v.y;
 	o[6] = uint(offs.w.length());
+	o[7] = raw4[nonuniformEXT(k)].data[0].w;
 }

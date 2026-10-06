@@ -53,7 +53,8 @@
 #    of 1 to 1000000 views and 1 to 2048 samplers, shader-visible and host, and pools of one such set: every set
 #    allocates and is written null (variable sets with buffer sizes counted the size of each element twice, and
 #    texel offsets made it worse: Stellar Blade's first heap failed with VK_ERROR_OUT_OF_POOL_MEMORY and Venus
-#    stopped the game's command stream); descriptors at element 999997 read back (dh_read.comp).
+#    stopped the game's command stream); descriptors at element 999997 read back (dh_read.comp), the raw SSBO
+#    through two declarations of its binding, restrict and not (the alias's cast dropped __restrict).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.

@@ -307,6 +307,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0022 = steamac: the gl_WorkGroupSize constant synthesized for LocalSizeId (zero-initialized"
 	echo "         workgroup memory, 0017) keeps workgroup_size.x/y/z: MoltenVK dispatched 1x1x1 threadgroups"
 	echo "         for every DXVK compute shader with groupshared memory (Rogue Trader tile lighting)"
+	echo "  0023 = steamac: no __restrict on buffers sharing an argument buffer binding (the cast of a non-restrict"
+	echo "         declaration dropped the member's qualifier and Metal rejected it: vkd3d-proton's raw SSBO heap,"
+	echo "         Stellar Blade's compute pipelines)"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"

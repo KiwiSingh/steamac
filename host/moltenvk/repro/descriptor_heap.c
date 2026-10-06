@@ -14,8 +14,10 @@
  *    leaves a set handle the next vkUpdateDescriptorSets cannot find, and the context's command stream stops (the
  *    game hung on its first frame).
  * 2. dh_read.comp reads descriptors at element 999997 of a 1000000-descriptor heap: an R32_UINT texel buffer view at
- *    byte 4 (texel offset), a raw SSBO at byte 16, a CBV, and the CBV set's fixed offset buffer (sizes and texel
- *    offset come from the sets' aux buffers, which start after the variable descriptors).
+ *    byte 4 (texel offset), a raw SSBO at byte 16 through two declarations of its binding (restrict uint[] and
+ *    uvec4[]: the second one's cast dropped __restrict and the pipeline did not compile), a CBV, and the CBV set's
+ *    fixed offset buffer (sizes and texel offset come from the sets' aux buffers, which start after the variable
+ *    descriptors).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -284,10 +286,10 @@ static void read_heap(const struct heap_set *views, VkQueue queue)
 	CK(vkQueueWaitIdle(queue));
 
 	/* view at byte 4: texel 2 = word 3, 16 texels, texel 16 past the end; raw SSBO at byte 16: word 1 = 105,
-	 * 8 words; CBV v.y = 101; offset buffer 64 bytes = 16 words */
-	const uint32_t want[] = { 103, 16, 0, 105, 8, 101, 16 };
-	expect("element 999997: texel view at 4 (texel 2, size, past the end), raw SSBO at 16 (word 1, length), CBV, "
-	       "fixed offset buffer length", out, want, 7);
+	 * 8 words, as uvec4[0].w word 7; CBV v.y = 101; offset buffer 64 bytes = 16 words */
+	const uint32_t want[] = { 103, 16, 0, 105, 8, 101, 16, 107 };
+	expect("element 999997: texel view at 4 (texel 2, size, past the end), raw SSBO at 16 (word 1, length, uvec4 alias), "
+	       "CBV, fixed offset buffer length", out, want, 8);
 	vkDestroyDescriptorPool(dev, pool, NULL);
 }
 
