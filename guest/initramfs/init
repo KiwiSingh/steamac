@@ -43,6 +43,7 @@
 #   steamac.config=1   apply the launcher's config payload disk (see "config payload")
 #   steamac.ssh=0|1    0: no SSH server this boot (see "SSH switch"); 1/absent: as enabled
 #   steamac.tz=ZONE    the Mac's time zone: /etc/localtime follows it (see "time zone")
+#   steamac.clock24=0|1  Mac 12/24-hour format (layer mac-clock-format before Steam/Plasma)
 #   init=PATH          init in the new root (default /sbin/init)
 
 PATH=/bin

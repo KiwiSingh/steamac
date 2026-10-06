@@ -52,5 +52,6 @@ done
 
 export XDG_RUNTIME_DIR=$nested
 export PATH=/usr/lib/steamac/desktop-bin:$PATH
+/usr/lib/steamac/mac-clock-format || true
 echo "steamac: Plasma desktop ${size} on $DISPLAY"
 dbus-run-session startplasma-wayland

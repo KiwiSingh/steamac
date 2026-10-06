@@ -251,8 +251,8 @@ final class LauncherSettings: ObservableObject {
     @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
     /// New-version check when the app starts (UpdateChecker; never in development builds); applies now.
     @Published var checkForUpdates = true { didSet { save(.checkForUpdates, checkForUpdates) } }
-    /// The guest's time zone follows the Mac (MacTime: kernel cmdline steamac.tz=) until it is
-    /// changed inside SteamOS; next start.
+    /// The guest's time zone and 12/24-hour format follow the Mac (MacTime kernel parameters)
+    /// until each is changed inside SteamOS; next start.
     @Published var followMacTime = true { didSet { save(.followMacTime, followMacTime) } }
     // Display
     @Published var dpiSource = DPISource.auto { didSet { save(.dpiSource, dpiSource.rawValue) } }

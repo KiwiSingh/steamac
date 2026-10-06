@@ -81,15 +81,24 @@ settings stays. Launcher 1.4 shipped both settings off (`"DisableShaderCache" "1
 `"EnableShaderBackgroundProcessing" "0"`); on the first Steam start after updating, the script turns
 both back on once, but only if both are still exactly those values.
 
-SteamOS takes the Mac's time zone (Settings > General **Use the Mac's time zone**, on by default,
-applies on the next start). On every boot the launcher adds `steamac.tz=<IANA zone of the Mac>`
-(`TimeZone.current`) to the kernel cmdline, and the initramfs points `/etc/localtime` at it (what
-`timedatectl`, Steam's Time zone setting via `steamos-set-timezone` and Steam's clock use). It keeps
-following the Mac until the zone is changed inside SteamOS or Steam: the zone applied last is kept
-in `/etc/steamac/mac-timezone`, and a different current zone is the user's choice, which stays
-(until it is the Mac's zone again). With the setting off, nothing is touched. Steam's 12/24-hour
-clock is not taken from the Mac: Steam keeps it per account (Settings → Time and date → 24-hour
-clock).
+SteamOS takes the Mac's time zone and 12/24-hour clock format (Settings > General
+**Use the Mac's time zone and clock format**, on by default, applies on the next start).
+On every boot the launcher adds `steamac.tz=<IANA zone of the Mac>` (`TimeZone.current`) and
+`steamac.clock24=0|1` (the localized `j` hour template, honoring macOS's **24-hour time** switch).
+The initramfs points `/etc/localtime` at the zone (`timedatectl`, Steam's Time zone setting via
+`steamos-set-timezone`, and Steam's clock). `/etc/steamac/mac-timezone` remembers the last applied
+zone; a different zone chosen inside SteamOS stays (until it is the Mac's zone again).
+Before Steam starts, `/usr/lib/steamac/mac-clock-format` updates `b24HourClock` in the account's
+`userdata/<account>/config/localconfig.vdf`, at
+`UserLocalConfigStore/Software/Valve/Steam/FriendsUI/FriendsUIJSON`. This is Steam's
+Settings → Time and date → 24-hour clock toggle, not a client-wide setting: on a new disk the file
+does not exist before sign-in, so it is applied on the first Steam start **after sign-in**.
+Desktop Mode gets `[Formats] LC_TIME` in `~/.config/plasma-localerc` (`en_GB.UTF-8` for 24-hour,
+`en_US.UTF-8` for 12-hour; this also selects the time/date locale). Last applied values and
+independent user overrides are kept in `~/.config/steamac/mac-clock24.json`: changing the format
+in Steam or Plasma stops following the Mac for that setting, without changing the other.
+With the launcher setting off, no zone or format is touched. A test can explicitly supply
+`--cmdline "console=hvc0 rootwait steamac.clock24=0"` (or `1`) without changing macOS settings.
 
 Boot and shutdown progress does not disappear before `ready`: the first click or keypress in the
 window collapses the full-screen overlay into a progress pill at the bottom center (stage,
@@ -210,7 +219,7 @@ over saved values, but only for that launch: the field displays “overridden by
 
 | Tab | Applies now | On next start |
 |---|---|---|
-| General | boot/shutdown overlay; “Still working…” indicator on GPU idle; “When FX Steam Launcher is in the background”: **Mute sound** (on by default: `krun_snd_set_volume(…, mute)` with a gradual ~150 ms fade-out; volume is restored when returning to the window) and **Pause the game** (off by default: the guest agent freezes only the game in focus — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, downloads, and updates continue running; online games may disconnect). While the agent confirms the freeze (`game-frozen`/`game-thawed`), the window is dimmed, with a “Game paused · Click to resume” card and “— paused” in the title; clicking the window resumes the game and is not passed to the guest; crash reports (`--no-crash-reports`, see below); **Check for updates at startup** (on by default, see “Update check”); frame statistics logging (`--perf-stats`) | full screen at startup; **Use the Mac's time zone** (on by default, see above) |
+| General | boot/shutdown overlay; “Still working…” indicator on GPU idle; “When FX Steam Launcher is in the background”: **Mute sound** (on by default: `krun_snd_set_volume(…, mute)` with a gradual ~150 ms fade-out; volume is restored when returning to the window) and **Pause the game** (off by default: the guest agent freezes only the game in focus — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, downloads, and updates continue running; online games may disconnect). While the agent confirms the freeze (`game-frozen`/`game-thawed`), the window is dimmed, with a “Game paused · Click to resume” card and “— paused” in the title; clicking the window resumes the game and is not passed to the guest; crash reports (`--no-crash-reports`, see below); **Check for updates at startup** (on by default, see “Update check”); frame statistics logging (`--perf-stats`) | full screen at startup; **Use the Mac's time zone and clock format** (on by default, see above) |
 | Display | guest follows window size; Apple's Metal Performance HUD in the upper-right corner of the window (Ctrl+Cmd+P, View → Show Metal Performance HUD) | physical size source (auto from display / DPI / mm — `--dpi`, `--display-mm`), refresh rate (`--refresh`), window size (`--display`): standard resolutions from 1280 × 800 (Steam Deck) to 3840 × 2160 (those that do not fit on the display are marked “larger than this screen”; the window is shrunk as before), “Fit to screen” (largest size for the display, recalculated on every launch), or “Custom…” (W × H fields) |
 | Mouse | auto-capture in games; game list (name from `appmanifest_<appid>.acf`, Default/Auto/Off, remove) | — |
 | Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), whether SteamOS gets a pad and what it appears as (`--no-gamepad`, `--pad`, see “Controller”), swap A/B and X/Y, stick dead zone, live input test | — |

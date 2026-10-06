@@ -45,7 +45,7 @@ struct Options {
     var sshPort = 2222
     /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
     var steamClient = LauncherSettings.SteamClient.deck
-    /// Settings > General "Use the Mac's time zone": kernel cmdline steamac.tz= (MacTime).
+    /// Settings > General "Use the Mac's time zone and clock format": MacTime kernel parameters.
     var macTime = true
     /// Host Vulkan driver of this boot (virglrenderer opens it; VM.start).
     var vulkanDriver = LauncherSettings.VulkanDriver.moltenvk
@@ -119,8 +119,8 @@ struct Options {
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
     vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
-    fullscreen, perf stats, Steam client, Vulkan driver, Mac time zone (Settings > General: adds
-    steamac.tz=<the Mac's zone> to the kernel cmdline unless --cmdline sets it).
+    fullscreen, perf stats, Steam client, Vulkan driver, Mac time zone and 12/24-hour format
+    (Settings > General: adds steamac.tz= and steamac.clock24= unless --cmdline sets them).
     Inside FX Steam Launcher.app, --kernel/--initrd/--disk default to the bundled Image, initramfs and
     layer plus the disk image chosen in Settings > Advanced.
 
@@ -434,7 +434,10 @@ struct Options {
             }
             add("steamac.ssh", o.sshPort == 0 ? "0" : "1")
             add("steamac.steam_client", o.steamClient.rawValue)
-            if o.macTime { add("steamac.tz", MacTime.zone) }
+            if o.macTime {
+                add("steamac.tz", MacTime.zone)
+                add("steamac.clock24", MacTime.clock24.map { $0 ? "1" : "0" })
+            }
             // systemd-fsck answers yes to e2fsck's questions instead of only preening: a /home with errors
             // preen cannot fix (a VM killed mid-write, two VMs on one disk) is repaired at boot instead of
             // failing /home and every unit after it (boot stuck at "Starting SteamOS services").
@@ -536,14 +539,22 @@ struct Options {
     }
 }
 
-/// The Mac's time zone for the guest (Settings > General "Use the Mac's time zone"): kernel cmdline
-/// steamac.tz=, which the initramfs points /etc/localtime at until the zone is changed inside
-/// SteamOS. Each VM process reads it when it starts, so every boot gets the Mac's current zone.
+/// The Mac's time zone and 12/24-hour format, read at every VM start. The guest follows
+/// steamac.tz= and steamac.clock24= until the corresponding setting is changed in SteamOS.
 enum MacTime {
     /// IANA identifier (e.g. Europe/Moscow); nil when it cannot be a kernel parameter.
     static var zone: String? {
         let id = TimeZone.current.identifier
         return isZone(id) ? id : nil
+    }
+
+    /// The "j" template honors macOS's 24-hour override, unlike a locale's default format.
+    static var clock24: Bool? {
+        DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current).map(is24Hour)
+    }
+
+    static func is24Hour(_ pattern: String) -> Bool {
+        pattern.contains("H") || pattern.contains("k")
     }
 
     /// The same check as the initramfs: zoneinfo-relative path characters only.
@@ -552,7 +563,7 @@ enum MacTime {
             && s.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_+-/".unicodeScalars.contains($0)) }
     }
 
-    /// --selftest-settings: zone validation and this Mac's values.
+    /// --selftest-settings: zone validation, clock patterns and this Mac's values.
     static func selfCheck() -> [String] {
         var failures: [String] = []
         for good in ["Europe/Moscow", "America/Argentina/Buenos_Aires", "Etc/GMT+3", "UTC"] where !isZone(good) {
@@ -562,7 +573,14 @@ enum MacTime {
             failures.append("mac time: \(bad) accepted")
         }
         if zone == nil { failures.append("mac time: time zone \(TimeZone.current.identifier) is no kernel parameter") }
-        log("selftest-settings: mac time: steamac.tz=\(zone ?? "-")")
+        for pattern in ["H", "HH", "k", "kk"] where !is24Hour(pattern) {
+            failures.append("mac time: 24-hour pattern \(pattern) rejected")
+        }
+        for pattern in ["h a", "hh a", "K a"] where is24Hour(pattern) {
+            failures.append("mac time: 12-hour pattern \(pattern) accepted")
+        }
+        if clock24 == nil { failures.append("mac time: no localized hour pattern") }
+        log("selftest-settings: mac time: steamac.tz=\(zone ?? "-") steamac.clock24=\(clock24.map { $0 ? "1" : "0" } ?? "-")")
         return failures
     }
 }

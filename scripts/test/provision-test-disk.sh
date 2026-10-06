@@ -35,12 +35,13 @@
 #      CONFIG=1 (boot: + config.img and steamac.config=1), CMDLINE_EXTRA (boot:
 #      e.g. "steamac.ssh=0"), CONSOLE_SCRIPT (boot: file of "wait ERE" / "send
 #      TEXT" / "sleep N" lines run on hvc0 once Steam is ready).
+#      TEST_WORK (default work/scratch/provision): private absolute scratch path.
 # work/out/steamos.img (the user's disk) is never read or written.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 WORK=$REPO/work
-S=$WORK/scratch/provision
+S=${TEST_WORK:-$WORK/scratch/provision}
 export HOME_SIZE_GIB=${HOME_SIZE_GIB:-8}
 . "$REPO/scripts/config.env"
 

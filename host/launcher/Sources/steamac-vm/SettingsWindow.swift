@@ -285,8 +285,8 @@ private struct GeneralTab: View {
             }
             Section {
                 Toggle(isOn: $settings.followMacTime) {
-                    Label2(title: "Use the Mac's time zone",
-                           detail: "SteamOS gets the Mac's time zone at every start, until you change it in SteamOS or Steam.",
+                    Label2(title: "Use the Mac's time zone and clock format",
+                           detail: "SteamOS gets the Mac's time zone and 12/24-hour format at every start, until you change each in SteamOS or Steam.",
                            now: false, key: .followMacTime)
                 }
             }

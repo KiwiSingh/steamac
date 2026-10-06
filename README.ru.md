@@ -81,15 +81,25 @@ Pre-caching (и/или Allow background processing of Vulkan shaders).
 `"EnableShaderBackgroundProcessing" "0"`); при первом старте Steam после обновления скрипт один раз
 включает обе обратно, но только если там всё ещё ровно эти значения.
 
-SteamOS берёт часовой пояс Mac (Settings > General **Use the Mac's time zone**, по умолчанию вкл.,
-применяется при следующем запуске). При каждой загрузке лаунчер добавляет в cmdline ядра
-`steamac.tz=<IANA-пояс Mac>` (`TimeZone.current`), а initramfs направляет на него `/etc/localtime`
-(его используют `timedatectl`, настройка Time zone в Steam через `steamos-set-timezone` и часы Steam).
-Пояс следует за Mac, пока его не изменят внутри SteamOS или Steam: последний применённый пояс
-хранится в `/etc/steamac/mac-timezone`, и если текущий от него отличается, это выбор пользователя, и
-он сохраняется (пока снова не совпадёт с поясом Mac). С выключенной настройкой ничего не трогается.
-12/24-часовой формат часов Steam с Mac не берётся: Steam хранит его для аккаунта (Settings → Time and
-date → 24-hour clock).
+SteamOS берёт часовой пояс и 12/24-часовой формат Mac (Settings > General
+**Use the Mac's time zone and clock format**, по умолчанию вкл., применяется при следующем запуске).
+При каждой загрузке лаунчер добавляет `steamac.tz=<IANA-пояс Mac>` (`TimeZone.current`) и
+`steamac.clock24=0|1` (локализованный шаблон часа `j`, учитывающий переключатель macOS **24-hour time**).
+Initramfs направляет `/etc/localtime` на этот пояс (`timedatectl`, настройка Time zone в Steam
+через `steamos-set-timezone` и часы Steam). `/etc/steamac/mac-timezone` помнит последний применённый
+пояс; другой пояс, выбранный в SteamOS, сохраняется (пока снова не совпадёт с поясом Mac).
+Перед запуском Steam `/usr/lib/steamac/mac-clock-format` записывает `b24HourClock` в файл аккаунта
+`userdata/<account>/config/localconfig.vdf`, в
+`UserLocalConfigStore/Software/Valve/Steam/FriendsUI/FriendsUIJSON`. Это переключатель
+Settings → Time and date → 24-hour clock, а не общая настройка клиента: на новом диске до входа
+файла нет, поэтому формат применяется при первом запуске Steam **после входа в аккаунт**.
+В Desktop Mode задаётся `[Formats] LC_TIME` в `~/.config/plasma-localerc` (`en_GB.UTF-8` для
+24-часового, `en_US.UTF-8` для 12-часового формата; это также выбирает локаль времени/даты).
+Последние применённые значения и независимый выбор пользователя сохраняются в
+`~/.config/steamac/mac-clock24.json`: изменение формата в Steam или Plasma останавливает
+синхронизацию этой настройки с Mac, не затрагивая другую. С выключенной настройкой лаунчера
+пояс и формат не трогаются. Для проверки можно передать
+`--cmdline "console=hvc0 rootwait steamac.clock24=0"` (или `1`), не меняя настройки macOS.
 
 Прогресс загрузки и выключения не пропадает до `ready`: первый клик или клавиша в окне сворачивает
 полноэкранный оверлей в плашку внизу по центру (этап, процент, полоска, строка деталей вроде
@@ -206,7 +216,7 @@ Steam Link и Mac должны находиться в **одной подсет
 
 | Вкладка | Сразу | При следующем запуске |
 |---|---|---|
-| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться). Пока агент подтверждает заморозку (`game-frozen`/`game-thawed`), окно затемнено, с карточкой «Game paused · Click to resume» и заголовком «— paused»; щелчок по окну возвращает игру и в гостя не передаётся; отчёты о сбоях (`--no-crash-reports`, см. ниже); **Check for updates at startup** (по умолчанию вкл., см. «Проверка обновлений»); лог статистики кадров (`--perf-stats`) | полный экран при старте; **Use the Mac's time zone** (по умолчанию вкл., см. выше) |
+| General | оверлей загрузки/выключения; индикатор «Still working…» при простое GPU; «When FX Steam Launcher is in the background»: **Mute sound** (по умолчанию вкл.: `krun_snd_set_volume(…, mute)` с плавным затуханием ~150 мс, громкость возвращается при возврате в окно) и **Pause the game** (по умолчанию выкл.: агент гостя замораживает только игру в фокусе — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, загрузки и обновления продолжают работать; сетевые игры могут отключиться). Пока агент подтверждает заморозку (`game-frozen`/`game-thawed`), окно затемнено, с карточкой «Game paused · Click to resume» и заголовком «— paused»; щелчок по окну возвращает игру и в гостя не передаётся; отчёты о сбоях (`--no-crash-reports`, см. ниже); **Check for updates at startup** (по умолчанию вкл., см. «Проверка обновлений»); лог статистики кадров (`--perf-stats`) | полный экран при старте; **Use the Mac's time zone and clock format** (по умолчанию вкл., см. выше) |
 | Display | гость следует за размером окна; Metal Performance HUD Apple в правом верхнем углу окна (Ctrl+Cmd+P, View → Show Metal Performance HUD) | источник физического размера (авто по экрану / DPI / мм — `--dpi`, `--display-mm`), частота (`--refresh`), размер окна (`--display`): стандартные разрешения от 1280 × 800 (Steam Deck) до 3840 × 2160 (не помещающиеся на экран помечены «larger than this screen», окно ужимается как раньше), «Fit to screen» (наибольший размер для экрана, пересчитывается при каждом запуске) или «Custom…» (поля W × H) |
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), получает ли SteamOS pad и каким он виден (`--no-gamepad`, `--pad`, см. «Контроллер»), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | — |

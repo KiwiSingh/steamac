@@ -81,6 +81,7 @@ write_branch() {
 }
 
 if [[ $desktop == 1 ]]; then
+    /usr/lib/steamac/mac-clock-format || true
     # The stock autostart's arguments; -deckard only for the Frame client.
     if [[ -n $branch ]]; then
         write_branch

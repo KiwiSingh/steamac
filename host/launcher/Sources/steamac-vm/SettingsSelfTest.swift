@@ -11,7 +11,7 @@ import SwiftUI
 /// Also checks that crash-report scrubbing redacts the user, host, computer and Bonjour names,
 /// that a guest process's GPU teardown is no crash report (LineScanner), and the automatic VM size
 /// (VMSizing) on simulated Macs, the update check's version ordering and release selection,
-/// the Mac time zone kernel parameter (MacTime), and the clipboard port's frame codec and
+/// the Mac time zone and clock format kernel parameters (MacTime), and the clipboard port's frame codec and
 /// concealed-item filter (ClipboardSync).
 enum SettingsSelfTest {
     static func run(_ o: Options, overrides: [LauncherSettings.Key: String]) -> Never {
