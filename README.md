@@ -347,6 +347,11 @@ running” instead of mounting the same file systems twice (that corrupts `/home
 outlives a killed launcher while the guest is still shutting down. Launchers built before the lock do
 not check it.
 
+If `/home` still has errors at boot (a VM killed while writing, or a disk used by two launchers that
+predate the lock), SteamOS repairs it instead of stopping at “Starting SteamOS services…”: the launcher
+adds `fsck.repair=yes` to the kernel command line, so systemd-fsck runs e2fsck answering yes rather than
+only the safe preen fixes. Files e2fsck cannot place again end up in `/home/lost+found`.
+
 ## Creating the SteamOS disk without Docker
 
 The app user does not need Docker: the launcher creates the disk itself — through the first-launch

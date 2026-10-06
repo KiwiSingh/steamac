@@ -118,7 +118,8 @@ struct Options {
 
       --kernel PATH        raw arm64 Image (KRUN_KERNEL_FORMAT_RAW)
       --initrd PATH        initramfs
-      --cmdline STR        kernel command line (default: "console=hvc0 loglevel=4 rootwait")
+      --cmdline STR        kernel command line (default: "console=hvc0 loglevel=4 rootwait"; fsck.repair=yes,
+                           steamac.ssh/steam_client/tz are added unless STR sets them)
       --disk PATH[:ro]     raw virtio-blk disk; repeatable, order = vda, vdb, ...
       --cpus N             vCPUs (default: Settings > Advanced, automatic = this Mac's performance
                            cores, 2..8)
@@ -396,6 +397,10 @@ struct Options {
             add("steamac.ssh", o.sshPort == 0 ? "0" : "1")
             add("steamac.steam_client", o.steamClient.rawValue)
             if o.macTime { add("steamac.tz", MacTime.zone) }
+            // systemd-fsck answers yes to e2fsck's questions instead of only preening: a /home with errors
+            // preen cannot fix (a VM killed mid-write, two VMs on one disk) is repaired at boot instead of
+            // failing /home and every unit after it (boot stuck at "Starting SteamOS services").
+            add("fsck.repair", "yes")
         }
         try o.validate()
         return (o, overrides)
