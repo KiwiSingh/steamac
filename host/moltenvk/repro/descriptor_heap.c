@@ -22,7 +22,11 @@
  *    descriptors in a loop header block and uses them in the loop body: SPIRV-Cross declared their access chains
  *    as temporaries ("constant texture3d<float> _45;"), Metal rejected the shader, vkd3d-proton's pipeline failed
  *    and the game exited with "Out of video memory".
+ * 4. Memory per pipeline: 16 variants (specialization constant) of dh_read.comp through the 1000000-descriptor
+ *    heaps must cost < 4 MB each. Declared as array<T, 1000000> in the argument buffer, Metal kept a 32 MB table
+ *    per array and program (~100 MB per pipeline; Stellar Blade's VM process reached 250 GB).
  */
+#include <mach/mach.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +41,16 @@ static VkDevice dev;
 static VkPhysicalDevice pd;
 static const char *dir;
 static int fails;
+
+/* Physical footprint of this process (what macOS counts against memory, incl. compressed and swapped pages). */
+static double footprint_mb(void)
+{
+	task_vm_info_data_t info;
+	mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+	if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+		return 0;
+	return info.phys_footprint / 1048576.0;
+}
 
 struct heap_set {
 	const char *name;
@@ -262,13 +276,33 @@ static void read_heap(const struct heap_set *views, VkQueue queue)
 		.pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
 	VkPipelineLayout layout;
 	CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+	VkShaderModule mod = module("dh_read.comp.spv");
 	VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 		.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		           .module = module("dh_read.comp.spv"), .pName = "main" }, .layout = layout };
+		           .module = mod, .pName = "main" }, .layout = layout };
 	VkPipeline p;
 	VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
 	printf("%-4s create dh_read.comp.spv (VkResult %d)\n", r ? "FAIL" : "OK", r);
 	if (r) exit(1);
+
+	/* 4. Memory per pipeline: variants (specialization constant) of dh_read.comp, each its own Metal program. */
+	enum { VARIANTS = 16 };
+	VkPipeline variants[VARIANTS];
+	double before = footprint_mb();
+	for (uint32_t v = 0; v < VARIANTS; v++) {
+		uint32_t value = v + 1;
+		VkSpecializationMapEntry entry = { 0, 0, 4 };
+		VkSpecializationInfo spec = { 1, &entry, 4, &value };
+		VkComputePipelineCreateInfo vci = ci;
+		vci.stage.pSpecializationInfo = &spec;
+		CK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &vci, NULL, &variants[v]));
+	}
+	double per_pipeline = (footprint_mb() - before) / VARIANTS;
+	/* Metal parses an argument buffer member array<T, 1000000> into a 32 MB table for every program (inline
+	 * heaps cost ~100 MB per pipeline here); a runtime array is one element. */
+	printf("%-4s memory per pipeline using the 1000000-descriptor heaps: %.1f MB (%d variants, limit 4 MB)\n",
+	       per_pipeline < 4 ? "OK" : "FAIL", per_pipeline, VARIANTS);
+	fails += per_pipeline >= 4;
 
 	VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	VkCommandPool cpool;
@@ -278,7 +312,7 @@ static void read_heap(const struct heap_set *views, VkQueue queue)
 	CK(vkAllocateCommandBuffers(dev, &cai, &cmd));
 	VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
 	CK(vkBeginCommandBuffer(cmd, &bi));
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, variants[VARIANTS - 1]);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 4, bind, 0, NULL);
 	vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &k);
 	vkCmdDispatch(cmd, 1, 1, 1);
@@ -290,10 +324,10 @@ static void read_heap(const struct heap_set *views, VkQueue queue)
 	CK(vkQueueWaitIdle(queue));
 
 	/* view at byte 4: texel 2 = word 3, 16 texels, texel 16 past the end; raw SSBO at byte 16: word 1 = 105,
-	 * 8 words, as uvec4[0].w word 7; CBV v.y = 101; offset buffer 64 bytes = 16 words */
-	const uint32_t want[] = { 103, 16, 0, 105, 8, 101, 16, 107 };
+	 * 8 words, as uvec4[0].w word 7; CBV v.y = 101; offset buffer 64 bytes = 16 words; the variant's constant */
+	const uint32_t want[] = { 103, 16, 0, 105, 8, 101, 16, 107, VARIANTS };
 	expect("element 999997: texel view at 4 (texel 2, size, past the end), raw SSBO at 16 (word 1, length, uvec4 alias), "
-	       "CBV, fixed offset buffer length", out, want, 8);
+	       "CBV, fixed offset buffer length, variant", out, want, 9);
 	vkDestroyDescriptorPool(dev, pool, NULL);
 }
 

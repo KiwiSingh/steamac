@@ -58,7 +58,9 @@
 #    stopped the game's command stream); descriptors at element 999997 read back (dh_read.comp), the raw SSBO
 #    through two declarations of its binding, restrict and not (the alias's cast dropped __restrict); a graphics
 #    pipeline whose fragment shader loads heap descriptors in a loop header block (shaders/heap/, Stellar Blade's
-#    shape: SPIRV-Cross declared their access chains as temporaries that Metal rejects).
+#    shape: SPIRV-Cross declared their access chains as temporaries that Metal rejects); memory per pipeline
+#    over 16 specialized variants using the 1000000-descriptor heaps (< 4 MB: Metal kept a 32 MB table per
+#    inline array<T, 1000000> and program, ~100 MB per pipeline).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.

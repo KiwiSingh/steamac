@@ -17,7 +17,11 @@
 // runs one process per configuration.
 //
 //   shaders <dump dir> [--limit N] [--match TEXT] [--threads N] [--math safe|relaxed|fast] [--nonce N]
-//                      [--keep-cache] [--summary]
+//                      [--keep-cache] [--summary] [--reconvert]
+// --reconvert compiles the MSL of this build's SPIRV-Cross (bindings from reflection, runtime arrays as MoltenVK
+// passes them) instead of the dump's: compares a SPIRV-Cross/MoltenVK change on a game's shaders. The process
+// footprint growth over libraries + pipelines is reported (memory Metal keeps per program).
+// SHADERS_BENCH_ERRORS=1 prints the first line of each MSL compile error.
 // --match keeps the shaders whose MSL contains TEXT (the dump also holds other MoltenVK users of the VM, e.g. the
 // Steam client: --match RootConstants keeps vkd3d-proton's).
 #import <Metal/Metal.h>
@@ -27,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <dirent.h>
+#include <mach/mach.h>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -46,7 +51,8 @@ static double ms_since(Clock::time_point t0)
 struct Shader {
 	std::string hash, kind;   // kind: vs, fs, cs, gs
 	std::vector<uint32_t> spv;
-	std::string msl;
+	std::string msl;          // MoltenVK's, from the dump
+	std::string converted;    // this build's SPIRV-Cross (--reconvert compiles it)
 	id<MTLLibrary> lib = nil;
 	double convert_ms = -1, library_ms = -1;
 };
@@ -63,7 +69,7 @@ static std::string read_file(const std::string &path)
 }
 
 // SPIR-V -> MSL with MoltenVK's options and bindings derived from reflection.
-static double convert(const Shader &s, std::string &error)
+static double convert(Shader &s, std::string &error)
 {
 	auto t0 = Clock::now();
 	try {
@@ -79,6 +85,11 @@ static double convert(const Shader &s, std::string &error)
 		o.robust_image_access2 = true;
 		o.add_texture_buffer_offsets = true;
 		o.enable_decoration_binding = true;
+		// MoltenVK's common options (MVKPipeline.mm)
+		o.texture_buffer_native = true;
+		o.null_descriptor = true;
+		o.replace_recursive_inputs = true;
+		o.texel_buffer_texture_width = 16384;
 		if (c.get_execution_model() == spv::ExecutionModelGeometry) {
 			o.for_mesh_pipeline = true;
 			o.capture_output_to_buffer = false;
@@ -101,7 +112,8 @@ static double convert(const Shader &s, std::string &error)
 				b.desc_set = set;
 				b.binding = binding;
 				b.basetype = basetype;
-				b.count = type.array.empty() ? 1 : (type.array[0] ? type.array[0] : 1000000);
+				// Runtime arrays (vkd3d-proton's heaps) as MoltenVK passes them: count 0 (MoltenVK 0033).
+				b.count = type.array.empty() ? 1 : type.array[0];
 				if (!next_index.count(set)) {
 					MSLResourceBinding sb;
 					sb.stage = model;
@@ -113,7 +125,7 @@ static double convert(const Shader &s, std::string &error)
 					next_index[set] = 1;
 				}
 				b.msl_buffer = b.msl_texture = b.msl_sampler = next_index[set];
-				next_index[set] += b.count == 1000000 ? 1 : b.count;
+				next_index[set] += std::max(b.count, 1u);
 				c.add_msl_resource_binding(b);
 			}
 		};
@@ -134,7 +146,7 @@ static double convert(const Shader &s, std::string &error)
 			b.msl_buffer = 20;
 			c.add_msl_resource_binding(b);
 		}
-		c.compile();
+		s.converted = c.compile();
 	} catch (const std::exception &e) {
 		error = e.what();
 		return -1;
@@ -173,6 +185,10 @@ static id<MTLLibrary> compile_library(id<MTLDevice> dev, const Shader &s, const 
 		auto t0 = Clock::now();
 		id<MTLLibrary> lib = [dev newLibraryWithSource:text options:opts error:&err];
 		ms = ms_since(t0);
+		if (!lib && getenv("SHADERS_BENCH_ERRORS")) {
+			NSString *first = [[err.localizedDescription componentsSeparatedByString:@"\n"] firstObject];
+			fprintf(stderr, "%s-%s: %s\n", s.kind.c_str(), s.hash.c_str(), first.UTF8String);
+		}
 		return lib;
 	}
 }
@@ -272,6 +288,15 @@ static double build_pipeline(id<MTLDevice> dev, Shader *vs, Shader *fs, Shader *
 	}
 }
 
+static double footprint_mb()
+{
+	task_vm_info_data_t info;
+	mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+	if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+		return 0;
+	return info.phys_footprint / 1048576.0;
+}
+
 // Deletes Metal's shader cache of command line tools, so the back end compiles cold.
 static void clear_metal_cache()
 {
@@ -334,12 +359,12 @@ int main(int argc, char **argv)
 {
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s <dump dir> [--limit N] [--match TEXT] [--threads N] [--math safe|relaxed|fast] "
-		                "[--nonce N] [--keep-cache] [--summary]\n", argv[0]);
+		                "[--nonce N] [--keep-cache] [--summary] [--reconvert]\n", argv[0]);
 		return 2;
 	}
 	std::string dir = argv[1], math = "safe", match;
 	size_t limit = 0;
-	bool keep_cache = false, summary = false;
+	bool keep_cache = false, summary = false, reconvert = false;
 	unsigned threads = 1;
 	uint64_t nonce = uint64_t(Clock::now().time_since_epoch().count());
 	for (int i = 2; i < argc; i++) {
@@ -351,6 +376,7 @@ int main(int argc, char **argv)
 		else if (a == "--nonce" && i + 1 < argc) nonce = std::stoull(argv[++i]);
 		else if (a == "--keep-cache") keep_cache = true;
 		else if (a == "--summary") summary = true;
+		else if (a == "--reconvert") reconvert = true;
 	}
 	if (!keep_cache)
 		clear_metal_cache();
@@ -419,7 +445,7 @@ int main(int argc, char **argv)
 	size_t convert_failed = 0;
 	std::string first_error;
 	for (auto &s : shaders) {
-		if (summary)
+		if (summary && !reconvert)
 			break;
 		std::string err;
 		s.convert_ms = convert(s, err);
@@ -427,6 +453,8 @@ int main(int argc, char **argv)
 			convert_failed++;
 			if (first_error.empty()) first_error = s.kind + "-" + s.hash + ": " + err;
 		}
+		if (reconvert)
+			s.msl = s.converted;   // compile this build's MSL instead of the dump's (empty when conversion failed)
 	}
 
 	// library + pipeline on `threads` threads
@@ -437,6 +465,7 @@ int main(int argc, char **argv)
 	size_t library_failed = 0, pipeline_failed = 0;
 	std::string library_error, pipeline_error;
 	std::mutex m;
+	double footprint0 = footprint_mb();
 	double lib_wall = parallel(shaders.size(), threads, [&](size_t i) {
 		double ms;
 		id<MTLLibrary> lib = compile_library(dev, shaders[i], math, nonce + i, ms);
@@ -468,10 +497,11 @@ int main(int argc, char **argv)
 		}
 	});
 
+	double footprint = footprint_mb() - footprint0;
 	const char *label = keep_cache ? "warm" : "cold";
 	if (summary) {
-		printf("%2u thread%s %s: libraries %7.1f s, pipelines %7.1f s, total %7.1f s\n", threads, threads == 1 ? " " : "s",
-		       label, lib_wall / 1000, pipe_wall / 1000, (lib_wall + pipe_wall) / 1000);
+		printf("%2u thread%s %s: libraries %7.1f s, pipelines %7.1f s, total %7.1f s, memory +%.0f MB\n", threads,
+		       threads == 1 ? " " : "s", label, lib_wall / 1000, pipe_wall / 1000, (lib_wall + pipe_wall) / 1000, footprint);
 		return 0;
 	}
 	printf("\nper shader / pipeline, %u thread%s, %s (ms)\n", threads, threads == 1 ? "" : "s", label);
@@ -503,7 +533,8 @@ int main(int argc, char **argv)
 	for (size_t i = 0; i < 5 && i < slow.size(); i++)
 		printf("%s-%s %.0f ms (%zu KB MSL)%s", slow[i]->kind.c_str(), slow[i]->hash.c_str(), slow[i]->library_ms,
 		       slow[i]->msl.size() / 1024, i < 4 ? ", " : "\n");
-	printf("wall: libraries %.1f s, pipelines %.1f s\n", lib_wall / 1000, pipe_wall / 1000);
+	printf("wall: libraries %.1f s, pipelines %.1f s; memory +%.0f MB (%.1f MB per pipeline)\n", lib_wall / 1000,
+	       pipe_wall / 1000, footprint, pipeline_ms.empty() ? 0.0 : footprint / pipeline_ms.size());
 	if (convert_failed) printf("convert failures: %zu (first: %s)\n", convert_failed, first_error.c_str());
 	if (library_failed) printf("library failures: %zu (first: %s)\n", library_failed, library_error.c_str());
 	if (pipeline_failed) printf("pipeline failures: %zu (first: %s)\n", pipeline_failed, pipeline_error.c_str());

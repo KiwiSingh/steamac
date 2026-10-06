@@ -258,6 +258,10 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0032 = steamac: variable-count descriptor sets with buffer sizes (UBO/SSBO, texel buffers with texel"
 	echo "         offsets) took one size slot per element twice; exactly sized pools ran out (vkd3d-proton's"
 	echo "         descriptor heaps: VK_ERROR_OUT_OF_POOL_MEMORY, Venus stopped the game's command stream)"
+	echo "  0033 = steamac: variable-count bindings of Metal 3 argument buffer sets are runtime arrays in shaders"
+	echo "         (SPIRV-Cross 0027): declared with their full count (1000000, vkd3d-proton's heaps) Metal kept a"
+	echo "         32 MB table per array and program (~100 MB per pipeline; Stellar Blade's VM reached 250 GB);"
+	echo "         pipeline states also compile ~7x faster"
 	echo "SPIRV-Cross patches (host/moltenvk/patches/spirv-cross):"
 	for p in "$here"/patches/spirv-cross/*.patch; do echo "  $(basename "$p")"; done
 	echo "  0001/0002 = KhronosGroup/SPIRV-Cross 35f52882+da223760 and 0706157e (PR #2666), library only"
@@ -319,6 +323,9 @@ mvk_version=$(sed -n 's/.*"api_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1
 	echo "  0026 = steamac: a copy (OpCopyObject) of an access chain is the same lvalue: MSL dereferenced it"
 	echo "         ('*_117[_192] = ...', Stellar Blade's compute pipelines) and stores through it did not count"
 	echo "         as writes (a constant-initialized array became a const lookup table)"
+	echo "  0027 = steamac: runtime arrays of descriptors without rich descriptors (MoltenVK's layout): the set"
+	echo "         becomes a device argument buffer, buffer lengths come from the size buffer per element; a"
+	echo "         runtime binding declared as a sized array in the shader uses the shader's size"
 	echo
 	echo "Geometry shader emulation limits: no GS instancing (Invocations > 1); B8G8R8A8 and packed"
 	echo "  (2_10_10_10, 11_11_10) vertex formats are not swizzled/unpacked by the object stage; vertex outputs are"
