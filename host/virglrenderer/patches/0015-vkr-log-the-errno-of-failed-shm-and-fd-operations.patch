@@ -1,0 +1,267 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: steamac <steamac@local>
+Date: Wed, 7 Oct 2026 00:00:00 +0000
+Subject: [PATCH] vkr: log the errno of failed shm and fd operations; explain
+ failed asynchronous allocations
+
+STEAMAC-G (Left 4 Dead 2 on KosmicKrisp): "proxy: invalid reply for blob
+23391", then "vkAllocateMemory failed: VkResult -1, size 16384, memory type
+1", then "failed to look up object 23393 of type 8" and the context died.
+Every host-visible guest allocation is a POSIX shm whose fds this process
+keeps (the memory's shm, the blob, the blob's resource; the VMM keeps its
+own dup), and steamac-vm ran with the soft RLIMIT_NOFILE of 256 a Finder
+launch gets.  The blob export's dup failed without a word (the render
+server replied without an fd), then shm_open in vkAllocateMemory, reported
+as VK_ERROR_OUT_OF_HOST_MEMORY.
+
+Failed shm creation, mapping and fd duplication for host memory, blob
+exports and shm resources are now logged with their errno ("... failed:
+Too many open files (RLIMIT_NOFILE 256)"), and an allocation that failed
+on EMFILE / ENFILE returns VK_ERROR_TOO_MANY_OBJECTS (as the gbm path).  A
+blob request for a memory object that does not exist is logged.  A failed
+shm dup no longer marks the memory as exported, so a later export can
+succeed.
+
+A failed vkAllocateMemory stays fatal at the memory's first use: Venus
+submits it without waiting for the reply (vn_device_memory_alloc_simple),
+the application already holds the memory, and the protocol has no way to
+tell it.  A stand-in object would let binds succeed on memory that is not
+there.  The failure log now says so and names the memory id.
+---
+diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
+index 0a5c9e8c..5f88ee95 100644
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -7,6 +7,7 @@
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <sys/resource.h>
+ 
+ #include "util/u_debug.h"
+ #include "vn_protocol_renderer_info.h"
+@@ -252,6 +253,24 @@ vkr_log(const char *fmt, ...)
+    va_end(va);
+ }
+ 
++void
++vkr_log_errno(int err, const char *what_fmt, ...)
++{
++   char what[256];
++   va_list va;
++
++   va_start(va, what_fmt);
++   vsnprintf(what, sizeof(what), what_fmt, va);
++   va_end(va);
++
++   struct rlimit rl;
++   if (err == EMFILE && !getrlimit(RLIMIT_NOFILE, &rl))
++      vkr_log("%s failed: %s (RLIMIT_NOFILE %llu)", what, strerror(err),
++              (unsigned long long)rl.rlim_cur);
++   else
++      vkr_log("%s failed: %s", what, strerror(err));
++}
++
+ void
+ vkr_extension_table_init(struct vn_info_extension_table *table,
+                          const char *const *exts,
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 935596b7..099713ea 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -210,6 +210,22 @@ vkr_debug_init(void);
+ void
+ vkr_log(const char *fmt, ...);
+ 
++/* steamac: log "<what> failed: <strerror(err)>", with the soft RLIMIT_NOFILE when err is
++ * EMFILE.  Every host-visible guest allocation holds file descriptors of this process
++ * (render server and workers are threads of the VMM), so running out of them shows up
++ * as failed allocations and blob exports.
++ */
++void
++vkr_log_errno(int err, const char *what_fmt, ...) PRINTFLIKE(2, 3);
++
++/* steamac: the VkResult of an allocation that failed on a file descriptor operation */
++static inline VkResult
++vkr_result_from_errno(int err)
++{
++   return err == EMFILE || err == ENFILE ? VK_ERROR_TOO_MANY_OBJECTS
++                                         : VK_ERROR_OUT_OF_HOST_MEMORY;
++}
++
+ static inline uint32_t
+ vkr_api_version_cap_minor(uint32_t version, uint32_t cap)
+ {
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 3d79bc6c..02fbf952 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -390,16 +390,22 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
+    const uint64_t alloc_size = (blob_size + page_size - 1) & ~(page_size - 1);
+ 
+    int fd = os_create_anonymous_file(alloc_size, "vkr-shmem");
+-   if (fd < 0)
++   if (fd < 0) {
++      vkr_log_errno(errno, "creating a %" PRIu64 "-byte shm for resource %u", alloc_size,
++                    res_id);
+       return false;
++   }
+ 
+    void *mmap_ptr = mmap(NULL, alloc_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+    if (mmap_ptr == MAP_FAILED) {
++      vkr_log_errno(errno, "mapping the shm of resource %u", res_id);
+       close(fd);
+       return false;
+    }
+ 
+    const int res_fd = os_dupfd_cloexec(fd);
++   if (res_fd < 0)
++      vkr_log_errno(errno, "duplicating the shm fd of resource %u", res_id);
+    if (res_fd < 0 ||
+        !vkr_context_import_resource_internal(ctx, res_id, alloc_size,
+                                              VIRGL_RESOURCE_FD_SHM, res_fd, mmap_ptr)) {
+@@ -430,8 +436,11 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+    assert(!vkr_context_get_resource(ctx, res_id));
+ 
+    struct vkr_device_memory *mem = vkr_context_get_object(ctx, blob_id);
+-   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY)
++   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY) {
++      vkr_log("blob %" PRIu64 " for resource %u: %s", blob_id, res_id,
++              mem ? "not a memory object" : "no such memory (its allocation failed?)");
+       return false;
++   }
+ 
+    struct virgl_context_blob blob;
+    if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob))
+@@ -450,6 +459,8 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+    if (blob.type == VIRGL_RESOURCE_FD_SHM) {
+       mmap_ptr = mmap(NULL, blob_size, PROT_WRITE | PROT_READ, MAP_SHARED, blob.u.fd, 0);
+       if (mmap_ptr == MAP_FAILED) {
++         vkr_log_errno(errno, "mapping the blob of memory %" PRIu64 " (resource %u)", blob_id,
++                       res_id);
+          close(blob.u.fd);
+          return false;
+       }
+@@ -457,6 +468,8 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+    if (mem->might_export || mmap_ptr) {
+       res_fd = os_dupfd_cloexec(blob.u.fd);
+       if (res_fd < 0) {
++         vkr_log_errno(errno, "duplicating the blob fd of memory %" PRIu64 " (resource %u)",
++                       blob_id, res_id);
+          if (mmap_ptr)
+             munmap(mmap_ptr, blob_size);
+          close(blob.u.fd);
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 7c97347c..2849f711 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -245,31 +245,35 @@ vkr_gbm_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *phys
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
+-static struct vkr_shm *
+-vkr_shm_alloc(uint64_t size)
++static VkResult
++vkr_shm_alloc(uint64_t size, struct vkr_shm **out_shm)
+ {
+    const size_t page_size = getpagesize();
+    const size_t aligned_size = (size + page_size - 1) & ~(page_size - 1);
+ 
+    struct vkr_shm *shm = calloc(1, sizeof(*shm));
+    if (!shm)
+-      return NULL;
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+    shm->fd = os_create_anonymous_file(aligned_size, "vkr-host-mem");
+    if (shm->fd < 0) {
++      const int err = errno;
++      vkr_log_errno(err, "creating a %zu-byte shm for host memory", aligned_size);
+       free(shm);
+-      return NULL;
++      return vkr_result_from_errno(err);
+    }
+ 
+    shm->ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm->fd, 0);
+    if (shm->ptr == MAP_FAILED) {
++      vkr_log_errno(errno, "mapping a %zu-byte shm for host memory", aligned_size);
+       close(shm->fd);
+       free(shm);
+-      return NULL;
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+ 
+    shm->size = aligned_size;
+-   return shm;
++   *out_shm = shm;
++   return VK_SUCCESS;
+ }
+ 
+ /* Map the shm behind a guest-imported resource so it can be imported into the
+@@ -304,6 +308,7 @@ vkr_shm_import(const struct vkr_physical_device *physical_dev,
+ 
+    shm->fd = os_dupfd_cloexec(res->shm_fd);
+    if (shm->fd < 0) {
++      vkr_log_errno(errno, "duplicating the fd of shm resource %u", res->res_id);
+       free(shm);
+       return NULL;
+    }
+@@ -512,11 +517,9 @@ vkr_device_memory_allocate(struct vn_dispatch_context *dispatch,
+       }
+ 
+       /* Allocate shm and import it as host memory. */
+-      shm = vkr_shm_alloc(alloc_info->allocationSize);
+-      if (!shm) {
+-         args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++      args->ret = vkr_shm_alloc(alloc_info->allocationSize, &shm);
++      if (args->ret != VK_SUCCESS)
+          return;
+-      }
+ 
+       uint32_t type_bits;
+       args->ret = vkr_get_host_pointer_memory_type_bits(dev, shm->ptr, &type_bits);
+@@ -694,10 +697,21 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+ 
+    if (args->ret != VK_SUCCESS) {
+       const struct vkr_resource *res = res_id ? vkr_context_get_resource(ctx, res_id) : NULL;
++      /* Venus submits vkAllocateMemory without waiting for the reply (Mesa's
++       * vn_device_memory_alloc_simple; only VN_PERF=no_async_mem_alloc waits): the guest
++       * already handed the memory to the application, and nothing in the protocol tells
++       * it the allocation failed.  Binding, mapping or exporting it references an object
++       * that does not exist, which is fatal; a stand-in object would let the GPU access
++       * memory that is not there.  Only freeing it is tolerated (vkr_dispatch_command).
++       */
+       vkr_log("vkAllocateMemory failed: VkResult %d, size %" PRIu64
+-              ", memory type %u, import %s (res %u fd_type %d), export types 0x%x",
++              ", memory type %u, import %s (res %u fd_type %d), export types 0x%x; memory "
++              "%" PRIu64 " does not exist and the guest, which does not wait for the "
++              "result, loses its context when it uses it",
+               args->ret, (uint64_t)size, mem_type_index, import_kind, res_id,
+-              res ? (int)res->fd_type : -1, export_types);
++              res ? (int)res->fd_type : -1, export_types,
++              (uint64_t)vkr_cs_handle_load_id((const void **)args->pMemory,
++                                              VK_OBJECT_TYPE_DEVICE_MEMORY));
+    }
+ }
+ 
+@@ -981,13 +995,19 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+    }
+ 
+    if (mem->shm) {
++      const int fd = os_dupfd_cloexec(mem->shm->fd);
++      if (fd < 0) {
++         vkr_log_errno(errno, "exporting memory %" PRIu64 " as a blob (dup of its shm fd)",
++                       (uint64_t)mem->base.id);
++         return false;
++      }
+       mem->exported = true;
+       *out_blob = (struct virgl_context_blob){
+          .type = VIRGL_RESOURCE_FD_SHM,
+-         .u.fd = os_dupfd_cloexec(mem->shm->fd),
++         .u.fd = fd,
+          .map_info = map_info,
+       };
+-      return out_blob->u.fd >= 0;
++      return true;
+    }
+ 
+    const bool can_export_dma_buf = mem->valid_fd_types & (1 << VIRGL_RESOURCE_FD_DMABUF);
