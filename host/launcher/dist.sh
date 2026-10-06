@@ -11,7 +11,9 @@
 #   host/launcher/dist.sh [--no-notarize]
 #
 # Env:
-#   STEAMAC_SIGN_IDENTITY  codesign identity (default: the keychain's only "Developer ID Application")
+#   STEAMAC_SIGN_IDENTITY  codesign identity, SHA-1 or name (default: the keychain's only valid
+#                          "Developer ID Application"; signed by SHA-1, so an expired or revoked
+#                          certificate of the same name does not make codesign's lookup ambiguous)
 #   NOTARY_PROFILE         notarytool keychain profile (default steamac-notary), created once with
 #                          xcrun notarytool store-credentials steamac-notary \
 #                              --apple-id <Apple ID> --team-id <team> --password <app-specific password>
@@ -39,13 +41,20 @@ case ${1:-} in
 esac
 [[ -d $SRC ]] || die "missing $SRC (run host/launcher/build.sh)"
 
-identity=${STEAMAC_SIGN_IDENTITY:-}
-if [[ -z $identity ]]; then
-    ids=$(security find-identity -v -p codesigning | awk -F'"' '/"Developer ID Application: / {print $2}' | sort -u)
-    [[ -n $ids ]] || die "no \"Developer ID Application\" identity in the keychain (set STEAMAC_SIGN_IDENTITY)"
-    [[ $(wc -l <<<"$ids") -eq 1 ]] || die "several Developer ID identities, pick one with STEAMAC_SIGN_IDENTITY:"$'\n'"$ids"
-    identity=$ids
+# Valid identities only, as "<SHA-1> <name>".
+valid=$(security find-identity -v -p codesigning \
+    | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "\(Developer ID Application: .*\)"$/\1 \2/p' | sort -u)
+want=${STEAMAC_SIGN_IDENTITY:-}
+if [[ -n $want ]]; then
+    match=$(awk -v w="$want" '$1 == w || substr($0, 42) == w' <<<"$valid")
+else
+    match=$valid
 fi
+[[ -n $match ]] || die "no valid \"Developer ID Application\" identity${want:+ matching '$want'} in the keychain"
+[[ $(wc -l <<<"$match") -eq 1 ]] \
+    || die "several Developer ID identities, pick one (SHA-1 or name) with STEAMAC_SIGN_IDENTITY:"$'\n'"$match"
+sign_id=${match%% *}
+identity=${match#* }
 team=$(sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p' <<<"$identity")
 [[ -n $team ]] || die "cannot read the team ID from identity '$identity'"
 
@@ -79,7 +88,7 @@ if [[ $notarize == 1 ]]; then
 fi
 
 echo "=== signing with \"$identity\" (hardened runtime)"
-sign() { codesign --force --timestamp --options runtime --sign "$identity" "$@"; }
+sign() { codesign --force --timestamp --options runtime --sign "$sign_id" "$@"; }
 main_exe="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 nested=()
 while IFS= read -r -d '' f; do
@@ -127,7 +136,7 @@ mkdir -p "$WORK/dmg"
 ditto "$APP" "$WORK/dmg/$NAME.app"
 ln -s /Applications "$WORK/dmg/Applications"
 hdiutil create -quiet -volname "$NAME" -srcfolder "$WORK/dmg" -fs HFS+ -format ULFO -ov "$WORK/$DMG_NAME"
-codesign --force --timestamp --sign "$identity" "$WORK/$DMG_NAME"
+codesign --force --timestamp --sign "$sign_id" "$WORK/$DMG_NAME"
 
 if [[ $notarize == 1 ]]; then
     echo "=== notarizing the DMG"
