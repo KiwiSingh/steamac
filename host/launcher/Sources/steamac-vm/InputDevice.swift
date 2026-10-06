@@ -240,28 +240,4 @@ enum InputDevices {
                     ids: krun_input_device_ids(bustype: BUS.VIRTUAL, vendor: 0x1af4, product: 0x0002, version: 1),
                     capabilities: [EV.KEY: mouseButtons, EV.REL: [REL.X, REL.Y] + wheels])
     }
-
-    /// The guest's gamepad, as the kernel driver of the real controller exposes it, so SDL's
-    /// GUID-based mapping (bus, vendor, product, version) and Steam recognise it:
-    /// - xbox360: drivers/input/joystick/xpad.c, XTYPE_XBOX360 (dpad as hat, triggers as axes);
-    /// - dualSense / dualShock4: hid-playstation / hid-sony for a USB pad (version 0x8111, face
-    ///   buttons by position, digital L2/R2 besides ABS_Z/ABS_RZ) — SDL's
-    ///   030000004c050000{e60c,cc09}000011810000 mappings; Steam shows PlayStation glyphs.
-    ///   Touchpad, gyro, lightbar and rumble are separate HID features this evdev device lacks.
-    static func gamepad(_ pad: GuestPad) -> InputDevice {
-        let stick = AbsAxis(min: -32768, max: 32767, fuzz: 16, flat: 128)
-        let trigger = AbsAxis(min: 0, max: 255)
-        let hat = AbsAxis(min: -1, max: 1)
-        let (name, vendor, product, version): (String, UInt16, UInt16, UInt16) = switch pad {
-        case .xbox360: ("Microsoft X-Box 360 pad", 0x045e, 0x028e, 0x0114)
-        case .dualSense: ("Sony Interactive Entertainment DualSense Wireless Controller", 0x054c, 0x0ce6, 0x8111)
-        case .dualShock4: ("Sony Interactive Entertainment Wireless Controller", 0x054c, 0x09cc, 0x8111)
-        }
-        return InputDevice(
-            name: name, serial: "",
-            ids: krun_input_device_ids(bustype: BUS.USB, vendor: vendor, product: product, version: version),
-            capabilities: [EV.KEY: pad.buttonCodes, EV.ABS: GamepadBridge.axisCodes],
-            absInfo: [ABS.X: stick, ABS.Y: stick, ABS.RX: stick, ABS.RY: stick,
-                      ABS.Z: trigger, ABS.RZ: trigger, ABS.HAT0X: hat, ABS.HAT0Y: hat])
-    }
 }

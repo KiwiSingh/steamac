@@ -1,11 +1,16 @@
 import Combine
+import Darwin
 import Foundation
 import GameController
-import IOKit
-import IOKit.hid
 
-/// The gamepad SteamOS sees: the virtio-input device's identity and layout, fixed at boot
-/// (InputDevices.gamepad). Any connected controller drives it (GamepadBridge).
+/// The gamepad SteamOS sees, created by the guest's fx-pad service as a uinput device (PadPort):
+/// the identity and capabilities the real controller's kernel driver exposes, so SDL's GUID-based
+/// mapping (bus, vendor, product, version) and Steam recognise it, plus FF_RUMBLE (Rumble):
+/// - xbox360: drivers/input/joystick/xpad.c, XTYPE_XBOX360 (dpad as hat, triggers as axes);
+/// - dualSense / dualShock4: hid-playstation / hid-sony for a USB pad (version 0x8111, face
+///   buttons by position, digital L2/R2 besides ABS_Z/ABS_RZ) — SDL's
+///   030000004c050000{e60c,cc09}000011810000 mappings; Steam shows PlayStation glyphs.
+///   Touchpad, gyro, lightbar and adaptive triggers are HID features this evdev device lacks.
 enum GuestPad: Equatable {
     case xbox360, dualSense, dualShock4
 
@@ -19,6 +24,14 @@ enum GuestPad: Equatable {
         }
     }
 
+    var identity: (name: String, bus: UInt16, vendor: UInt16, product: UInt16, version: UInt16) {
+        switch self {
+        case .xbox360: return ("Microsoft X-Box 360 pad", BUS.USB, 0x045e, 0x028e, 0x0114)
+        case .dualSense: return ("Sony Interactive Entertainment DualSense Wireless Controller", BUS.USB, 0x054c, 0x0ce6, 0x8111)
+        case .dualShock4: return ("Sony Interactive Entertainment Wireless Controller", BUS.USB, 0x054c, 0x09cc, 0x8111)
+        }
+    }
+
     /// Evdev key codes the device advertises. xpad: X/Y as BTN_X/BTN_Y. hid-playstation /
     /// hid-sony: the same codes by position (square BTN_WEST, triangle BTN_NORTH) plus digital
     /// L2/R2 next to the analog triggers.
@@ -28,53 +41,108 @@ enum GuestPad: Equatable {
         return sony ? common + [BTN.TL2, BTN.TR2] : common
     }
 
-    /// The identity of this boot (logged with the reason).
-    static func resolve(_ type: LauncherSettings.PadType) -> (GuestPad, String) {
-        switch type {
-        case .xbox360: return (.xbox360, "setting")
-        case .dualSense: return (.dualSense, "setting")
-        case .dualShock4: return (.dualShock4, "setting")
-        case .auto:
-            if let (pad, ids) = connectedSony() { return (pad, String(format: "auto: Sony %04x:%04x connected", ids.0, ids.1)) }
-            return (.xbox360, "auto: no DualSense / DualShock 4 connected")
-        }
+    /// Axes (the same for all three): sticks, analog triggers, the dpad as a hat.
+    static let axes: [(code: UInt16, info: AbsAxis)] = {
+        let stick = AbsAxis(min: -32768, max: 32767, fuzz: 16, flat: 128)
+        let trigger = AbsAxis(min: 0, max: 255)
+        let hat = AbsAxis(min: -1, max: 1)
+        return [(ABS.X, stick), (ABS.Y, stick), (ABS.Z, trigger), (ABS.RX, stick), (ABS.RY, stick),
+                (ABS.RZ, trigger), (ABS.HAT0X, hat), (ABS.HAT0Y, hat)]
+    }()
+
+    /// fx.pad `create <bus> <vendor> <product> <version> <keys> <axes> <name>`.
+    var createLine: String {
+        let id = identity
+        let keys = buttonCodes.map(String.init).joined(separator: ",")
+        let axes = GuestPad.axes.map { "\($0.code):\($0.info.min):\($0.info.max):\($0.info.fuzz):\($0.info.flat)" }
+            .joined(separator: ",")
+        return String(format: "create %04x %04x %04x %04x ", id.bus, id.vendor, id.product, id.version)
+            + "\(keys) \(axes) \(id.name)"
     }
 
-    /// A DualSense (Edge) / DualShock 4 among the Mac's HID devices. Read from the IORegistry:
-    /// synchronous, unlike GameController's discovery (its controller list fills in only after the
-    /// app has started, and the guest's devices must be fixed before the VM starts).
-    static func connectedSony() -> (GuestPad, (Int, Int))? {
-        var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOHIDDeviceKey), &iterator) == KERN_SUCCESS else {
-            return nil
+    /// Automatic: the same kind as the controller (its GameController profile).
+    static func matching(_ c: GCController) -> GuestPad {
+        switch c.extendedGamepad {
+        case is GCDualSenseGamepad: return .dualSense
+        case is GCDualShockGamepad: return .dualShock4
+        default: return .xbox360
         }
-        defer { IOObjectRelease(iterator) }
-        while case let service = IOIteratorNext(iterator), service != 0 {
-            defer { IOObjectRelease(service) }
-            func number(_ key: String) -> Int? {
-                IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
-            }
-            guard let vendor = number(kIOHIDVendorIDKey), vendor == 0x054c, let product = number(kIOHIDProductIDKey) else { continue }
-            switch product {
-            case 0x0ce6, 0x0df2: return (.dualSense, (vendor, product))              // DualSense, DualSense Edge
-            case 0x05c4, 0x09cc, 0x0ba0: return (.dualShock4, (vendor, product))     // DualShock 4 v1, v2, USB adapter
-            default: continue
-            }
-        }
-        return nil
     }
 }
 
-/// Feeds the guest's virtual gamepad (GuestPad) from a GameController.framework extended gamepad
-/// (Xbox, DualSense, DualShock, MFi, ...): Settings > Controller picks which one (first connected
-/// by default), swaps A/B and X/Y for Nintendo-style layouts and applies a radial stick deadzone,
-/// all while the VM runs.
+/// The `fx.pad` virtio-console port to the guest's root service fx-pad (`fx-progress-agent pad`,
+/// guest/progress-agent/src/pad.rs), which owns the guest's gamepad as a uinput device:
+///   host → guest  `create <bus> <vendor> <product> <version> <keys> <axes> <name>` (GuestPad),
+///                 `remove`, `ev <type>:<code>:<value> …` (one input frame)
+///   guest → host  `hello` (the service started, without a pad), `rumble <strong> <weak>` (0…65535)
+final class PadPort {
+    static let name = "fx.pad"
+    /// Handed to libkrun: guest → host data is written here.
+    let guestOutputFd: Int32
+    /// Handed to libkrun: host → guest data is read from here.
+    let guestInputFd: Int32
+    private let readFd: Int32
+    private let writeFd: Int32
+
+    init() throws {
+        var out: [Int32] = [0, 0], inp: [Int32] = [0, 0]
+        guard pipe(&out) == 0, pipe(&inp) == 0 else { throw OptionError("pipe: \(String(cString: strerror(errno)))") }
+        readFd = out[0]; guestOutputFd = out[1]
+        guestInputFd = inp[0]; writeFd = inp[1]
+        for fd in out + inp { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        // Never block the main thread if the guest stops reading; a lost frame is followed by
+        // the next one (each carries the changed values) or a full resend after `hello`.
+        _ = fcntl(writeFd, F_SETFL, fcntl(writeFd, F_GETFL) | O_NONBLOCK)
+    }
+
+    /// One host → guest line; false if the pipe did not take it whole.
+    func send(_ line: String) -> Bool {
+        ClockPort.write(writeFd, line)
+    }
+
+    /// Reader thread: every complete line goes to `handler` on the main queue.
+    func start(_ handler: @escaping (String) -> Void) {
+        let t = Thread { [readFd] in
+            var splitter = LineSplitter()
+            var buf = [UInt8](repeating: 0, count: 512)
+            while true {
+                let n = Darwin.read(readFd, &buf, buf.count)
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { break }
+                buf.withUnsafeBytes { p in
+                    splitter.feed(UnsafeRawBufferPointer(rebasing: p[0..<n])) { line in
+                        let line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !line.isEmpty { DispatchQueue.main.async { handler(line) } }
+                    }
+                }
+            }
+        }
+        t.name = "fx.pad"
+        t.start()
+    }
+}
+
+/// Feeds the guest's gamepad (GuestPad over PadPort) from a GameController.framework extended
+/// gamepad (Xbox, DualSense, DualShock, MFi, ...) and plays its rumble on that controller.
+/// Settings > Controller picks which controller (first connected by default), whether SteamOS
+/// gets a pad and what kind ("Appears in SteamOS as"; Automatic = the controller's own kind),
+/// swaps A/B and X/Y for Nintendo-style layouts and applies a radial stick deadzone, all while
+/// the VM runs: the guest's pad comes and goes with the controller and changes kind with it.
 final class GamepadBridge {
-    private let device: InputDevice
-    private let pad: GuestPad
+    private let port: PadPort
     private let settings: LauncherSettings
+    /// `--pad` for this run (wins over the setting).
+    private let typeOverride: LauncherSettings.PadType?
     private var controller: GCController?
+    /// The pad the guest has (created over fx.pad), nil = none.
+    private var guestPad: GuestPad?
+    /// What the guest last got (or, without a pad, the controller's last state).
     private var state = PadState()
+    /// The guest's fx-pad service said `hello`: it can create a pad.
+    private var serviceReady = false
+    /// --input-selftest, control `pad on`: a pad even without a controller.
+    private var testPad = false
+    private let rumble = Rumble()
     private var observers: [NSObjectProtocol] = []
     private var subscriptions: [AnyCancellable] = []
     /// While the VM is paused (suspended, guest asleep): called before anything is sent, with
@@ -86,13 +154,12 @@ final class GamepadBridge {
         var axes: [UInt16: Int32] = [:]
     }
 
-    static let axisCodes: [UInt16] = [ABS.X, ABS.Y, ABS.Z, ABS.RX, ABS.RY, ABS.RZ, ABS.HAT0X, ABS.HAT0Y]
+    static let axisCodes: [UInt16] = GuestPad.axes.map(\.code)
 
-    init(device: InputDevice, pad: GuestPad, settings: LauncherSettings) {
-        self.device = device
-        self.pad = pad
+    init(port: PadPort, settings: LauncherSettings, typeOverride: LauncherSettings.PadType?) {
+        self.port = port
         self.settings = settings
-        state = GamepadBridge.rest(pad)
+        self.typeOverride = typeOverride
     }
 
     /// Everything released, sticks centred.
@@ -134,10 +201,35 @@ final class GamepadBridge {
         subscriptions.append(settings.$controllerID.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             self?.selectController()
         })
+        for p in [settings.$virtualPad.map { _ in () }.eraseToAnyPublisher(), settings.$padType.map { _ in () }.eraseToAnyPublisher()] {
+            subscriptions.append(p.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] in self?.reconcile() })
+        }
         subscriptions.append(settings.$swapABXY.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refresh() })
         subscriptions.append(settings.$stickDeadzone.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refresh() })
+        port.start { [weak self] line in self?.guestLine(line) }
         GCController.startWirelessControllerDiscovery(completionHandler: nil)
         selectController()
+    }
+
+    /// The VM was paused (suspend, guest sleep) / runs again: no rumble while nothing runs.
+    func vmPaused(_ paused: Bool) {
+        rumble.paused = paused
+    }
+
+    private func guestLine(_ line: String) {
+        let w = line.split(separator: " ").map(String.init)
+        if w == ["hello"] {
+            // A (re)started service has no pad: create it again.
+            log("gamepad: the guest's pad service is ready")
+            serviceReady = true
+            guestPad = nil
+            rumble.set(strong: 0, weak: 0)
+            reconcile()
+        } else if w.count == 3, w[0] == "rumble", let strong = UInt16(w[1]), let weak = UInt16(w[2]) {
+            rumble.set(strong: strong, weak: weak)
+        } else {
+            log("gamepad: unknown line \"\(line)\" on \(PadPort.name)")
+        }
     }
 
     private func selectController() {
@@ -153,28 +245,71 @@ final class GamepadBridge {
         if next === controller { return }
         controller?.extendedGamepad?.valueChangedHandler = nil
         controller = next
-        // Release everything the previous controller held.
-        apply(GamepadBridge.rest(self.pad))
-        guard let pad = next?.extendedGamepad else {
+        rumble.attach(next)
+        if let c = next, let pad = c.extendedGamepad {
+            log("gamepad active: \(GamepadBridge.displayName(of: c))")
+            // Keep the Home/PS button for the guest (Steam button) instead of macOS.
+            pad.buttonHome?.preferredSystemGestureState = .disabled
+            pad.buttonOptions?.preferredSystemGestureState = .disabled
+            pad.buttonMenu.preferredSystemGestureState = .disabled
+            pad.valueChangedHandler = { [weak self] pad, _ in self?.update(from: pad) }
+        } else {
             log("gamepad: none connected")
-            return
         }
-        log("gamepad active: \(next.map(GamepadBridge.displayName(of:)) ?? "?") -> virtual \(self.pad.title)")
-        // Keep the Home/PS button for the guest (Steam button) instead of macOS.
-        pad.buttonHome?.preferredSystemGestureState = .disabled
-        pad.buttonOptions?.preferredSystemGestureState = .disabled
-        pad.buttonMenu.preferredSystemGestureState = .disabled
-        pad.valueChangedHandler = { [weak self] pad, _ in self?.update(from: pad) }
-        update(from: pad)
+        let before = guestPad
+        reconcile()
+        if let pad = guestPad, pad == before {
+            // Same pad, another controller: release what the previous one held.
+            apply(GamepadBridge.rest(pad))
+            refresh()
+        }
     }
 
-    /// Swap / deadzone changed: resend the current state with the new mapping.
+    /// The pad the guest should have: none without a controller or with "Virtual controller"
+    /// off; else the kind from "Appears in SteamOS as" (`--pad`), Automatic = the controller's.
+    private func wanted() -> (pad: GuestPad, why: String)? {
+        guard settings.virtualPad, controller != nil || testPad else { return nil }
+        switch typeOverride ?? settings.padType {
+        case .xbox360: return (.xbox360, typeOverride == nil ? "setting" : "--pad")
+        case .dualSense: return (.dualSense, typeOverride == nil ? "setting" : "--pad")
+        case .dualShock4: return (.dualShock4, typeOverride == nil ? "setting" : "--pad")
+        case .auto:
+            guard let c = controller else { return (.xbox360, "automatic, no controller") }
+            return (GuestPad.matching(c), "automatic, like \(GamepadBridge.displayName(of: c))")
+        }
+    }
+
+    /// Create, replace or remove the guest's pad to match `wanted()`.
+    private func reconcile() {
+        guard serviceReady else { return }
+        let want = wanted()
+        guard want?.pad != guestPad else { return }
+        if let old = guestPad {
+            _ = port.send("remove")
+            log("gamepad: removed the \(old.title) from SteamOS")
+        }
+        guestPad = nil
+        rumble.set(strong: 0, weak: 0)
+        guard let want else { return }
+        guard port.send(want.pad.createLine) else {
+            log("gamepad: cannot write to \(PadPort.name)")
+            return
+        }
+        guestPad = want.pad
+        log("gamepad: SteamOS sees a \(want.pad.title) (\(want.why))")
+        // The new device is at rest; send the controller's current state.
+        state = GamepadBridge.rest(want.pad)
+        refresh()
+    }
+
+    /// Swap / deadzone changed, new pad: resend the current state with the current mapping.
     private func refresh() {
         if let pad = controller?.extendedGamepad { update(from: pad) }
     }
 
     private func update(from pad: GCExtendedGamepad) {
-        apply(GamepadBridge.read(pad, as: self.pad, swapABXY: settings.swapABXY, deadzone: Float(settings.stickDeadzone) / 100))
+        apply(GamepadBridge.read(pad, as: guestPad ?? .xbox360, swapABXY: settings.swapABXY,
+                                 deadzone: Float(settings.stickDeadzone) / 100))
     }
 
     private static func axis(_ v: Float) -> Int32 {
@@ -231,25 +366,36 @@ final class GamepadBridge {
     }
 
     private func apply(_ next: PadState) {
-        let pressed = pad.buttonCodes.contains { next.buttons[$0]! && !state.buttons[$0]! }
+        let pressed = next.buttons.contains { $0.value && state.buttons[$0.key] != true }
         if let intercept, intercept(pressed) {
             // Nothing is queued for the paused guest; `state` stays what the guest last got, so
             // the first change after the wake sends the difference (a tapped wake button: none).
             return
         }
-        var events: [(UInt16, UInt16, Int32)] = []
+        guard let pad = guestPad else {
+            state = next
+            return
+        }
+        var events: [String] = []
         for c in pad.buttonCodes where next.buttons[c] != state.buttons[c] {
-            events.append((EV.KEY, c, next.buttons[c]! ? 1 : 0))
+            events.append("\(EV.KEY):\(c):\(next.buttons[c] == true ? 1 : 0)")
         }
         for a in GamepadBridge.axisCodes where next.axes[a] != state.axes[a] {
-            events.append((EV.ABS, a, next.axes[a]!))
+            events.append("\(EV.ABS):\(a):\(next.axes[a] ?? 0)")
         }
         state = next
-        device.send(events)
+        if !events.isEmpty { _ = port.send("ev " + events.joined(separator: " ")) }
     }
 
-    /// --input-selftest: press/release A and push the left stick right, then return to rest.
+    /// --input-selftest: a pad even without a controller, press/release A and push the left stick
+    /// right, then return to rest.
     func injectTestSequence() {
+        testPad = true
+        reconcile()
+        guard guestPad != nil else {
+            log("input selftest: no guest pad (the guest's \(PadPort.name) service has not said hello)")
+            return
+        }
         var s = state
         s.buttons[BTN.SOUTH] = true
         s.axes[ABS.X] = 32767
@@ -257,5 +403,21 @@ final class GamepadBridge {
         s.buttons[BTN.SOUTH] = false
         s.axes[ABS.X] = 0
         apply(s)
+    }
+
+    /// --control-fifo `pad on|off|test|state` (DebugControl).
+    func control(_ args: [String]) {
+        switch args.first {
+        case "on", "off":
+            testPad = args.first == "on"
+            reconcile()
+        case "test":
+            injectTestSequence()
+        case "state":
+            log("control: pad \(guestPad?.title ?? "none"), service \(serviceReady ? "ready" : "not ready"), "
+                + "controller \(controller.map(GamepadBridge.displayName(of:)) ?? "none"), rumble \(rumble.level.strong) \(rumble.level.weak)")
+        default:
+            log("control: pad on|off|test|state")
+        }
     }
 }

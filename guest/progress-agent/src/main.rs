@@ -65,6 +65,10 @@
 //! `fx-progress-agent sleep <action>` replaces systemd-sleep as the ExecStart of
 //! systemd-suspend.service (root): the launcher pauses the whole VM instead of
 //! a guest kernel suspend nothing could wake (sleep.rs, port fx.sleep).
+//!
+//! `fx-progress-agent pad` is the root service fx-pad.service: the guest's
+//! gamepad as a uinput device driven by the launcher, its rumble sent back
+//! (pad.rs, port fx.pad).
 
 mod alive;
 mod clock;
@@ -72,6 +76,7 @@ mod appname;
 mod codec;
 mod collect;
 mod focus;
+mod pad;
 mod port;
 mod shutdown;
 mod sleep;
@@ -394,6 +399,7 @@ fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("clock-sync") => std::process::exit(clock::run()),
         Some("sleep") => std::process::exit(sleep::run(&std::env::args().nth(2).unwrap_or_else(|| "suspend".into()))),
+        Some("pad") => std::process::exit(pad::run()),
         _ => {}
     }
     let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());

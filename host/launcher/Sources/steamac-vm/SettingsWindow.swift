@@ -541,8 +541,8 @@ private struct ControllerTab: View {
             Section {
                 Toggle(isOn: $settings.virtualPad) {
                     Label2(title: "Virtual controller",
-                           detail: "The guest's gamepad (virtio-input devices are fixed at boot).",
-                           now: false, key: .virtualPad)
+                           detail: "SteamOS gets a gamepad while a controller is connected.",
+                           now: true, key: .virtualPad)
                 }
                 Picker(selection: $settings.padType) {
                     Text("Automatic").tag(LauncherSettings.PadType.auto)
@@ -551,10 +551,10 @@ private struct ControllerTab: View {
                     Text("DualShock 4").tag(LauncherSettings.PadType.dualShock4)
                 } label: {
                     Label2(title: "Appears in SteamOS as",
-                           detail: "Button glyphs and layout in Steam. Automatic: DualSense or DualShock 4 when one is "
-                               + "connected at start, else Xbox 360. Buttons, sticks and triggers only (no touchpad, gyro "
-                               + "or rumble).",
-                           now: false, key: .padType)
+                           detail: "Button glyphs and layout in Steam. Automatic: the same kind as the controller "
+                               + "that drives it (DualSense, DualShock 4, else Xbox 360). Buttons, sticks, triggers "
+                               + "and rumble (no touchpad, gyro or lightbar).",
+                           now: true, key: .padType)
                 }
                 .disabled(!settings.virtualPad)
                 Picker(selection: $settings.controllerID) {

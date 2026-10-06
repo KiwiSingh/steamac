@@ -37,7 +37,7 @@ final class LauncherSettings: ObservableObject {
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
-                 .windowWidth, .windowHeight, .windowSizePreset, .virtualPad, .padType, .soundEnabled, .cpus, .memMiB, .sshEnabled,
+                 .windowWidth, .windowHeight, .windowSizePreset, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network,
                  .diskImage, .steamClient, .followMacTime:
                 return true
@@ -74,9 +74,10 @@ final class LauncherSettings: ObservableObject {
         var id: String { rawValue }
     }
 
-    /// Which gamepad SteamOS sees (virtio-input identity, fixed at boot; Settings > Controller).
+    /// Which gamepad SteamOS sees (GuestPad; the guest's pad is created over fx.pad and can
+    /// change while the VM runs; Settings > Controller).
     enum PadType: String, CaseIterable, Identifiable {
-        /// DualSense / DualShock 4 when one is connected to the Mac at start, else Xbox 360.
+        /// The same kind as the controller that drives it: DualSense, DualShock 4, else Xbox 360.
         case auto
         case xbox360
         case dualSense = "dualsense"
@@ -202,6 +203,7 @@ final class LauncherSettings: ObservableObject {
     @Published var autoCaptureGames = true { didSet { save(.autoCaptureGames, autoCaptureGames) } }
     @Published private(set) var games: [Game] = []
     // Controller
+    /// SteamOS gets a gamepad while a controller is connected.
     @Published var virtualPad = true { didSet { save(.virtualPad, virtualPad) } }
     @Published var padType = PadType.auto { didSet { save(.padType, padType.rawValue) } }
     /// "" = first connected controller, else GamepadBridge.identifier(of:).
@@ -421,7 +423,7 @@ final class LauncherSettings: ObservableObject {
             .fixedDPI: dpiSource == .dpi ? fixedDPI : 0,
             .fixedWidthMM: dpiSource == .mm ? fixedWidthMM : 0, .fixedHeightMM: dpiSource == .mm ? fixedHeightMM : 0,
             .refreshRate: refreshRate, .windowWidth: windowWidth, .windowHeight: windowHeight,
-            .windowSizePreset: windowSizePreset, .virtualPad: virtualPad, .padType: padType.rawValue,
+            .windowSizePreset: windowSizePreset,
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
             .diskImage: diskImage, .steamClient: steamClient.rawValue, .followMacTime: followMacTime,

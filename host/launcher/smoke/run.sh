@@ -58,14 +58,14 @@ if [[ $MODE == headless ]]; then
     markers+=("timeout -> poweroff")
 else
     markers+=(
-        'Name="Microsoft X-Box 360 pad"'
+        "pad[create 0003 045e 028e 0114 "
         "window dumped to"
         "progress: kernel"
         "progress: shutdown"
         "input[steamac virtio keyboard] type=1 code=30 value=1"
         "input[steamac virtio mouse] type=1 code=272 value=1"
         "input[steamac virtio mouse] type=2 code=8 value=1"
-        "input[Microsoft X-Box 360 pad] type=1 code=304 value=1"
+        "pad[ev 1:304:1 3:0:32767]"
         "gpio-keys key pressed"
     )
 fi

@@ -52,9 +52,10 @@ struct Options {
     var mouseMode: MouseMode = .auto
     var controlFifo: String?
     var autoCapture: Bool?
+    /// The guest gets a gamepad over fx.pad (`--no-gamepad`: no port, no pad this run).
     var gamepad = true
-    /// Identity of the guest gamepad (Settings > Controller "Appears in SteamOS as").
-    var padType = LauncherSettings.PadType.auto
+    /// `--pad`: what the guest's gamepad is this run (instead of Settings > Controller).
+    var padType: LauncherSettings.PadType?
     var krunLogLevel: UInt32 = 2
     var selftestDisplay = false
     var selftestOut: String?
@@ -153,12 +154,14 @@ struct Options {
                            only for other guest compositors). capture: always click-to-capture.
       --auto-capture on|off  auto mode: capture on click in games, for this run (default: the saved
                            setting, menu Mouse > Auto-Capture Mouse in Games; per-game overrides apply)
-      --no-gamepad         do not create the virtual gamepad
-      --pad TYPE           what the virtual gamepad is in SteamOS (default: Settings > Controller):
-                           auto: DualSense / DualShock 4 when one is connected to the Mac at start, else
-                           xbox360; xbox360: Microsoft X-Box 360 pad (xpad); dualsense, dualshock4: Sony
-                           pad as the Linux hid-playstation / hid-sony drivers expose it (PlayStation
-                           button glyphs in Steam). Any connected controller drives it.
+      --no-gamepad         no virtual gamepad this run (default: Settings > Controller "Virtual
+                           controller", which applies while the VM runs)
+      --pad TYPE           what the virtual gamepad is in SteamOS this run (default: Settings >
+                           Controller): auto: the same kind as the controller that drives it
+                           (DualSense, DualShock 4, else Xbox 360); xbox360: Microsoft X-Box 360 pad
+                           (xpad); dualsense, dualshock4: Sony pad as the Linux hid-playstation /
+                           hid-sony drivers expose it (PlayStation button glyphs in Steam). Any
+                           connected controller drives it; its rumble plays on that controller.
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
       --steam-client C     Steam client SteamOS starts (kernel cmdline steamac.steam_client=C, added on
                            every boot; default: Settings > Advanced "Steam client"):
@@ -435,8 +438,8 @@ struct Options {
         macTime = s.followMacTime
         if given("--steam-client") { ov[.steamClient] = "--steam-client \(steamClient.rawValue)" } else { steamClient = s.steamClient }
         if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
-        if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" } else { gamepad = s.virtualPad }
-        if given("--pad") { ov[.padType] = "--pad \(padType.rawValue)" } else { padType = s.padType }
+        if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" }
+        if let padType { ov[.padType] = "--pad \(padType.rawValue)" }
         if given("--refresh") { ov[.refreshRate] = "--refresh \(refreshRate)" } else { refreshRate = min(240, max(24, s.refreshRate)) }
         if given("--display") {
             ov[.windowWidth] = "--display \(displayWidth)x\(displayHeight)"

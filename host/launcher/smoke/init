@@ -60,6 +60,14 @@ for d in /sys/class/input/event*; do
     esac
 done
 
+# The gamepad comes over the virtio-console port fx.pad (the launcher's GamepadBridge): stand in
+# for the guest's fx-pad service (guest/progress-agent/src/pad.rs) — say hello, print what arrives.
+for p in /sys/class/virtio-ports/*; do
+    [ "$(cat "$p/name" 2>/dev/null)" = fx.pad ] || continue
+    ( exec 4<>"/dev/${p##*/}"; echo hello >&4
+      while read -r line <&4; do echo "pad[$line]"; done ) &
+done
+
 echo "--- network"
 cat > /tmp/udhcpc.sh <<'EOF'
 #!/bin/sh

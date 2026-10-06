@@ -1,0 +1,23 @@
+# steamac: the guest's gamepad. The launcher reads the Mac's controller and
+# drives this service over the virtio-console port fx.pad; the service owns the
+# pad as a uinput device (identity and capabilities of the real controller's
+# kernel driver, created and removed as controllers come and go) and sends the
+# pad's rumble back. See guest/progress-agent/src/pad.rs.
+# Started by udev when the port appears (70-fx-progress.rules); launchers
+# without it have no such port and never start it.
+[Unit]
+Description=FX Steam Launcher gamepad
+ConditionPathExists=/dev/virtio-ports/fx.pad
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamac/fx-progress-agent pad
+Restart=on-failure
+RestartSec=2
+# Root opens the root-only /dev/uinput and port by their mode bits: no capabilities.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes

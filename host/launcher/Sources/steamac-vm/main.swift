@@ -288,23 +288,19 @@ do {
     if let c = options.configPayload { log("config: new SteamOS password pending: \(c.path) attached read-only, \(Provision.configFlag)") }
 
     var inputs: VMInputs?
-    var guestPad = GuestPad.xbox360
     if !options.headless {
-        if options.gamepad {
-            let (pad, why) = GuestPad.resolve(options.padType)
-            guestPad = pad
-            log("gamepad: SteamOS sees a \(pad.title) (\(why))")
-        }
-        inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(),
-                          mouse: InputDevices.mouse(), gamepad: options.gamepad ? InputDevices.gamepad(guestPad) : nil)
+        inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(), mouse: InputDevices.mouse())
     }
 
     let clockPort = try ClockPort()
     // Guest sleep needs the window (overlay, wake input): headless, the guest's sleep fails instead.
     let sleepPort = options.headless ? nil : try SleepPort()
+    // The guest's gamepad follows the Mac's controller (GamepadBridge): needs the window too.
+    let padPort = options.headless || !options.gamepad ? nil : try PadPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    clockPort: clockPort, sleepPort: sleepPort, inputs: inputs, netSocket: Supervisor.netSocket)
+                    clockPort: clockPort, sleepPort: sleepPort, padPort: padPort, inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
+    let gamepad = padPort.map { GamepadBridge(port: $0, settings: settings, typeOverride: options.padType) }
     let sound = SoundControl()
     if vm.hasSound {
         sound.attach(ctx: vm.ctx, settings: settings)
@@ -416,6 +412,7 @@ do {
     // Suspended or asleep: the Mac may sleep.
     suspender.onPausedChange = { paused in
         noPicture.vmPaused = paused
+        gamepad?.vmPaused(paused)
         if paused {
             activity.map(ProcessInfo.processInfo.endActivity)
             activity = nil
@@ -428,7 +425,7 @@ do {
     wc.onWakeRequest = { what in suspender.resume(origin: what) }
     wc.onGuestSizeRequest = { w, h in vm.resizeDisplay(width: w, height: h) }
     let settingsContext = SettingsContext(settings: settings, sound: sound, restart: { lifecycle.requestRestart() },
-                                          vmHasPad: inputs?.gamepad != nil, vmHasSound: vm.hasSound,
+                                          vmHasPad: gamepad != nil, vmHasSound: vm.hasSound,
                                           diskPath: options.disks.first?.path)
     let settingsWindow = SettingsWindowController(context: settingsContext)
     lifecycle.settingsContext = settingsContext
@@ -452,7 +449,6 @@ do {
                      overlay: #selector(Lifecycle.menuOverlay), metalHUD: #selector(Lifecycle.menuMetalHUD))
     wc.installMouseMenu()
     log("input: mouse \(options.mouseMode.rawValue), \(settings.mouseSummary)")
-    let gamepad = inputs?.gamepad.map { GamepadBridge(device: $0, pad: guestPad, settings: settings) }
     // Nothing reaches a paused VM; while SteamOS sleeps (window up) a button press wakes it.
     gamepad?.intercept = { pressed in
         guard suspender.paused else { return false }
@@ -477,7 +473,7 @@ do {
                              base: (options.frameDumpPath as NSString).deletingPathExtension, dump: dumpFrames)
     }
     if let path = options.controlFifo {
-        DebugControl.start(path: path, window: wc, progress: progress, settingsWindow: settingsWindow) { dumpFrames(to: $0) }
+        DebugControl.start(path: path, window: wc, progress: progress, settingsWindow: settingsWindow, gamepad: gamepad) { dumpFrames(to: $0) }
     }
     console.start()
     vm.start()

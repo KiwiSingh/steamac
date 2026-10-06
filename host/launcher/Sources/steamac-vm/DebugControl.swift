@@ -37,12 +37,17 @@ import Foundation
 ///                         retry, close, dsn, dump)
 ///   update …              new-version check (UpdateChecker.control: check, startup, press
 ///                         download|skip|later|ok|releases, dump PATH, state)
+///   pad on|off|test|state  GamepadBridge.control: a guest pad without a controller (as
+///                         --input-selftest) / follow the controller again; press A + push the left
+///                         stick; log the guest pad and the guest's last rumble
 enum DebugControl {
     nonisolated(unsafe) private static var settingsWindow: SettingsWindowController?
+    nonisolated(unsafe) private static var gamepad: GamepadBridge?
 
     static func start(path: String, window wc: WindowController, progress: BootProgress,
-                      settingsWindow: SettingsWindowController, dump: @escaping (String) -> Void) {
+                      settingsWindow: SettingsWindowController, gamepad: GamepadBridge?, dump: @escaping (String) -> Void) {
         self.settingsWindow = settingsWindow
+        self.gamepad = gamepad
         unlink(path)
         guard mkfifo(path, 0o600) == 0 else {
             log("control: cannot create FIFO \(path): \(String(cString: strerror(errno)))")
@@ -180,6 +185,9 @@ enum DebugControl {
             if !LauncherSettings.shared.set(args[0], value) { log("control: set: unknown key or bad value") }
         case "report": MainActor.assumeIsolated { ReportControl.handle(args) }
         case "update": UpdateChecker.shared.control(args)
+        case "pad":
+            guard let gamepad else { log("control: no gamepad bridge (--no-gamepad)"); break }
+            gamepad.control(args)
         default: log("control: unknown command")
         }
     }

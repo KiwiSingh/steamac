@@ -33,7 +33,7 @@ enum PillSelfTest {
         let presenter = Presenter(display: display, renderer: renderer)
         display.sink = presenter
         let W = o.displayWidth, H = o.displayHeight
-        let inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(), mouse: InputDevices.mouse(), gamepad: nil)
+        let inputs = VMInputs(keyboard: InputDevices.keyboard(), tablet: InputDevices.tablet(), mouse: InputDevices.mouse())
         let title = OverlaySelfTest.windowTitleForTest
         let wc = WindowController(title: title, width: W, height: H, renderer: renderer, inputs: inputs, mouseMode: .auto)
         presenter.view = wc.view

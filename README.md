@@ -166,7 +166,7 @@ over saved values, but only for that launch: the field displays “overridden by
 | General | boot/shutdown overlay; “Still working…” indicator on GPU idle; “When FX Steam Launcher is in the background”: **Mute sound** (on by default: `krun_snd_set_volume(…, mute)` with a gradual ~150 ms fade-out; volume is restored when returning to the window) and **Pause the game** (off by default: the guest agent freezes only the game in focus — `systemctl --user freeze app-steam-app<appid>-*.scope`, cgroup v2; Steam, downloads, and updates continue running; online games may disconnect). While the agent confirms the freeze (`game-frozen`/`game-thawed`), the window is dimmed, with a “Game paused · Click to resume” card and “— paused” in the title; clicking the window resumes the game and is not passed to the guest; crash reports (`--no-crash-reports`, see below); **Check for updates at startup** (on by default, see “Update check”); frame statistics logging (`--perf-stats`) | full screen at startup; **Use the Mac's time zone** (on by default, see above) |
 | Display | guest follows window size; Apple's Metal Performance HUD in the upper-right corner of the window (Ctrl+Cmd+P, View → Show Metal Performance HUD) | physical size source (auto from display / DPI / mm — `--dpi`, `--display-mm`), refresh rate (`--refresh`), window size (`--display`): standard resolutions from 1280 × 800 (Steam Deck) to 3840 × 2160 (those that do not fit on the display are marked “larger than this screen”; the window is shrunk as before), “Fit to screen” (largest size for the display, recalculated on every launch), or “Custom…” (W × H fields) |
 | Mouse | auto-capture in games; game list (name from `appmanifest_<appid>.acf`, Default/Auto/Off, remove) | — |
-| Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), swap A/B and X/Y, stick dead zone, live input test | virtual pad (`--no-gamepad`) and what it appears as (`--pad`, see “Controller”) |
+| Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), whether SteamOS gets a pad and what it appears as (`--no-gamepad`, `--pad`, see “Controller”), swap A/B and X/Y, stick dead zone, live input test | — |
 | Sound | output device (System default follows macOS, or a specific CoreAudio device), volume/mute, Low/Normal/Safe buffer — via `krun_snd_set_*` (looked up with `dlsym`; with an older libkrun the fields are disabled with an explanation) | sound (`--no-sound`) |
 | Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH enable/disable + port (`--ssh-port`, `--no-ssh`) and generated password, network (`--no-net`), disk image (`--disk`), Create New Disk…, Steam client (`--steam-client`, see “Steam client”) |
 
@@ -259,20 +259,32 @@ proc on /newroot/proc: Operation not permitted`.
 ## Controller
 
 Any controller macOS's GameController framework supports (Xbox, DualSense, DualShock 4, MFi, …)
-drives one virtual pad in SteamOS (Settings → Controller picks which one; connecting and switching
-controllers works while the VM runs). What that pad is in SteamOS is fixed at boot — Settings →
-Controller → **Appears in SteamOS as** (`--pad auto|xbox360|dualsense|dualshock4`):
+drives one gamepad in SteamOS; Settings → Controller picks which one. The pad is not a virtio-input
+device: the launcher sends it over the virtio-console port `fx.pad` to the guest's root service
+`fx-pad.service` (`fx-progress-agent pad`, started by udev when the port appears), which creates it
+with uinput. So it follows the Mac while the VM runs: it appears when a controller connects (Steam
+shows “Controller Connected”), disappears when the last one goes, and changes kind with it.
+Settings → Controller → **Appears in SteamOS as** (`--pad auto|xbox360|dualsense|dualshock4` for
+one run):
 
-- **Automatic** (default): a DualSense (or Edge) / DualShock 4 connected to the Mac at start makes it
-  a DualSense / DualShock 4 (read from the IORegistry, so the start does not wait for GameController's
-  discovery), otherwise an Xbox 360 controller;
+- **Automatic** (default): the same kind as the controller that drives it — DualSense (or Edge) →
+  DualSense, DualShock 4 → DualShock 4, anything else → Xbox 360 controller;
 - **Xbox 360 controller**: what the kernel's `xpad` driver exposes (`045e:028e`);
 - **DualSense** / **DualShock 4**: what `hid-playstation` / `hid-sony` expose for a USB pad
   (`054c:0ce6` / `054c:09cc`, version `0x8111`, face buttons by position, digital L2/R2 besides the
   analog triggers). Steam's SDL maps it as a PS5 / PS4 controller and shows PlayStation glyphs.
 
-Only buttons, sticks, triggers and the d-pad are forwarded: the touchpad, gyro, rumble, lightbar
-and adaptive triggers are HID features of the real controller that an evdev device does not carry.
+**Rumble.** The pad has `FF_RUMBLE`, like the real drivers, so SDL and Steam rumble it — games
+through Steam Input reach it via Steam's virtual Xbox pad. uinput leaves playback to its user-space
+driver: `fx-pad` implements the kernel's ff-memless rules (delay, length, repetitions, re-upload,
+effects adding up) and sends the combined level, `rumble <strong> <weak>`, to the launcher, which
+plays it with GameController haptics: the strong motor on the left handle, the weak one on the
+right (one level everywhere on controllers without separate handles); nothing while the VM is
+paused. Port protocol: `guest/progress-agent/src/pad.rs`. Touchpad, gyro, lightbar and adaptive
+triggers are HID features of the real controller that this evdev device does not carry.
+
+`--control-fifo` test commands: `pad on` (a pad without a controller, as `--input-selftest` uses),
+`pad off`, `pad test` (A + left stick), `pad state` (the guest's pad and its last rumble level).
 
 ## FX Steam Launcher.app
 
@@ -602,11 +614,11 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 | `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + patches: depth_clip_enable, YCbCr arrays, null descriptors, geometry shader emulation for zink/DXVK (vertex stride, instancing, adjacency, fans, SCALED formats, `gl_in`), transform feedback (DXVK stream output) and its queries (SO statistics), query result availability on copy (DXVK occlusion queries via Venus), atomics on vector components at buffer addresses (BDA, vkd3d-proton), texel buffers with offsets at any texel (vkd3d-proton), writes to small push-descriptor buffers with robustness2, allocation of auxiliary buffers, deferred release of Metal resources, patch hash in the pipeline cache UUID; tests in `repro/` run under Metal validation; `bench/run.sh <libdir>…` compares performance of changes between builds |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + merge with upstream main (venus-protocol 1.1.3) + LINEAR modifier, shm import as host memory, stubs for failed pipelines, recreation of rejected cache, deferred shm unmap, thread QoS |
 | `host/libkrun/` | libkrun v1.19.6 + patches: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), SME mask for M4, 2D resources without virgl, `SET_SCANOUT_BLOB`, SHM blob mapping, Venus fence signaling, virglrenderer logs, `krun_display_resize` (resolution changes on the fly), vCPU/GPU thread QoS |
-| `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, virtual Xbox 360 / DualSense / DualShock 4 pad from GameController.framework, network via gvproxy, VM restart on guest reboot, `--perf-stats` |
+| `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, the guest's Xbox 360 / DualSense / DualShock 4 pad from GameController.framework with rumble (`fx.pad`), network via gvproxy, VM restart on guest reboot, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, everything built in, 4K pages, 16K blob-node alignment, Apple TSO for FEX |
 | `guest/mesa/` | Venus ICD for aarch64 (Proton, gamescope, zink) and x86_64/i386 (FEX graphics provider) |
 | `guest/initramfs/` | boot stage = “bootloader”: A/B slot selection with attempt counter, partsets, overlays for `/etc` and `/usr`; initial provisioning of the launcher-created disk (`steamac.provision=1`: static mkfs.fat, mke2fs, btrfstune in initramfs); `steamac.ssh=0` — no SSH server; launcher config payload (`steamac.config=1`) — new `steamos` password; `steamac.tz=` — the Mac's time zone in `/etc/localtime`; untouched procfs at `/run/steamac/proc` for Flatpak sandboxes |
-| `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, Desktop Mode (Plasma nested in gamescope), masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam background shader processing on by default (`steam-shader-defaults`) |
+| `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, Desktop Mode (Plasma nested in gamescope), masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port) and its root services (`fx.clock`, `fx.sleep`, the uinput gamepad on `fx.pad`), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam Shader Pre-Caching disabled by default (`steam-shader-defaults`) |
 | `scripts/` | build of `work/out/steamos.img`: GPT with Valve's partition layout (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev test of provisioning against a disk from Docker |
 
 The SteamOS root filesystem is not modified: all changes come from initramfs and the layer. Thus
@@ -624,7 +636,10 @@ Verified:
 - all required DXVK features from Proton 11 / DXVK 3.x are visible in the guest (geometryShader,
   shaderCullDistance, depthClipEnable, robustness2 + nullDescriptor, maintenance5/6, …);
 - keyboard, tablet, mouse, and the virtual pad are visible in SteamOS; as a DualSense, Steam's SDL
-  maps it as `PS5 Controller` (type PS5) and shows PlayStation glyphs;
+  maps it as `PS5 Controller` (type PS5) and shows PlayStation glyphs; the pad appears, disappears
+  and changes kind while the VM runs; rumble from SDL and from Steam's virtual pad reaches the
+  launcher (`rumble 49152 16384` for 1.5 s, then 0); playing it on a physical controller is not
+  verified yet;
 - Desktop Mode: Switch to Desktop, the Plasma desktop with mouse input (also letterboxed), Return to
   Gaming Mode, booting straight into the desktop; Flatpak sandboxes start;
 - A→B update via official OTA and rollback;
