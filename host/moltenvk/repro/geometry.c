@@ -46,6 +46,8 @@
  *                                  arrays, the elements must be separate outputs at locations 2 and 3
  *   v + ghelpers + f              GS with float/uint/vector-returning helpers and nested value-returning
  *                                  helpers that emit vertices (DXVK's dxbc-spirv helper signatures)
+ *   vinactive/vduplicate + glin + f  GS object wrapper calling a vertex shader with unused/non-interface
+ *                                  builtin inputs, or two active variables for the same builtin (STEAMAC-1E)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -438,6 +440,10 @@ int main(int argc, char **argv)
 		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "v.vert.spv", "ghelpers.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
 		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_DIRECT },
+		{ "vinactive.vert.spv", "glin.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
+		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_STATIC_STRIDE },
+		{ "vduplicate.vert.spv", "glin.geom.spv", "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
+		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_STATIC_STRIDE },
 		{ "v.vert.spv", "garr.geom.spv", "farr.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
 		  { { 128, 255, 128, 255 }, { 128, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "voff.vert.spv", "zink_passthrough.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,

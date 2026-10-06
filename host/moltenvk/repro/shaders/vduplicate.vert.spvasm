@@ -1,0 +1,47 @@
+; Two active variables for the same vertex builtin. The MSL function declares
+; one argument per builtin, and the GS object wrapper must pass just one.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %main "main" %pos %opos %ocol %position %instance_a %instance_b
+OpName %main "main"
+OpDecorate %pos Location 0
+OpDecorate %opos Location 0
+OpDecorate %ocol Location 1
+OpDecorate %position BuiltIn Position
+OpDecorate %instance_a BuiltIn InstanceIndex
+OpDecorate %instance_b BuiltIn InstanceIndex
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%float = OpTypeFloat 32
+%v2 = OpTypeVector %float 2
+%v4 = OpTypeVector %float 4
+%f0 = OpConstant %float 0
+%f1 = OpConstant %float 1
+%fhalf = OpConstant %float 0.5
+%green = OpConstantComposite %v4 %f0 %f1 %f0 %f1
+%p_in_int = OpTypePointer Input %int
+%p_in_v2 = OpTypePointer Input %v2
+%p_out_v4 = OpTypePointer Output %v4
+%pos = OpVariable %p_in_v2 Input
+%instance_a = OpVariable %p_in_int Input
+%instance_b = OpVariable %p_in_int Input
+%opos = OpVariable %p_out_v4 Output
+%ocol = OpVariable %p_out_v4 Output
+%position = OpVariable %p_out_v4 Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%p = OpLoad %v2 %pos
+%x = OpCompositeExtract %float %p 0
+%y = OpCompositeExtract %float %p 1
+%a = OpLoad %int %instance_a
+%b = OpLoad %int %instance_b
+%delta = OpISub %int %a %b
+%offset = OpConvertSToF %float %delta
+%shifted_x = OpFAdd %float %x %offset
+%p4 = OpCompositeConstruct %v4 %shifted_x %y %fhalf %f1
+OpStore %position %p4
+OpStore %opos %p4
+OpStore %ocol %green
+OpReturn
+OpFunctionEnd
