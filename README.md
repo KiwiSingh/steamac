@@ -547,6 +547,13 @@ Switching changes the Venus driver identity (pipeline cache UUID), so Steam and 
 shader caches. A pipeline the host driver cannot build is a placeholder in virglrenderer: its draws
 and dispatches are dropped, the driver never sees `VK_NULL_HANDLE`.
 
+Every host-visible guest allocation is a POSIX shm whose file descriptors stay open in the VM
+process (about four per mapped allocation), and a Finder launch starts with a soft limit of 256
+descriptors: past a few dozen such allocations games lost their GPU context (STEAMAC-G, Left 4 Dead
+2). The VM process raises its soft limit to `kern.maxfilesperproc` at start (logged as “file
+descriptors: soft limit 256 → N”); virglrenderer logs the errno of a failed shm or descriptor
+operation (“… failed: Too many open files (RLIMIT_NOFILE 256)”).
+
 Checks without a VM: `host/kosmickrisp/build.sh` runs `host/moltenvk/probe` and the repros
 (`REPRO_DRIVER=kosmickrisp host/moltenvk/repro/run.sh <dylib>`, through the Khronos loader, test
 only) on the staged driver; `host/virglrenderer/build.sh` runs `venus_check` with each installed driver.

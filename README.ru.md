@@ -537,6 +537,13 @@ Settings, сохраняется. virglrenderer открывает
 собирают кэши шейдеров. Конвейер, который драйвер хоста не смог собрать, остаётся заглушкой в
 virglrenderer: его draw и dispatch отбрасываются, `VK_NULL_HANDLE` до драйвера не доходит.
 
+Каждое host-visible выделение памяти гостя — POSIX shm, чьи файловые дескрипторы остаются открытыми
+в процессе ВМ (около четырёх на отображённое выделение), а запуск из Finder начинается с мягкого
+лимита в 256 дескрипторов: после нескольких десятков таких выделений игры теряли GPU-контекст
+(STEAMAC-G, Left 4 Dead 2). Процесс ВМ при старте поднимает мягкий лимит до `kern.maxfilesperproc`
+(в логе «file descriptors: soft limit 256 → N»); virglrenderer пишет errno неудавшейся операции с
+shm или дескриптором («… failed: Too many open files (RLIMIT_NOFILE 256)»).
+
 Проверки без ВМ: `host/kosmickrisp/build.sh` гоняет `host/moltenvk/probe` и repro
 (`REPRO_DRIVER=kosmickrisp host/moltenvk/repro/run.sh <dylib>`, через Khronos-загрузчик, только для
 тестов) на собранном драйвере; `host/virglrenderer/build.sh` гоняет `venus_check` с каждым

@@ -73,6 +73,11 @@
 # 18. device_lost.c (KosmicKrisp only): a device loss must be printed on stderr (STEAMAC-G: a release build lost
 #    the device silently and Venus only logged "vkQueueSubmit resulted in CS error"); the runtime's queue-loss
 #    path (a timeline signal of value 0) stands in for a failed Metal command buffer, which can't be provoked.
+# 19. host_memory.c: 16 KiB host-visible allocations as virglrenderer makes them (POSIX shm imported as host memory,
+#    the shm fd plus two dups per mapped allocation; STEAMAC-G: Left 4 Dead 2's context died after a blob export and
+#    shm_open failed): at a Finder launch's soft RLIMIT_NOFILE of 256 they run out of fds within 256 / 3 allocations,
+#    the driver never failing; at the limit steamac-vm raises itself to, 8192 live ones, 20000 free + allocate rounds and
+#    8192 live plain allocations of that type succeed, and every fd is closed after the frees.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
 # All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
@@ -251,3 +256,6 @@ if [ "$driver" = kosmickrisp ]; then
 	build device_lost
 	"$work/device_lost"
 fi
+
+build host_memory
+"$work/host_memory"

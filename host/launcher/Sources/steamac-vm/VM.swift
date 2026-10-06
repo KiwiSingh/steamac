@@ -39,6 +39,7 @@ final class VM {
     init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
          clockPort: ClockPort?, sleepPort: SleepPort?, padPort: PadPort?, clipboardPort: ClipboardPort?,
          inputs: VMInputs?, netSocket: String?) throws {
+        VM.raiseFileLimit()
         try krun("krun_init_log", krun_init_log(KRUN_LOG_TARGET_DEFAULT, o.krunLogLevel, UInt32(KRUN_LOG_STYLE_AUTO), 0))
         ctx = UInt32(try krun("krun_create_ctx", krun_create_ctx()))
         try krun("krun_set_vm_config", krun_set_vm_config(ctx, UInt8(o.cpus), UInt32(o.memMiB)))
@@ -129,6 +130,33 @@ final class VM {
         // macOS/aarch64: an eventfd wired to libkrun's gpio-keys device (graceful shutdown key).
         shutdownFd = krun_get_shutdown_eventfd(ctx)
         if shutdownFd < 0 { log("warning: krun_get_shutdown_eventfd: \(shutdownFd)"); shutdownFd = -1 }
+    }
+
+    /// A Finder launch starts with a soft RLIMIT_NOFILE of 256. virglrenderer runs in this process
+    /// (render server and workers are threads) and every host-visible guest allocation is a POSIX
+    /// shm: about four descriptors per mapped allocation (the memory's shm, the blob, the blob's
+    /// resource, libkrun's export). A game past a few dozen of them ran out: the blob export failed
+    /// ("proxy: invalid reply for blob"), then shm_open in vkAllocateMemory, and the guest's Venus
+    /// context died at the memory's first use (STEAMAC-G). The soft limit goes to the most the
+    /// kernel allows a process (kern.maxfilesperproc, at most the hard limit).
+    static func raiseFileLimit() {
+        var rl = rlimit()
+        var perProc: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard getrlimit(RLIMIT_NOFILE, &rl) == 0,
+              sysctlbyname("kern.maxfilesperproc", &perProc, &size, nil, 0) == 0, perProc > 0 else {
+            log("warning: RLIMIT_NOFILE / kern.maxfilesperproc unreadable: \(String(cString: strerror(errno)))")
+            return
+        }
+        let want = min(rl.rlim_max, rlim_t(perProc))
+        guard rl.rlim_cur < want else { return }
+        let was = rl.rlim_cur
+        rl.rlim_cur = want
+        if setrlimit(RLIMIT_NOFILE, &rl) == 0 {
+            log("file descriptors: soft limit \(was) → \(want)")
+        } else {
+            log("warning: setrlimit(RLIMIT_NOFILE, \(want)): \(String(cString: strerror(errno))); soft limit stays \(was)")
+        }
     }
 
     /// Runs the VMM on a dedicated thread. libkrun exit()s the process when the guest stops.
