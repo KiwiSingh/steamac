@@ -14,7 +14,8 @@
 #    as gamescope creates its device, and with robustBufferAccess + robustBufferAccess2 (bounds-checked
 #    MSL; the packed mat3x4 u_ctm[] select of the composite shaders failed to compile).
 # 2. geometry.c: shaders/ (zink-style passthrough geometry shader with gl_PrimitiveIDIn,
-#    list and strip draws, an array output varying: one mesh vertex member per element) and
+#    list and strip draws, an array output varying: one mesh vertex member per element; DXVK-style
+#    value-returning helpers, also nested helpers emitting vertices) and
 #    draws/dispatches with a VK_NULL_HANDLE pipeline bound (what Venus replays when host pipeline
 #    creation failed).
 # 3. depth_stencil.c: depth/stencil images with the usages zink gives GL renderbuffers (with
