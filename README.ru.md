@@ -642,9 +642,20 @@ email (обязателен, запоминается на этом Mac — чт
   `dmesg`, `systemctl --failed`, `os-release`, `layer-release`, `/proc/cmdline`, `df`/`free`, хвосты
   логов клиента Steam (`console_log`, `stderr`, `bootstrap_log`, `compat_log`, `connection_log`,
   `webhelper`, `cef_log`, `shader_log`, `steamui_*`) и Proton (`~/steam-*.log` от `PROTON_LOG=1`, `version` и
-  `config_info` префиксов в `compatdata`). Steam ID (`[U:1:…]`, 7656119…), имена аккаунтов и
-  персон Steam (из `loginusers.vdf`/`registry.vdf`) и email заменяются заглушками до упаковки;
-  `collect-notes.txt` в архиве перечисляет, что удалось прочитать;
+  `config_info` префиксов в `compatdata`), build ID / манифест Steam / конфигурация FEX,
+  параметры памяти, необязательный лог FEX и последние 512 КиБ `game.log.txt` American Truck
+  Simulator. Для сбоя эмулятора ATS задайте параметры запуска в Steam
+  `FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%`, повторите сбой
+  и отправьте отчёт: в него войдут последние 512 КиБ лога. Затем уберите параметры запуска. Root-хук
+  экспортирует сведения о завершённых дампах только для `steamos` (владелец root, режим 0640);
+  сами core-файлы остаются закрытыми и никогда не прикладываются. `coredump-pending.txt`
+  перечисляет ещё обрабатываемые дампы: отчёт их не ждёт; после завершения отправьте новый.
+  Разбор стека учитывает пространство имён pressure-vessel, если у библиотек есть символы
+  (JIT-код FEX может остаться без символов). Лимиты обработки core не снижены: иначе большие
+  дампы лишатся стека, а `Storage=none` всё равно пишет полный временный core. Steam ID,
+  имена аккаунтов/персон и email заменяются заглушками; `collect-notes.txt` перечисляет,
+  что удалось прочитать. По SSH тот же очищенный архив доступен командой
+  `/usr/lib/steamac/fx-progress-agent collect > /tmp/steamos-logs.tar.gz`;
 - **Include a screenshot of the VM window** (выключено по умолчанию: на картинке может быть имя
   аккаунта Steam и друзья).
 

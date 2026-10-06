@@ -1,0 +1,30 @@
+#!/bin/bash
+# Export only the session user's completed crash metadata, never core bytes.
+# systemd-coredump runs this after processing finishes; the session collector
+# cannot read private cores created inside pressure-vessel's user namespace.
+set -euo pipefail
+export PATH=/usr/bin:/bin LC_ALL=C SYSTEMD_COLORS=0 SYSTEMD_PAGER=
+umask 077
+uid=$(id -u steamos)
+gid=$(id -g steamos)
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+boot_match="_BOOT_ID=${boot_id//-/}"
+dir=/run/steamac-coredumps
+install -d -o root -g "$gid" -m 0750 "$dir"
+exec 9>"$dir/.lock"
+flock 9
+# The coredump worker submits the entry asynchronously. Flush journald before
+# querying it, otherwise ExecStopPost can race ahead of the completed entry.
+timeout -k 1 5 journalctl --sync
+for kind in list info; do
+    tmp=$(mktemp "$dir/.report.XXXXXX")
+    trap 'rm -f "$tmp"' EXIT
+    selector=()
+    if [[ $kind == info ]]; then selector=(-1); fi
+    # Empty journals are not failures; preserve coredumpctl's diagnostic too.
+    timeout -k 1 5 coredumpctl --quiet --no-pager "${selector[@]}" "$kind" "$boot_match" "COREDUMP_UID=$uid" > "$tmp" 2>&1 || :
+    chown "root:$gid" "$tmp"
+    chmod 0640 "$tmp"
+    mv -f "$tmp" "$dir/$kind.txt"
+    trap - EXIT
+done

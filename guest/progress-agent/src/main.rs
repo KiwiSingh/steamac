@@ -408,6 +408,7 @@ fn main() {
         Some("sleep") => std::process::exit(sleep::run(&std::env::args().nth(2).unwrap_or_else(|| "suspend".into()))),
         Some("pad") => std::process::exit(pad::run()),
         Some("clipboard") => std::process::exit(clipboard::run()),
+        Some("collect") => std::process::exit(collect::run_cli()),
         _ => {}
     }
     let port_path = std::env::var("FX_PROGRESS_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());

@@ -134,6 +134,24 @@ impl Drop for Collector {
 }
 
 // MARK: collection
+/// The same scrubbed bundle as Report a Problem, for guest SSH diagnostics.
+pub fn run_cli() -> i32 {
+    use std::io::Write;
+    match collect("cli") {
+        Ok(data) => match std::io::stdout().lock().write_all(&data) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("fx-progress: write bundle: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            eprintln!("fx-progress: {e}");
+            1
+        }
+    }
+}
+
 
 fn collect(id: &str) -> Result<Vec<u8>, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
@@ -151,6 +169,9 @@ fn collect(id: &str) -> Result<Vec<u8>, String> {
 
 fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let s = Scrubber::from_steam(steam, home);
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map_err(|e| format!("read boot ID: {e}"))?;
+    let boot_match = format!("_BOOT_ID={}", boot_id.trim().replace('-', ""));
     let mut notes = vec![format!("account/persona names recognised for scrubbing: {}", s.names.len())];
     let mut out = |name: &str, args: &[&str], max: usize| {
         let note = run(dir, name, args, max, &s);
@@ -159,8 +180,14 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     out("id.txt", &["id"], 4096);
     out("journal.txt", &["journalctl", "-b", "--no-pager", "-o", "short-monotonic", "-n", JOURNAL_LINES], 6 << 20);
     out("journal-user.txt", &["journalctl", "--user", "-b", "--no-pager", "-o", "short-monotonic", "-n", "2000"], 2 << 20);
-    out("coredumps.txt", &["coredumpctl", "list", "--no-pager"], 256 << 10);
-    out("coredump-last.txt", &["coredumpctl", "info", "--no-pager"], 512 << 10);
+    out("coredumps.txt", &["coredumpctl", "list", "--no-pager", &boot_match], 256 << 10);
+    out("coredump-last.txt", &["coredumpctl", "-1", "info", "--no-pager", &boot_match], 512 << 10);
+    out(
+        "coredump-pending.txt",
+        &["systemctl", "list-units", "systemd-coredump@*.service", "--state=running", "--no-pager"],
+        64 << 10,
+    );
+    out("coredump-config.txt", &["systemd-analyze", "cat-config", "systemd/coredump.conf"], 64 << 10);
     out("dmesg.txt", &["dmesg"], 2 << 20);
     out("systemctl-failed.txt", &["systemctl", "--failed", "--no-pager"], 64 << 10);
     out("systemctl-user-failed.txt", &["systemctl", "--user", "--failed", "--no-pager"], 64 << 10);
@@ -175,6 +202,32 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
         let note = copy_tail(Path::new(path), &dir.join(name), 64 << 10, &s);
         notes.push(format!("{name}: {note}"));
     }
+    // The root post-processing hook exports text for steamos only, after stack
+    // extraction. Keep cores private, and never block the report on a running
+    // dump (large FEX dumps can take minutes).
+    for (name, snapshot, max) in [
+        ("coredumps.txt", "list.txt", 256 << 10),
+        ("coredump-last.txt", "info.txt", 512 << 10),
+    ] {
+        let path = Path::new("/run/steamac-coredumps").join(snapshot);
+        if path.is_file() {
+            let note = copy_tail(&path, &dir.join(name), max, &s);
+            notes.push(format!("{name}: completed dump snapshot, {note}"));
+        }
+    }
+    notes.push("coredump-pending.txt lists dumps still being processed; retry the report after they finish. Raw cores are never included.".into());
+    for (name, path) in [
+        ("max-map-count.txt", "/proc/sys/vm/max_map_count"),
+        ("overcommit-memory.txt", "/proc/sys/vm/overcommit_memory"),
+        ("overcommit-ratio.txt", "/proc/sys/vm/overcommit_ratio"),
+        ("meminfo.txt", "/proc/meminfo"),
+        ("agent-status.txt", "/proc/self/status"),
+        ("cpuinfo.txt", "/proc/cpuinfo"),
+    ] {
+        let note = copy_tail(Path::new(path), &dir.join(name), 64 << 10, &s);
+        notes.push(format!("{name}: {note}"));
+    }
+
 
     let logs = steam.join("logs");
     let steam_dir = dir.join("steam");
@@ -223,6 +276,38 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     if proton_logs.is_empty() && prefixes.is_empty() {
         notes.push("proton: no PROTON_LOG files or compatdata prefixes".into());
     }
+    let fex_dir = dir.join("fex");
+    let _ = std::fs::create_dir_all(&fex_dir);
+    let fex_tool = steam.join("steamapps/common/FEX-Emu");
+    for (name, src) in [
+        ("appmanifest.txt", steam.join("steamapps/appmanifest_3127680.acf")),
+        ("config-template.json", fex_tool.join("ConfigTemplate.json")),
+        ("steam-amtrucks-config.json", compat.join("270880/fex-emu/Config.json")),
+        ("steam-amtrucks-app-config.json", compat.join("270880/fex-emu/app_config.json")),
+        ("config.json", home.join(".fex-emu/Config.json")),
+        ("amtrucks.json", home.join(".fex-emu/AppConfig/amtrucks.json")),
+    ] {
+        let note = copy_tail(&src, &fex_dir.join(name), 64 << 10, &s);
+        notes.push(format!("fex/{name}: {note}"));
+    }
+    let fex_binary = fex_tool.join("usr/bin/FEX");
+    if fex_binary.is_file() {
+        let note = run(&fex_dir, "build-id.txt", &["readelf", "-n", &fex_binary.to_string_lossy()], 64 << 10, &s);
+        notes.push(format!("fex/build-id.txt: {note}"));
+    }
+    let fex_info = fex_tool.join("usr/bin/FEXGetConfig");
+    if fex_info.is_file() {
+        let note = run(&fex_dir, "emulator-info.txt", &[&fex_info.to_string_lossy(), "--all-emu-info"], 64 << 10, &s);
+        notes.push(format!("fex/emulator-info.txt: {note}"));
+    }
+    let note = copy_tail(&home.join("fex-amtrucks.log"), &fex_dir.join("amtrucks.log"), STEAM_LOG_TAIL, &s);
+    notes.push(format!("fex/amtrucks.log: {note}"));
+    notes.push("To enable FEX diagnostics for ATS, use Steam launch options: FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%".into());
+    let game_dir = dir.join("games");
+    let _ = std::fs::create_dir_all(&game_dir);
+    let game_log = home.join(".local/share/American Truck Simulator/game.log.txt");
+    let note = copy_tail(&game_log, &game_dir.join("amtrucks-game.log.txt"), STEAM_LOG_TAIL, &s);
+    notes.push(format!("games/amtrucks-game.log.txt: {note}"));
 
     notes.push(String::new());
     std::fs::write(dir.join("collect-notes.txt"), notes.join("\n")).map_err(|e| format!("write notes: {e}"))
@@ -257,13 +342,25 @@ fn run(dir: &Path, name: &str, args: &[&str], max: usize, s: &Scrubber) -> Strin
 }
 
 fn copy_tail(src: &Path, dst: &Path, max: usize, s: &Scrubber) -> String {
-    match std::fs::read(src) {
-        Ok(data) => {
-            let size = data.len();
+    use std::io::{Read, Seek, SeekFrom};
+    let read_tail = || -> std::io::Result<(Vec<u8>, u64)> {
+        let mut file = std::fs::File::open(src)?;
+        let size = file.metadata()?.len();
+        let start = size.saturating_sub(max as u64);
+        if start != 0 {
+            file.seek(SeekFrom::Start(start))?;
+        }
+        let mut data = Vec::new();
+        file.take(max as u64).read_to_end(&mut data)?;
+        Ok((data, size))
+    };
+    match read_tail() {
+        Ok((data, size)) => {
             let text = String::from_utf8_lossy(&data);
-            match std::fs::write(dst, s.scrub(tail(&text, max))) {
-                Ok(()) if size > max => format!("last {} KiB of {} KiB", max >> 10, size >> 10),
-                Ok(()) => format!("{size} bytes"),
+            let text = if size > max as u64 { text.split_once('\n').map_or(text.as_ref(), |(_, rest)| rest) } else { &text };
+            match std::fs::write(dst, s.scrub(text)) {
+                Ok(()) if size > max as u64 => format!("last {} KiB of {} KiB", max >> 10, size >> 10),
+                Ok(()) => format!("{} bytes", data.len()),
                 Err(e) => format!("write failed ({e})"),
             }
         }
@@ -534,5 +631,21 @@ mod tests {
     fn tails() {
         assert_eq!(tail("aaa\nbbb\nccc\n", 6), "ccc\n");
         assert_eq!(tail("short", 100), "short");
+    }
+
+    #[test]
+    fn file_tails_are_bounded_and_scrubbed() {
+        let dir = std::env::temp_dir().join(format!("fx-tail-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("source");
+        let dst = dir.join("tail");
+        std::fs::write(&src, "old data\npartial line\nbob@example.com\n").unwrap();
+        let s = Scrubber::with_names(&[]);
+        assert!(copy_tail(&src, &dst, 22, &s).starts_with("last "));
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "<email>\n");
+        std::fs::write(&src, "short\n").unwrap();
+        assert_eq!(copy_tail(&src, &dst, 22, &s), "6 bytes");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "short\n");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
