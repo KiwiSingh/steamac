@@ -147,8 +147,8 @@
             <div class="silk silk-big">GRAPHICS</div>
             <div class="silk" style="--x:4;--y:3">GUEST · STEAMOS</div>
             <div class="silk" style="--x:4;--y:55">HOST · MACOS</div>
-            <div class="chip" style="--x:4;--y:10;--w:20;--h:20"><b>DirectX</b><small>9 · 10 · 11</small></div>
-            <div class="chip" style="--x:30;--y:10;--w:18;--h:20"><b>DXVK</b><small>→ Vulkan</small></div>
+            <div class="chip" style="--x:4;--y:10;--w:20;--h:20"><b>DirectX</b><small>9 · 10 · 11 · 12</small></div>
+            <div class="chip" style="--x:30;--y:10;--w:18;--h:20"><b>DXVK</b><small>vkd3d → Vulkan</small></div>
             <div class="chip" style="--x:54;--y:10;--w:18;--h:20"><b>Venus</b><small>Mesa · guest</small></div>
             <div class="chip chip-core" style="--x:78;--y:10;--w:18;--h:48"><b>virtio-gpu</b><small>16K blobs · fences</small></div>
             <div class="chip" style="--x:54;--y:62;--w:18;--h:20"><b>virglrenderer</b><small>Venus host</small></div>
@@ -252,11 +252,11 @@
         <h2>DirectX → Vulkan → Metal</h2>
         <p class="info-lede"><span lang="en">Windows games render through a chain of translations, GPU-accelerated end to end.</span><span lang="ru">Windows-игры рисуют через цепочку трансляций — с аппаратным ускорением на всём пути.</span></p>
         <ul>
-          <li><span lang="en">DXVK in Proton turns DirectX 9/10/11 into Vulkan. Mesa's Venus driver in the VM serializes the Vulkan calls to the host over virtio-gpu, sharing memory as 16K-aligned blobs.</span><span lang="ru">DXVK в Proton превращает DirectX 9/10/11 в Vulkan. Драйвер Venus из Mesa внутри ВМ сериализует вызовы Vulkan и передаёт их хосту через virtio-gpu; память общая — blob-ресурсы с выравниванием 16K.</span></li>
+          <li><span lang="en">DXVK in Proton turns DirectX 9/10/11 into Vulkan, vkd3d-proton does the same for DirectX 12. Mesa's Venus driver in the VM serializes the Vulkan calls to the host over virtio-gpu, sharing memory as 16K-aligned blobs.</span><span lang="ru">DXVK в Proton превращает DirectX 9/10/11 в Vulkan, vkd3d-proton — DirectX 12. Драйвер Venus из Mesa внутри ВМ сериализует вызовы Vulkan и передаёт их хосту через virtio-gpu; память общая — blob-ресурсы с выравниванием 16K.</span></li>
           <li><span lang="en">On the Mac, virglrenderer replays them on MoltenVK, which runs them on Metal. SteamOS sees “Virtio-GPU Venus (Apple M4 Max)” with Vulkan 1.4.</span><span lang="ru">На Mac virglrenderer исполняет их на MoltenVK, а тот — на Metal. SteamOS видит «Virtio-GPU Venus (Apple M4 Max)» с Vulkan 1.4.</span></li>
-          <li><span lang="en">Patched MoltenVK adds what DXVK needs: geometry shaders, transform feedback, depth clip, null descriptors. Metal caches compiled shaders — a new effect stutters once, then never again.</span><span lang="ru">Пропатченный MoltenVK даёт то, что нужно DXVK: геометрические шейдеры, transform feedback, depth clip, null-дескрипторы. Metal кеширует шейдеры — новый эффект подтормаживает один раз, потом никогда.</span></li>
+          <li><span lang="en">Patched MoltenVK adds what DXVK and vkd3d-proton need: geometry shaders, transform feedback, depth clip, null descriptors, million-entry descriptor heaps, texel buffers at any offset. Metal caches compiled shaders — a new effect stutters once, then never again.</span><span lang="ru">Пропатченный MoltenVK даёт то, что нужно DXVK и vkd3d-proton: геометрические шейдеры, transform feedback, depth clip, null-дескрипторы, кучи дескрипторов на миллион записей, texel-буферы с любым смещением. Metal кеширует шейдеры — новый эффект подтормаживает один раз, потом никогда.</span></li>
         </ul>
-        <p class="tags"><span>DXVK</span><span>Venus</span><span>virglrenderer</span><span>MoltenVK</span></p>
+        <p class="tags"><span>DXVK</span><span>vkd3d-proton</span><span>Venus</span><span>virglrenderer</span><span>MoltenVK</span></p>
       </article>
 
       <article class="info" data-i="4" style="--accent:#fb7185">
@@ -325,12 +325,16 @@
         <h3>Diplomacy is Not an Option</h3>
         <p><span lang="en">Unity · Windows x86-64 via Proton 11 and FEX. In the screenshots above.</span><span lang="ru">Unity · Windows x86-64 через Proton 11 и FEX. На скриншотах выше.</span></p>
       </div>
+      <div class="card">
+        <h3>Stellar Blade Demo</h3>
+        <p><span lang="en">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK. About 35 FPS at 1280×800 on an M4 Max; the first run compiles shaders for a few minutes.</span><span lang="ru">Unreal Engine 4 · DirectX 12 · vkd3d-proton → Venus → MoltenVK. Около 35 FPS в 1280×800 на M4 Max; при первом запуске несколько минут компилируются шейдеры.</span></p>
+      </div>
     </div>
 
     <div class="limits">
       <h3><span lang="en">Honest limits</span><span lang="ru">Честные ограничения</span></h3>
       <ul>
-        <li><span lang="en"><b>DirectX 12</b> (vkd3d-proton) doesn't run yet: MoltenVK lacks features it needs.</span><span lang="ru"><b>DirectX 12</b> (vkd3d-proton) пока не работает: MoltenVK не даёт нужных возможностей.</span></li>
+        <li><span lang="en"><b>DirectX 12</b> runs at feature level 11_0 and shader model 6.0: games that require tiled resources (12_0) or shader model 6.6 (Unreal Engine 5) don't start.</span><span lang="ru"><b>DirectX 12</b> работает на уровне 11_0 и shader model 6.0: игры, которым нужны tiled-ресурсы (12_0) или shader model 6.6 (Unreal Engine 5), не запустятся.</span></li>
         <li><span lang="en"><b>Anti-cheat</b> that blocks virtual machines won't let you in.</span><span lang="ru"><b>Античиты</b>, блокирующие виртуальные машины, не пропустят.</span></li>
         <li><span lang="en"><b>First-time effects</b> stutter while Metal compiles the pipeline (~50–100 ms); after that it's cached, even across VM restarts.</span><span lang="ru"><b>Новые эффекты</b> подтормаживают, пока Metal компилирует конвейер (~50–100 мс); дальше всё из кеша, даже после перезапуска ВМ.</span></li>
       </ul>

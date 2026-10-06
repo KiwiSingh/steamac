@@ -317,7 +317,7 @@ h1 em {
 }
 .shots figure:hover img { transform: translateY(-4px) scale(1.02); box-shadow: 0 24px 60px rgba(26, 159, 255, .2); }
 .shots figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); }
-.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .card {
   padding: 22px; border-radius: 16px; border: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(255, 255, 255, .035), rgba(255, 255, 255, .01));
