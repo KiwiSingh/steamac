@@ -377,8 +377,10 @@ already running», вместо того чтобы смонтировать т�
 ## Создание диска SteamOS без Docker (Creating the SteamOS disk without Docker)
 
 Пользователю приложения Docker не нужен: диск создаёт сам лаунчер — окно первого запуска
-**Create New Disk…** или **Settings → Advanced → Create New Disk…** (ветка stable/rc/beta/preview/main,
-размер home, место, пароль пользователя `steamos`; прогресс, Stop и Resume). То же без окна:
+**Create New Disk…** или **Settings → Advanced → Create New Disk…** (ветка stable/rc,
+размер home, место, пароль пользователя `steamos`; прогресс, Stop и Resume). Доступны только stable
+и rc: beta/preview/main могут быть подписаны ключом разработки Valve, которому лаунчер не доверяет.
+Сохранённая неподдерживаемая ветка заменяется на stable с записью в журнал. То же без окна:
 
 ```sh
 work/out/steamac-vm --create-disk ~/steamos.img [--branch stable] [--home-gib 64] [--password PW] [--keep-cache] [--accept-eula]

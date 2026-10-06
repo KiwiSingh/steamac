@@ -373,7 +373,10 @@ final class LauncherSettings: ObservableObject {
         bool(.network, &network)
         string(.diskImage, &diskImage)
         string(.steamosBranch, &steamosBranch)
-        if !DiskCreator.branches.contains(steamosBranch) { steamosBranch = "stable" }
+        if !DiskCreator.branches.contains(steamosBranch) {
+            log("settings: SteamOS branch \(steamosBranch) is not offered; falling back to stable")
+            steamosBranch = "stable"
+        }
         if let s = d.string(forKey: Key.steamClient.rawValue).flatMap(SteamClient.init(rawValue:)) { steamClient = s }
         if let v = d.string(forKey: Key.vulkanDriver.rawValue).flatMap(VulkanDriver.init(rawValue:)) { vulkanDriver = v }
         reloadGames()

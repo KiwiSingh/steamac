@@ -382,8 +382,10 @@ only the safe preen fixes. Files e2fsck cannot place again end up in `/home/lost
 ## Creating the SteamOS disk without Docker
 
 The app user does not need Docker: the launcher creates the disk itself — through the first-launch
-window's **Create New Disk…** or **Settings → Advanced → Create New Disk…** (stable/rc/beta/preview/main
-branch, home size, location, password for user `steamos`; progress, Stop, and Resume). The same
+window's **Create New Disk…** or **Settings → Advanced → Create New Disk…** (stable/rc
+branch, home size, location, password for user `steamos`; progress, Stop, and Resume). Only stable
+and rc are offered: beta/preview/main may use Valve's development signing key, which is not trusted
+by the launcher. A saved unsupported branch falls back to stable and is logged. The same
 without a window:
 
 ```sh

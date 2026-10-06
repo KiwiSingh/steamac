@@ -50,7 +50,7 @@ final class DiskCreator {
 
     struct Cancelled: Error, CustomStringConvertible { var description: String { "cancelled" } }
 
-    static let branches = ["stable", "rc", "beta", "preview", "main"]
+    static let branches = ["stable", "rc"]
     static let metaURL = "https://steamdeck-atomupd.steamos.cloud/meta/holo/steamos/aarch64/vr/"
     static let imagesURL = "https://steamdeck-images.steamos.cloud/"
     /// Download caches (bundles/, desync/) and creation.lock for a disk at `path`: the user's

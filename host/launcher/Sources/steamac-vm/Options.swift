@@ -110,7 +110,7 @@ struct Options {
            steamac-vm --selftest-pill [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
-           steamac-vm --create-disk PATH [--branch stable|rc|beta|preview|main] [--home-gib N]
+           steamac-vm --create-disk PATH [--branch stable|rc] [--home-gib N]
                       [--password PW] [--keep-cache] [--accept-eula]
            steamac-vm --ssh-password DISK
 
@@ -361,7 +361,10 @@ struct Options {
             case "--reference-disk": o.referenceDisk = try value(a)
             case "--create-disk": o.createDisk = try value(a)
             case "--grow-disk": o.growDisk = try value(a)
-            case "--branch": o.createBranch = try value(a)
+            case "--branch":
+                let v = try value(a)
+                guard DiskCreator.branches.contains(v) else { throw OptionError("--branch: stable or rc") }
+                o.createBranch = v
             case "--home-gib": o.createHomeGiB = try int(a)
             case "--password": o.createPassword = try value(a)
             case "--keep-cache": o.keepCache = true

@@ -29,6 +29,20 @@ enum ProvisionSelfTest {
         check(DiskCreator.percent(in: "Attempt 1: Assembling   32.27% 1m2s") == 32.27, "desync progress parse")
         check(DiskCreator.percent(in: "Attempt 1: Validating ") == nil, "desync non-progress line")
 
+        check(DiskCreator.branches == ["stable", "rc"], "only production-signed SteamOS branches offered")
+        for branch in DiskCreator.branches {
+            attempt("branch \(branch)") {
+                check(try Options.parse(["steamac-vm", "--create-disk", "/tmp/steamac-branch.img", "--branch", branch]).createBranch == branch,
+                      "CLI accepts branch \(branch)")
+            }
+        }
+        for branch in ["beta", "preview", "main", "unknown"] {
+            var rejected = false
+            do { _ = try Options.parse(["steamac-vm", "--create-disk", "/tmp/steamac-branch.img", "--branch", branch]) }
+            catch { rejected = true }
+            check(rejected, "CLI rejects branch \(branch)")
+        }
+
         attempt("disk publication") {
             let fm = FileManager.default
             let dir = NSTemporaryDirectory() + "steamac-publish-\(UUID().uuidString)"
