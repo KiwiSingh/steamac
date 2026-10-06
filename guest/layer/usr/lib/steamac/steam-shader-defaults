@@ -1,27 +1,33 @@
 #!/bin/bash
 # steamac: ExecStartPre of steam.service (Steam is not running): Steam > Settings >
 # Downloads > "Shader Pre-Caching" and "Allow background processing of Vulkan
-# shaders" start off in the VM.
+# shaders" are on in the VM.
 #
-# Under Venus every pipeline Steam's fossilize_replay processes is compiled by
-# Metal on the Mac (about 0.1 s each, cold). Steam processes again after every
-# shader download for a game (popular games get new ones almost daily) and for
-# every game after a launcher update that changes MoltenVK (the Venus driver
-# identity is derived from MoltenVK's pipelineCacheUUID), and the launch waits
-# on "Processing Vulkan shaders". The downloaded pipelines are recorded by
-# other players' GPUs, and almost none of them are pipelines DXVK creates on
-# MoltenVK. Pipelines a game compiles itself stay in the Mac's Metal shader cache
-# without any processing.
+# With Shader Pre-Caching on, Steam downloads Proton's transcoded media
+# (shadercache/<appid>/transcoded_video.foz) and passes STEAM_COMPAT_TRANSCODED_MEDIA_PATH
+# to Proton, which plays those videos for cutscenes it cannot decode itself; with
+# it off they show a placeholder. Background processing replays downloaded
+# pipelines while Steam is idle instead of at game launch. DXVK's own state cache
+# lives in the Wine prefix and does not depend on these settings.
 #
-# Applied once per Steam installation (marker next to config.vdf), and only
-# where config.vdf holds no value yet: a choice made in Steam's settings stays.
-# Before Steam's first start there is no config.vdf: a minimal one is created,
-# which Steam reads and fills in.
+# Steam's defaults (config.vdf, InstallConfigStore/Software/Valve/Steam/ShaderCacheManager,
+# keys absent): DisableShaderCache 0 (pre-caching on), EnableShaderBackgroundProcessing 0
+# (background processing off). Fresh installs get "EnableShaderBackgroundProcessing" "1"
+# where config.vdf holds no value yet; before Steam's first start there is no
+# config.vdf and a minimal one is created, which Steam reads and fills in.
+#
+# Launcher 1.4 turned both off: it wrote "DisableShaderCache" "1" and
+# "EnableShaderBackgroundProcessing" "0" where they were missing and left an empty
+# marker next to config.vdf. With that marker both are switched on once, but only
+# if both values are still exactly those; if either was changed in Steam's
+# settings, both stay. Marker content "2": done, nothing is read or written again.
 set -euo pipefail
 
 config=${HOME}/.local/share/Steam/config/config.vdf
 marker=${config%/*}/steamac-shader-defaults
-[[ ! -e $marker ]] || exit 0
+version=2
+[[ $(cat "$marker" 2>/dev/null) != "$version" ]] || exit 0
+if [[ -e $marker ]]; then mode=migrate; else mode=fresh; fi
 
 current() {
     if [[ -s $config ]]; then
@@ -34,10 +40,12 @@ current() {
 mkdir -p "${config%/*}"
 tmp=$(mktemp "$config.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-# Adds the missing values to InstallConfigStore/Software/Valve/Steam/ShaderCacheManager
-# (creating the block if needed). Exit 3: both values present; 4: no Steam section.
+# fresh: adds a missing EnableShaderBackgroundProcessing "1" to ShaderCacheManager
+# (creating the block if needed). migrate: rewrites DisableShaderCache "1" -> "0"
+# and EnableShaderBackgroundProcessing "0" -> "1" when both are present with exactly
+# those values. Exit 3: nothing to do; 4: no Steam section.
 status=0
-current | LC_ALL=C awk '
+current | LC_ALL=C awk -v mode="$mode" '
 BEGIN { RS = "\001"; steam = "installconfigstore/software/valve/steam"; scm = steam "/shadercachemanager" }
 { text = text $0 }
 END {
@@ -50,9 +58,13 @@ END {
                 if (c == "\\") j++
                 else if (c == "\"") break
             }
-            s = tolower(substr(text, i + 1, j - i - 1)); i = j
-            if (want_key) { key = s; want_key = 0 }
-            else { if (path == scm) seen[key] = 1; want_key = 1 }
+            s = substr(text, i + 1, j - i - 1)
+            if (want_key) { key = tolower(s); want_key = 0 }
+            else {
+                if (path == scm) { val[key] = s; at[key] = i + 1; cnt[key]++ }
+                want_key = 1
+            }
+            i = j
         } else if (c == "{") {
             p[++d] = key; path = d == 1 ? key : path "/" key; want_key = 1
             if (path == scm) scm_at = i
@@ -61,27 +73,38 @@ END {
             path = d == 1 ? "" : substr(path, 1, length(path) - length(p[d]) - 1); d--; want_key = 1
         }
     }
+    a = "disableshadercache"; b = "enableshaderbackgroundprocessing"
+    if (mode == "migrate") {
+        if (cnt[a] != 1 || cnt[b] != 1 || val[a] != "1" || val[b] != "0") exit 3
+        # Both values are one character: splice "0" and "1" in, in file order.
+        if (at[a] < at[b]) { x = at[a]; vx = "0"; y = at[b]; vy = "1" }
+        else { x = at[b]; vx = "1"; y = at[a]; vy = "0" }
+        printf "%s%s%s%s%s", substr(text, 1, x - 1), vx, substr(text, x + 1, y - x - 1), vy, substr(text, y + 1)
+        exit 0
+    }
     if (!scm_at && !steam_end) exit 4
-    t4 = "\t\t\t\t"; t5 = t4 "\t"; add = ""
-    if (!("disableshadercache" in seen)) add = add t5 "\"DisableShaderCache\"\t\t\"1\"\n"
-    if (!("enableshaderbackgroundprocessing" in seen)) add = add t5 "\"EnableShaderBackgroundProcessing\"\t\t\"0\"\n"
-    if (add == "") exit 3
+    if (b in cnt) exit 3
+    t4 = "\t\t\t\t"; add = t4 "\t\"EnableShaderBackgroundProcessing\"\t\t\"1\""
     if (scm_at) {
-        pos = scm_at; add = "\n" substr(add, 1, length(add) - 1)
+        pos = scm_at; add = "\n" add
     } else {
         for (pos = steam_end - 1; pos > 0 && substr(text, pos, 1) != "\n"; pos--) ;
-        add = t4 "\"ShaderCacheManager\"\n" t4 "{\n" add t4 "}\n"
+        add = t4 "\"ShaderCacheManager\"\n" t4 "{\n" add "\n" t4 "}\n"
         if (pos == 0) { pos = steam_end - 1; add = "\n" add }
     }
     printf "%s%s%s", substr(text, 1, pos), add, substr(text, pos + 1)
 }' > "$tmp" || status=$?
-case $status in
-    0)
-        if [[ -e $config ]]; then chmod --reference="$config" "$tmp"; else chmod 0644 "$tmp"; fi
-        mv -f "$tmp" "$config"
-        echo 'steam-shader-defaults: Shader Pre-Caching and background Vulkan shader processing off (config.vdf)' >&2 ;;
-    3) echo 'steam-shader-defaults: Shader Pre-Caching already set in config.vdf, leaving it' >&2 ;;
-    4) echo "steam-shader-defaults: no Steam section in $config yet, leaving it" >&2; exit 0 ;;
+case $mode/$status in
+    fresh/0) msg='background Vulkan shader processing on (config.vdf)' ;;
+    migrate/0) msg='Shader Pre-Caching and background Vulkan shader processing back on (launcher 1.4 had turned them off)' ;;
+    fresh/3) msg='background Vulkan shader processing already set in config.vdf, leaving it' ;;
+    migrate/3) msg='Shader Pre-Caching settings differ from what launcher 1.4 wrote, leaving them' ;;
+    */4) echo "steam-shader-defaults: no Steam section in $config yet, leaving it" >&2; exit 0 ;;
     *) echo "steam-shader-defaults: awk failed (status $status), leaving $config" >&2; exit 0 ;;
 esac
-: > "$marker"
+if [[ $status == 0 ]]; then
+    if [[ -e $config ]]; then chmod --reference="$config" "$tmp"; else chmod 0644 "$tmp"; fi
+    mv -f "$tmp" "$config"
+fi
+echo "steam-shader-defaults: $msg" >&2
+printf '%s\n' "$version" > "$marker"

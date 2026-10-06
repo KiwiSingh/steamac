@@ -42,22 +42,28 @@ Stutters when a new effect first appears come from Metal shader compilation (~50
 pipeline); Metal caches the result on disk, so the effect does not stutter again, even after
 restarting the game or VM (measured via Venus: 102 ms → 0.95 ms per pipeline in a new process).
 
-Steam Shader Pre-Caching (Settings → Downloads) is disabled by default in the VM, as is “Allow background
-processing of Vulkan shaders”: before Steam starts, `/usr/lib/steamac/steam-shader-defaults`
-(ExecStartPre `steam.service`) writes `"DisableShaderCache" "1"` and
-`"EnableShaderBackgroundProcessing" "0"` to the `ShaderCacheManager` block of
-`~/.local/share/Steam/config/config.vdf` — once per Steam installation (marker
-`config/steamac-shader-defaults`) and only if those values are not already there, so the choice in
-Steam settings (the toggle writes `"DisableShaderCache" "0"`) persists. Why: under Venus, every
-pipeline that Steam's fossilize_replay processes compiles Metal on the Mac (~70–100 ms), and Steam
-processes it again after every new download of a game's cache (almost daily for popular games) and
-for all games after a launcher update with a different MoltenVK (Venus driver identity is a hash of
-MoltenVK's `pipelineCacheUUID`); starting the game then waits for minutes at “Processing Vulkan
-shaders”. The downloaded caches themselves were recorded on other players' GPUs: of the pipelines
-DXVK creates on MoltenVK, they contained 4 of 86 (Heroes of Might and Magic: Olden Era) and 0 of 197
-(Death's Door). Cost: with Shader Pre-Caching disabled, Steam also does not download transcoded
-Proton videos (`transcoded_video.foz`), so videos that Proton cannot decode itself may show a
-placeholder. To re-enable: Steam → Settings → Downloads → Enable Shader Pre-caching.
+Steam Shader Pre-Caching and “Allow background processing of Vulkan shaders” (Settings → Downloads)
+are on by default in the VM. Pre-caching is what brings Proton the transcoded cutscene videos: Steam
+downloads them per game (`steamapps/shadercache/<appid>/transcoded_video.foz`, e.g. 836 MB for
+Heroes of Might and Magic: Olden Era, 3.8 GB for Diplomacy is Not an Option) and passes
+`STEAM_COMPAT_TRANSCODED_MEDIA_PATH` to Proton, which plays them for videos it cannot decode itself;
+with pre-caching off those videos show a placeholder. DXVK's own cache (DXVK 2.7) lives in the game's
+Wine prefix and works either way. The cost: every pipeline Steam's fossilize_replay processes is
+compiled by Metal on the Mac (~70–100 ms), and Steam processes again after its shader updates for a
+game and, for every game, after a launcher update that changes MoltenVK (the Venus driver identity is
+a hash of MoltenVK's `pipelineCacheUUID`). Background processing does most of that while Steam is
+idle; what is left shows as “Processing Vulkan shaders” when a game starts and can be skipped with
+**Skip**. To turn it off: Steam → Settings → Downloads → Enable Shader Pre-caching (and/or Allow
+background processing of Vulkan shaders).
+
+Stock Steam keeps background processing off (`EnableShaderBackgroundProcessing` absent from
+`~/.local/share/Steam/config/config.vdf` reads as 0). Before Steam starts,
+`/usr/lib/steamac/steam-shader-defaults` (ExecStartPre of `steam.service`) writes
+`"EnableShaderBackgroundProcessing" "1"` to the `ShaderCacheManager` block if there is no value yet,
+once per Steam installation (marker `config/steamac-shader-defaults`), so a choice made in Steam's
+settings stays. Launcher 1.4 shipped both settings off (`"DisableShaderCache" "1"`,
+`"EnableShaderBackgroundProcessing" "0"`); on the first Steam start after updating, the script turns
+both back on once, but only if both are still exactly those values.
 
 SteamOS takes the Mac's time zone (Settings > General **Use the Mac's time zone**, on by default,
 applies on the next start). On every boot the launcher adds `steamac.tz=<IANA zone of the Mac>`
@@ -596,11 +602,11 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 | `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + patches: depth_clip_enable, YCbCr arrays, null descriptors, geometry shader emulation for zink/DXVK (vertex stride, instancing, adjacency, fans, SCALED formats, `gl_in`), transform feedback (DXVK stream output) and its queries (SO statistics), query result availability on copy (DXVK occlusion queries via Venus), atomics on vector components at buffer addresses (BDA, vkd3d-proton), texel buffers with offsets at any texel (vkd3d-proton), writes to small push-descriptor buffers with robustness2, allocation of auxiliary buffers, deferred release of Metal resources, patch hash in the pipeline cache UUID; tests in `repro/` run under Metal validation; `bench/run.sh <libdir>…` compares performance of changes between builds |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + merge with upstream main (venus-protocol 1.1.3) + LINEAR modifier, shm import as host memory, stubs for failed pipelines, recreation of rejected cache, deferred shm unmap, thread QoS |
 | `host/libkrun/` | libkrun v1.19.6 + patches: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), SME mask for M4, 2D resources without virgl, `SET_SCANOUT_BLOB`, SHM blob mapping, Venus fence signaling, virglrenderer logs, `krun_display_resize` (resolution changes on the fly), vCPU/GPU thread QoS |
-| `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, virtual Xbox 360 pad from GameController.framework, network via gvproxy, VM restart on guest reboot, `--perf-stats` |
+| `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, virtual Xbox 360 / DualSense / DualShock 4 pad from GameController.framework, network via gvproxy, VM restart on guest reboot, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, everything built in, 4K pages, 16K blob-node alignment, Apple TSO for FEX |
 | `guest/mesa/` | Venus ICD for aarch64 (Proton, gamescope, zink) and x86_64/i386 (FEX graphics provider) |
-| `guest/initramfs/` | boot stage = “bootloader”: A/B slot selection with attempt counter, partsets, overlays for `/etc` and `/usr`; initial provisioning of the launcher-created disk (`steamac.provision=1`: static mkfs.fat, mke2fs, btrfstune in initramfs); `steamac.ssh=0` — no SSH server; launcher config payload (`steamac.config=1`) — new `steamos` password |
-| `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam Shader Pre-Caching disabled by default (`steam-shader-defaults`) |
+| `guest/initramfs/` | boot stage = “bootloader”: A/B slot selection with attempt counter, partsets, overlays for `/etc` and `/usr`; initial provisioning of the launcher-created disk (`steamac.provision=1`: static mkfs.fat, mke2fs, btrfstune in initramfs); `steamac.ssh=0` — no SSH server; launcher config payload (`steamac.config=1`) — new `steamos` password; `steamac.tz=` — the Mac's time zone in `/etc/localtime`; untouched procfs at `/run/steamac/proc` for Flatpak sandboxes |
+| `guest/layer/` | VM layer over `/usr` (read-only erofs): file-based `splctl`, safe post-install for RAUC, `VARIANT_ID=steamdeck`, gamescope session on DRM, Desktop Mode (Plasma nested in gamescope), masks for Frame hardware services, `fx-progress-agent` progress agent (Rust, `guest/progress-agent/`, `fx.progress` virtio-console port), short shutdown timeouts, QR-code Steam sign-in mode (Steam Deck client, while there is no remembered account), optional Steam client branch (`/etc/steamac/steam-client-branch`), Steam background shader processing on by default (`steam-shader-defaults`) |
 | `scripts/` | build of `work/out/steamos.img`: GPT with Valve's partition layout (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev test of provisioning against a disk from Docker |
 
 The SteamOS root filesystem is not modified: all changes come from initramfs and the layer. Thus

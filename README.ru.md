@@ -41,21 +41,28 @@ Vulkan на Metal — MoltenVK из форка UTM (геометрические
 пайплайн); результат кешируется Metal на диске, повторно эффект не тормозит, в том числе после
 перезапуска игры или ВМ (замер через Venus: 102 мс → 0,95 мс на пайплайн в новом процессе).
 
-Shader Pre-Caching Steam (Settings → Downloads) в ВМ по умолчанию выключен, как и «Allow background
-processing of Vulkan shaders»: перед стартом Steam `/usr/lib/steamac/steam-shader-defaults`
-(ExecStartPre `steam.service`) пишет в `~/.local/share/Steam/config/config.vdf`, блок
-`ShaderCacheManager`, `"DisableShaderCache" "1"` и `"EnableShaderBackgroundProcessing" "0"` — один раз
-на установку Steam (метка `config/steamac-shader-defaults`) и только если этих значений там ещё нет,
-поэтому выбор в настройках Steam (переключатель пишет `"DisableShaderCache" "0"`) сохраняется. Зачем:
-под Venus каждый пайплайн, который обрабатывает fossilize_replay Steam, компилирует Metal на Mac
-(~70–100 мс), а Steam обрабатывает заново после каждой новой загрузки кеша игры (у популярных игр —
-почти ежедневно) и для всех игр после обновления лаунчера с другим MoltenVK (идентичность драйвера
-Venus — хеш `pipelineCacheUUID` MoltenVK); запуск игры при этом минутами ждёт «Processing Vulkan
-shaders». Сами загружаемые кеши записаны на GPU других игроков: из пайплайнов, которые DXVK создаёт на
-MoltenVK, в них нашлось 4 из 86 (Heroes of Might and Magic: Olden Era) и 0 из 197 (Death's Door).
-Цена: с выключенным Shader Pre-Caching Steam не скачивает и транскодированные видео Proton
-(`transcoded_video.foz`), так что ролики, которые Proton не декодирует сам, могут показываться
-заглушкой. Включить обратно: Steam → Settings → Downloads → Enable Shader Pre-caching.
+Shader Pre-Caching Steam и «Allow background processing of Vulkan shaders» (Settings → Downloads) в ВМ
+по умолчанию включены. Именно Pre-Caching приносит Proton транскодированные видео роликов: Steam
+скачивает их для каждой игры (`steamapps/shadercache/<appid>/transcoded_video.foz`, например 836 МБ
+для Heroes of Might and Magic: Olden Era, 3,8 ГБ для Diplomacy is Not an Option) и передаёт Proton
+`STEAM_COMPAT_TRANSCODED_MEDIA_PATH`, а Proton проигрывает их вместо видео, которые не декодирует сам;
+с выключенным Pre-Caching такие ролики показываются заглушкой. Собственный кеш DXVK (DXVK 2.7) лежит
+в Wine-префиксе игры и работает в любом случае. Цена: каждый пайплайн, который обрабатывает
+fossilize_replay Steam, компилирует Metal на Mac (~70–100 мс), а Steam обрабатывает заново после
+своих обновлений шейдеров для игры и, для всех игр, после обновления лаунчера, меняющего MoltenVK
+(идентичность драйвера Venus — хеш `pipelineCacheUUID` MoltenVK). Фоновая обработка делает большую
+часть этого, пока Steam простаивает; остаток виден как «Processing Vulkan shaders» при запуске игры,
+его можно пропустить кнопкой **Skip**. Выключить: Steam → Settings → Downloads → Enable Shader
+Pre-caching (и/или Allow background processing of Vulkan shaders).
+
+Штатный Steam держит фоновую обработку выключенной (отсутствующий в
+`~/.local/share/Steam/config/config.vdf` `EnableShaderBackgroundProcessing` читается как 0). Перед
+стартом Steam `/usr/lib/steamac/steam-shader-defaults` (ExecStartPre `steam.service`) пишет в блок
+`ShaderCacheManager` `"EnableShaderBackgroundProcessing" "1"`, если значения там ещё нет, — один раз
+на установку Steam (метка `config/steamac-shader-defaults`), поэтому выбор в настройках Steam
+сохраняется. Лаунчер 1.4 выключал обе настройки (`"DisableShaderCache" "1"`,
+`"EnableShaderBackgroundProcessing" "0"`); при первом старте Steam после обновления скрипт один раз
+включает обе обратно, но только если там всё ещё ровно эти значения.
 
 SteamOS берёт часовой пояс Mac (Settings > General **Use the Mac's time zone**, по умолчанию вкл.,
 применяется при следующем запуске). При каждой загрузке лаунчер добавляет в cmdline ядра
@@ -574,11 +581,11 @@ Report ID (первые 8 знаков ID события). Не удалось �
 | `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), texel-буферы со смещением на любой тексель (vkd3d-proton), запись в маленькие буферы push-дескрипторов с robustness2, распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal; `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками |
 | `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров, пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков |
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
-| `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, виртуальный Xbox 360 pad из GameController.framework, сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
+| `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, виртуальный pad Xbox 360 / DualSense / DualShock 4 из GameController.framework, сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |
 | `guest/mesa/` | Venus ICD для aarch64 (Proton, gamescope, zink) и x86_64/i386 (FEX-провайдер графики) |
-| `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos` |
-| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), Shader Pre-Caching Steam выключен по умолчанию (`steam-shader-defaults`) |
+| `guest/initramfs/` | загрузочный этап = «загрузчик»: выбор слота A/B со счётчиком попыток, partsets, оверлеи `/etc` и `/usr`; первичная подготовка диска, созданного лаунчером (`steamac.provision=1`: статические mkfs.fat, mke2fs, btrfstune в initramfs); `steamac.ssh=0` — без SSH-сервера; config-payload лаунчера (`steamac.config=1`) — новый пароль `steamos`; `steamac.tz=` — часовой пояс Mac в `/etc/localtime`; нетронутый procfs в `/run/steamac/proc` для песочниц Flatpak |
+| `guest/layer/` | слой для ВМ поверх `/usr` (read-only erofs): файловый `splctl`, безопасный post-install для RAUC, `VARIANT_ID=steamdeck`, сессия gamescope на DRM, режим рабочего стола (Plasma внутри gamescope), маски сервисов железа Frame, агент прогресса `fx-progress-agent` (Rust, `guest/progress-agent/`, порт virtio-console `fx.progress`), быстрые таймауты выключения, режим входа в Steam с QR-кодом (клиент Steam Deck, пока нет запомненного аккаунта), опциональная ветка клиента Steam (`/etc/steamac/steam-client-branch`), фоновая обработка шейдеров Steam включена по умолчанию (`steam-shader-defaults`) |
 | `scripts/` | сборка `work/out/steamos.img`: GPT в разметке Valve (esp, efi-A/B, rootfs-A/B, var-A/B, home); `scripts/test/provision-test-disk.sh` — dev-проверка провижининга против диска из Docker |
 
 Корневая ФС SteamOS не модифицируется: все изменения приходят из initramfs и слоя. Поэтому
