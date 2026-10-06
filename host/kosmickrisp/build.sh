@@ -29,6 +29,11 @@
 #              modifier and vkCreateSwapchainKHR failed (mangoapp, X11 clients).
 #   0022       steamac: fillModeNonSolid (polygonMode LINE as Metal's line fill, POINT as lines like
 #              MoltenVK). DXVK skips devices without it, so no D3D9/10/11 game started.
+#   0023       steamac: unsupported sample counts (8) use the largest supported one (as MoltenVK 0024):
+#              Metal failed such pipelines and Venus dropped their draws.
+#   0024       steamac: single texel alignment for texel buffer views (as MoltenVK 0029): the texture
+#              starts 16-byte aligned below the view, shaders add the texel offset from the descriptor.
+#              vkd3d-proton (D3D12) requires it.
 #
 # Two meson builds: (1) the host compiler tools mesa_clc + vtn_bindgen2 against Homebrew LLVM
 # (shared) and SPIRV-LLVM-Translator, installed into work/build/host-kosmickrisp/clc; (2) the driver
@@ -189,10 +194,11 @@ mv -f "$lib.tmp.$$" "$lib"
 	echo "  0020 = mesa!44222 linear textures as 2D plus a 2D array view (input attachments)"
 	echo "  0021 = steamac: LINEAR input attachments (zink / Gamescope WSI swapchains)"
 	echo "  0022 = steamac: fillModeNonSolid (wireframe; DXVK requires it)"
+	echo "  0023 = steamac: unsupported sample counts use the largest supported one"
+	echo "  0024 = steamac: single texel alignment for texel buffer views (vkd3d-proton)"
 	echo
 	echo "Known gaps (host/moltenvk/repro/run.sh): transform feedback with strip geometry shaders and"
-	echo "the overflow counter (draft !44928), no 8-sample pipelines, no single texel buffer alignment"
-	echo "(vkd3d-proton's D3D12CreateDevice gate)."
+	echo "the overflow counter (draft !44928)."
 } > "$out/KOSMICKRISP.txt.tmp.$$"
 mv -f "$out/KOSMICKRISP.txt.tmp.$$" "$out/KOSMICKRISP.txt"
 

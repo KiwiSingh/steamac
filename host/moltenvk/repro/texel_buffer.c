@@ -10,8 +10,9 @@
  *      R32_UINT view at 4 (8 texels), R8_UINT view at 3 (10 texels), RGBA8_UINT view at 8, storage R32_UINT view at
  *      byte 20 of a buffer of words 1000 + i (load, store, atomic add, size), an array of R32_UINT views at 68, 72,
  *      76 written one element per update, an array of storage buffers of 16..64 bytes written one element per
- *      update (arrayLength: their sizes are in the same aux buffer), reads past the end of views (robust (0, 0, 0, 1):
- *      bounds of the view, not of the Metal texture that starts before it).
+ *      update (arrayLength: their sizes are in the same aux buffer), reads past the end of views (bounds of the view,
+ *      not of the Metal texture that starts before it): zero, with component substitution for the format, so (0, 0,
+ *      0, 0) for RGBA8 (robustBufferAccess2); MoltenVK returns (0, 0, 0, 1).
  * 2. tb_bindless.comp: variable-count update-after-bind array (vkd3d-proton's heaps): element 5 written at 12,
  *    element 6 copied from it with VkCopyDescriptorSet.
  * 3. tb_push.comp: push descriptor set, R32_UINT view at 8; the 256-byte output buffer is written (small buffers with
@@ -156,7 +157,8 @@ int main(int argc, char **argv)
 	uint32_t n = 1;
 	if (vkEnumeratePhysicalDevices(inst, &n, &pd) < 0 || !n) { printf("FAIL no physical device\n"); return 1; }
 
-	VkPhysicalDeviceVulkan13Properties p13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES };
+	VkPhysicalDeviceDriverProperties drv = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+	VkPhysicalDeviceVulkan13Properties p13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &drv };
 	VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13 };
 	vkGetPhysicalDeviceProperties2(pd, &p2);
 	printf("%-4s single texel alignment: storage %u (%llu bytes), uniform %u (%llu bytes)\n",
@@ -280,8 +282,10 @@ int main(int argc, char **argv)
 			want[28 + i] = 4 * (i + 1);
 		expect("array of storage buffers written one element per update: arrayLength 4, 8, 12, 16", out + 28, want + 28, 4);
 		want[32] = 0;
-		want[33] = 1;
-		expect("texels past the end of views at 4 (R32, texel 8) and 8 (RGBA8, texel 4): x 0, robust alpha 1", out + 32, want + 32, 2);
+		want[33] = drv.driverID == VK_DRIVER_ID_MOLTENVK;
+		expect(want[33] ? "texels past the end of views at 4 (R32, texel 8) and 8 (RGBA8, texel 4): x 0, alpha 1 (MoltenVK)"
+		                : "texels past the end of views at 4 (R32, texel 8) and 8 (RGBA8, texel 4): x 0, alpha 0",
+		       out + 32, want + 32, 2);
 	}
 
 	/* 2. tb_bindless.comp */

@@ -67,14 +67,12 @@
 #    inline array<T, 1000000> and program, ~100 MB per pipeline).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
-# All must pass on MoltenVK. On KosmicKrisp 1-4, 6-8, 11, 12, 14 and 15 must pass (1 sizes the descriptor pool
-# with combinedImageSamplerDescriptorCount like gamescope; 2 skips the VK_NULL_HANDLE binds, which
-# virglrenderer no longer passes to the driver); not run there, known KosmicKrisp gaps: 5 (Mesa !44928 is a
-# draft: strip-GS transform feedback pipelines fail to create, the counter overshoots on overflow), 9
-# (8-sample pipelines fail to create; MSL logging is MoltenVK's), 10 (expects MoltenVK's clean creation
-# failures; KosmicKrisp creates and draws these layouts), 13 (no single texel alignment: vkd3d-proton's
-# D3D12CreateDevice gate fails), 16 (likewise: texel views at 4-byte offsets, Metal aborts the buffer-backed
-# texture).
+# All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
+# combinedImageSamplerDescriptorCount like gamescope; 2 skips the VK_NULL_HANDLE binds, which virglrenderer no
+# longer passes to the driver; 9 without the MSL log, which is MoltenVK's; 13 expects (0, 0, 0, 0) past the end of
+# an RGBA8 view, MoltenVK returns alpha 1); not run there: 5 (Mesa !44928 is a draft: strip-GS transform feedback
+# pipelines fail to create, the counter overshoots on overflow), 10 (expects MoltenVK's clean creation failures;
+# KosmicKrisp creates and draws these layouts).
 set -eu
 
 GAMESCOPE_REPO=https://github.com/ValveSoftware/gamescope.git
@@ -181,9 +179,9 @@ build free_after_signal -I"$work"
 build robust_access
 "$work/robust_access" "$gspv"
 
+build invalid_usage
+"$work/invalid_usage" "$gspv"
 if [ "$driver" = moltenvk ]; then
-	build invalid_usage
-	"$work/invalid_usage" "$gspv"
 	# The failing MSL is logged after the error: the first lines without SPIRV-Cross' helper templates, and the
 	# lines around the error locations, each once (the two errors are on neighboring lines).
 	msl_log=$work/msl-log.txt
@@ -210,10 +208,8 @@ build device_address
 build queries
 "$work/queries" "$gspv"
 
-if [ "$driver" = moltenvk ]; then
-	build texel_buffer
-	"$work/texel_buffer" "$gspv"
-fi
+build texel_buffer
+"$work/texel_buffer" "$gspv"
 
 mspv=$work/multi-entry-spv
 rm -rf "$mspv"
@@ -236,8 +232,6 @@ done
 build wgsize
 "$work/wgsize" "$wspv"
 
-if [ "$driver" = moltenvk ]; then
-	spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
-	build descriptor_heap
-	"$work/descriptor_heap" "$gspv"
-fi
+spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
+build descriptor_heap
+"$work/descriptor_heap" "$gspv"
