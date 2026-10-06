@@ -30,10 +30,13 @@ final class OverlayView: NSView {
                 blue: CGFloat(hex & 0xff) / 255, alpha: alpha)
     }
 
+    /// Host Vulkan driver of this boot (VM.start).
+    static var vulkanDriver = LauncherSettings.VulkanDriver.moltenvk
+
     static var gpuFooter: String {
         let gpu = MTLCreateSystemDefaultDevice()?.name ?? "Apple GPU"
         let short = gpu.hasPrefix("Apple ") ? String(gpu.dropFirst(6)) : gpu
-        return "SteamOS · Venus → MoltenVK · \(short)"
+        return "SteamOS · Venus → \(vulkanDriver.name) · \(short)"
     }
 
     override init(frame: NSRect) {

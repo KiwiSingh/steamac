@@ -338,8 +338,10 @@ enum CrashReporting {
             "build_kind": buildKind.rawValue,
         ]
         if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacMVKPatchRevision") as? String { t["mvk_patch"] = rev }
+        if let rev = Bundle.main.object(forInfoDictionaryKey: "SteamacKosmicKrispRevision") as? String { t["kk_patch"] = rev }
+        t["vulkan_driver"] = options.vulkanDriver.rawValue
         for (tag, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"),
-                           ("moltenvk", "libMoltenVK.dylib")] {
+                           ("moltenvk", "libMoltenVK.dylib"), ("kosmickrisp", "libvulkan_kosmickrisp.dylib")] {
             if let uuid = loadedImageUUID(suffix: "/" + lib) { t[tag] = uuid }
         }
         if let run = ProcessInfo.processInfo.environment[runIdEnv] { t["run"] = run }

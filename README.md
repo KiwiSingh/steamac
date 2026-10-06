@@ -8,19 +8,21 @@ Hypervisor.framework (libkrun) with GPU acceleration via Venus.
 ```
 game (DX9/10/11) ─ DXVK (Proton 11, x86 via FEX) ─ Vulkan
    └─ guest Mesa Venus ─ virtio-gpu (blob, 16K alignment)
-        └─ libkrun ─ virglrenderer (Venus) ─ MoltenVK ─ Metal
+        └─ libkrun ─ virglrenderer (Venus) ─ MoltenVK | KosmicKrisp ─ Metal
 ```
 
 Vulkan on Metal — MoltenVK from the UTM fork (geometry shaders, robustness2) +
-`VK_EXT_depth_clip_enable` (PR #2712) + our fixes. KosmicKrisp (Mesa Vulkan-on-Metal) is not
-suitable: it requires Metal 4 / macOS 26.
+`VK_EXT_depth_clip_enable` (PR #2712) + our fixes, by default. KosmicKrisp (Mesa's Vulkan driver on
+Metal 4) is an experimental alternative on macOS 26+ (see “Vulkan driver”).
 
 ## Requirements
 
 - Apple Silicon Mac, macOS 15+, ~150 GB of free space (the disk image is sparse).
 - Xcode 26+ (full installation: its `actool` builds the app icon from an Icon Composer document), Homebrew, rustup.
+- KosmicKrisp (optional, alternative Vulkan driver): built only on macOS 26+; `host/kosmickrisp/build.sh`
+  installs its Homebrew dependencies (`llvm spirv-llvm-translator spirv-tools vulkan-loader glslang`).
 - OrbStack (or Docker with arm64 and `--privileged`): the kernel, Mesa, and disk image are built in Linux containers.
-- Homebrew packages: `meson ninja pkg-config dtc xz lld libepoxy sshpass`.
+- Homebrew packages: `meson ninja pkg-config dtc xz lld libepoxy sshpass go` (`go`: license inventory of the bundled gvproxy/desync).
 
 ## Building and running
 
@@ -168,7 +170,7 @@ over saved values, but only for that launch: the field displays “overridden by
 | Mouse | auto-capture in games; game list (name from `appmanifest_<appid>.acf`, Default/Auto/Off, remove) | — |
 | Controller | which physical controller (GameController) drives the virtual pad (first connected or selected), whether SteamOS gets a pad and what it appears as (`--no-gamepad`, `--pad`, see “Controller”), swap A/B and X/Y, stick dead zone, live input test | — |
 | Sound | output device (System default follows macOS, or a specific CoreAudio device), volume/mute, Low/Normal/Safe buffer — via `krun_snd_set_*` (looked up with `dlsym`; with an older libkrun the fields are disabled with an explanation) | sound (`--no-sound`) |
-| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH enable/disable + port (`--ssh-port`, `--no-ssh`) and generated password, network (`--no-net`), disk image (`--disk`), Create New Disk…, Steam client (`--steam-client`, see “Steam client”) |
+| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH enable/disable + port (`--ssh-port`, `--no-ssh`) and generated password, network (`--no-net`), disk image (`--disk`), Create New Disk…, Steam client (`--steam-client`, see “Steam client”), Vulkan driver (`--vulkan-driver`, see “Vulkan driver”) |
 
 For tests: `STEAMAC_DEFAULTS_DOMAIN=<domain>` substitutes the settings domain; `--selftest-settings
 --selftest-out DIR` opens the window without a VM and writes a PNG of each tab; `--control-fifo` has
@@ -432,6 +434,28 @@ SteamOS (any client branch) still works when `frame` is selected (or when the la
 parameter — older versions, a custom `--cmdline`); the launcher's `deck` / `deckbeta` selection
 takes precedence over the file.
 
+## Vulkan driver
+
+The host Vulkan driver behind Venus is chosen in **Settings → Advanced → Vulkan driver** (applies on
+next start) or for one launch with `--vulkan-driver moltenvk|kosmickrisp`. virglrenderer opens the
+driver at runtime (no Vulkan loader): the launcher sets `VKR_VULKAN_DRIVER` to
+`@rpath/libMoltenVK.dylib` or `@rpath/libvulkan_kosmickrisp.dylib` before the VM starts. The boot
+overlay shows the driver (“Venus → KosmicKrisp”); crash reports carry `vulkan_driver` and the
+driver's patch revision.
+
+| Option | What it is | Pros and cons |
+|---|---|---|
+| **MoltenVK** (`moltenvk`, by default) | `host/moltenvk/`: the UTM fork + steamac's patches | every supported Mac; games are tested with it; D3D12 (vkd3d-proton) device checks pass |
+| **KosmicKrisp** (`kosmickrisp`, experimental) | `host/kosmickrisp/`: Mesa main + open MRs (geometry shaders !44786, transform feedback !44928, tiled images in host-pointer memory !44929, device-local memory type !44221, linear render targets !44782/!44222) + steamac's patches (explicit LINEAR row pitch, LINEAR input attachments, `fillModeNonSolid`, which DXVK requires) | macOS 26+ only (Metal 4); built only when the build host runs macOS 26+, otherwise the setting falls back to MoltenVK. Steam UI and gamescope work; known gaps (host repros): transform feedback with strip geometry shaders, 8-sample pipelines (skipped draws), no single texel buffer alignment, so vkd3d-proton (D3D12) is not expected to start |
+
+Switching changes the Venus driver identity (pipeline cache UUID), so Steam and games rebuild their
+shader caches. A pipeline the host driver cannot build is a placeholder in virglrenderer: its draws
+and dispatches are dropped, the driver never sees `VK_NULL_HANDLE`.
+
+Checks without a VM: `host/kosmickrisp/build.sh` runs `host/moltenvk/probe` and the repros
+(`REPRO_DRIVER=kosmickrisp host/moltenvk/repro/run.sh <dylib>`, through the Khronos loader, test
+only) on the staged driver; `host/virglrenderer/build.sh` runs `venus_check` with each installed driver.
+
 ## Signing in
 
 The Steam Frame client's sign-in screen is designed for a headset: “Tap to confirm” pairs with a
@@ -643,8 +667,9 @@ then it closes on its own; `STEAMAC_REPORT_TEST_SEND=1` also sends a test report
 
 | Directory | Contents |
 |---|---|
-| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + patches: depth_clip_enable, YCbCr arrays, null descriptors, geometry shader emulation for zink/DXVK (vertex stride, instancing, adjacency, fans, SCALED formats, `gl_in`), transform feedback (DXVK stream output) and its queries (SO statistics), query result availability on copy (DXVK occlusion queries via Venus), atomics on vector components at buffer addresses (BDA, vkd3d-proton), texel buffers with offsets at any texel (vkd3d-proton), writes to small push-descriptor buffers with robustness2, variable-count descriptor arrays as runtime arrays (Metal kept 32 MB per vkd3d-proton heap array and program), allocation of auxiliary buffers, deferred release of Metal resources, patch hash in the pipeline cache UUID; tests in `repro/` run under Metal validation; `bench/run.sh <libdir>…` compares performance of changes between builds; `bench/shaders.sh <dump or pack>` measures a game's shader compilation (SPIR-V → MSL, MSL → Metal library, pipeline states; cold/warm, threads) from a MoltenVK shader dump or a 10% sample made with `bench/pack.py` |
-| `host/virglrenderer/` | virglrenderer UTM `macos-next` + merge with upstream main (venus-protocol 1.1.3) + LINEAR modifier, shm import as host memory, stubs for failed pipelines, recreation of rejected cache, deferred shm unmap, thread QoS |
+| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + patches: depth_clip_enable, YCbCr arrays, null descriptors, geometry shader emulation for zink/DXVK (vertex stride, instancing, adjacency, fans, SCALED formats, `gl_in`), transform feedback (DXVK stream output) and its queries (SO statistics), query result availability on copy (DXVK occlusion queries via Venus), atomics on vector components at buffer addresses (BDA, vkd3d-proton), texel buffers with offsets at any texel (vkd3d-proton), writes to small push-descriptor buffers with robustness2, variable-count descriptor arrays as runtime arrays (Metal kept 32 MB per vkd3d-proton heap array and program), allocation of auxiliary buffers, deferred release of Metal resources, patch hash in the pipeline cache UUID; tests in `repro/` run under Metal validation (also on KosmicKrisp: `REPRO_DRIVER=kosmickrisp`); `bench/run.sh <libdir>…` compares performance of changes between builds; `bench/shaders.sh <dump or pack>` measures a game's shader compilation (SPIR-V → MSL, MSL → Metal library, pipeline states; cold/warm, threads) from a MoltenVK shader dump or a 10% sample made with `bench/pack.py` |
+| `host/kosmickrisp/` | KosmicKrisp (Mesa main @ce576c29) + open Mesa MRs and steamac patches (see “Vulkan driver”), built without LLVM at runtime (`-Dllvm=disabled`, `mesa_clc` from a first build), `-Db_ndebug=true`; macOS 26+ only |
+| `host/virglrenderer/` | virglrenderer UTM `macos-next` + merge with upstream main (venus-protocol 1.1.3) + LINEAR modifier, shm import as host memory, stubs for failed pipelines (draws dropped in virglrenderer), recreation of rejected cache, deferred shm unmap, thread QoS, Vulkan driver opened at runtime (`VKR_VULKAN_DRIVER`) |
 | `host/libkrun/` | libkrun v1.19.6 + patches: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), SME mask for M4, 2D resources without virgl, `SET_SCANOUT_BLOB`, SHM blob mapping, Venus fence signaling, virglrenderer logs, `krun_display_resize` (resolution changes on the fly), vCPU/GPU thread QoS |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): Metal window, “FX STEAM LAUNCHER” overlay with boot/shutdown progress, guest resolution = window size at constant DPI (EDID from the physical screen size), keyboard/mouse/tablet, the guest's Xbox 360 / DualSense / DualShock 4 pad from GameController.framework with rumble (`fx.pad`), network via gvproxy, VM restart on guest reboot, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, everything built in, 4K pages, 16K blob-node alignment, Apple TSO for FEX |

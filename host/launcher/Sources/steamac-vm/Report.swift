@@ -353,10 +353,12 @@ final class ReportBundle: @unchecked Sendable {
         add("mac", "\(ReportBundle.sysctl("hw.model") ?? "?"), \(ReportBundle.sysctl("machdep.cpu.brand_string") ?? "?"), "
             + "\(ProcessInfo.processInfo.activeProcessorCount) cores, \(ProcessInfo.processInfo.physicalMemory >> 30) GB")
         add("gpu", MTLCreateSystemDefaultDevice()?.name ?? "none")
-        for (label, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"), ("MoltenVK", "libMoltenVK.dylib")] {
+        for (label, lib) in [("libkrun", "libkrun.1.dylib"), ("virglrenderer", "libvirglrenderer.1.dylib"), ("MoltenVK", "libMoltenVK.dylib"),
+                             ("KosmicKrisp", "libvulkan_kosmickrisp.dylib")] {
             add(label, ReportBundle.libraryIdentity(lib))
         }
         add("MoltenVK patch", info["SteamacMVKPatchRevision"] as? String)
+        add("KosmicKrisp patch", info["SteamacKosmicKrispRevision"] as? String)
         let tags = CrashReporting.tagSnapshot(runDir: context.runDir)
         if let o = context.options {
             add("kernel", (CrashReporting.kernelVersion(image: o.kernel) ?? "?") + " (\(o.kernel))")
@@ -365,7 +367,8 @@ final class ReportBundle: @unchecked Sendable {
             add("vm", "cpus \(o.cpus) (\(o.cpusSource.rawValue)), memory \(o.memMiB) MiB (\(o.memSource.rawValue)), "
                 + "display \(o.displayWidth)x\(o.displayHeight)@\(o.refreshRate)"
                 + (o.headless ? " headless" : o.fullscreen ? " fullscreen" : " windowed")
-                + ", mouse \(o.mouseMode.rawValue), network \(o.network ? "on" : "off"), sound \(o.sound ? "on" : "off"), gamepad \(o.gamepad ? "on" : "off")")
+                + ", mouse \(o.mouseMode.rawValue), network \(o.network ? "on" : "off"), sound \(o.sound ? "on" : "off"), gamepad \(o.gamepad ? "on" : "off")"
+                + ", vulkan \(o.vulkanDriver.rawValue)")
             add("cmdline", o.cmdline)
         }
         var build = tags["steamos_build"], layer = tags["layer"]

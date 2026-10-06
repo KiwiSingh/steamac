@@ -4,13 +4,20 @@
 # rustup, OrbStack (or another Docker with arm64 + privileged containers).
 #
 #   ./build.sh            host stack, guest kernel, guest Venus Mesa, disk image
-#   ./build.sh host       only the macOS side (MoltenVK, virglrenderer, libkrun, launcher)
+#   ./build.sh host       only the macOS side (MoltenVK, KosmicKrisp on macOS 26+, virglrenderer,
+#                         libkrun, launcher)
 #   ./build.sh guest      only the guest side (kernel, rootfs, Mesa, initramfs, layer, disk)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 host() {
     host/moltenvk/build.sh
+    # KosmicKrisp needs Metal 4 (macOS 26+); without it the app offers MoltenVK only.
+    if (($(sw_vers -productVersion | cut -d. -f1) >= 26)); then
+        host/kosmickrisp/build.sh
+    else
+        echo "KosmicKrisp skipped: needs macOS 26 or newer" >&2
+    fi
     host/virglrenderer/build.sh
     host/libkrun/build.sh
     host/launcher/build.sh

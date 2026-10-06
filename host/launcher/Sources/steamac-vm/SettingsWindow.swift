@@ -974,6 +974,18 @@ private struct AdvancedTab: View {
                            detail: settings.steamClient.detail + " " + LauncherSettings.SteamClient.switchNote,
                            now: false, key: .steamClient)
                 }
+                Picker(selection: $settings.vulkanDriver) {
+                    ForEach(LauncherSettings.VulkanDriver.allCases) { d in
+                        Text(d == .moltenvk ? d.title + " (default)" : d.title).tag(d)
+                            .disabled(d.unavailableReason != nil && d != settings.vulkanDriver)
+                    }
+                } label: {
+                    Label2(title: "Vulkan driver",
+                           detail: settings.vulkanDriver.detail + " " + LauncherSettings.VulkanDriver.switchNote
+                               + (settings.vulkanDriver.unavailableReason.map {
+                                   " Not available here: \($0); MoltenVK is used." } ?? ""),
+                           now: false, key: .vulkanDriver)
+                }
             }
             Section {
                 HStack {

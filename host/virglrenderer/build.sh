@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the host virglrenderer (Venus over MoltenVK) that libkrun links against.
+# Build the host virglrenderer (Venus over MoltenVK or KosmicKrisp) that libkrun links against.
 #
 #   host/virglrenderer/build.sh        build/refresh work/out/host/{lib,include}/virgl...
 #   host/virglrenderer/build.sh clean  drop the source/build tree (next build is from scratch)
@@ -18,8 +18,10 @@
 # VIRGL_RESOURCE_FD_SHM fd. Importing into non-host-visible memory types needs MoltenVK
 # PR #2834, which the steamac MoltenVK (host/moltenvk, utmapp/MoltenVK 05604465) carries.
 #
-# Vulkan: the steamac MoltenVK in work/out/host/lib, linked directly (no loader, no ICD lookup
-# at runtime; built by host/moltenvk/build.sh if missing).
+# Vulkan: no loader and no link-time driver. The driver dylib is opened at runtime
+# (vulkan-dload, patch 0013): VKR_VULKAN_DRIVER names it (@rpath/libvulkan_kosmickrisp.dylib
+# for KosmicKrisp, host/kosmickrisp), the steamac MoltenVK (@rpath/libMoltenVK.dylib, built
+# by host/moltenvk/build.sh if missing) when unset.
 # Venus only runs behind virglrenderer's render server; it is built in "thread" mode
 # (server + workers are threads inside the VMM process, no extra executable).
 # Output install_name: @rpath/libvirglrenderer.1.dylib.
@@ -44,7 +46,7 @@ build=$work/build
 stage=$work/stage
 out=$root/work/out/host
 mvk_lib=$out/lib/libMoltenVK.dylib
-mvk_vk_include=$root/work/build/host-moltenvk/src/Package/Release/MoltenVK/include
+kk_lib=$out/lib/libvulkan_kosmickrisp.dylib
 
 if [ "${1:-}" = clean ]; then
 	rm -rf "$work"
@@ -54,7 +56,7 @@ fi
 for dep in $BREW_DEPS; do
 	brew list --versions "$dep" > /dev/null 2>&1 || brew install "$dep"
 done
-if [ ! -f "$mvk_lib" ] || [ ! -f "$mvk_vk_include/vulkan/vulkan_core.h" ]; then
+if [ ! -f "$mvk_lib" ]; then
 	"$root/host/moltenvk/build.sh"
 fi
 
@@ -97,20 +99,10 @@ if [ ! -x "$work/venv/bin/python3" ]; then
 fi
 "$work/venv/bin/pip" -q install "pyyaml==$PYYAML_VERSION" "mako==$MAKO_VERSION"
 
-# --- the steamac MoltenVK as the `vulkan` dependency
-mkdir -p "$work/pkgconfig"
-cat > "$work/pkgconfig/vulkan.pc" << EOF
-Name: vulkan
-Description: steamac MoltenVK (host/moltenvk), linked directly as the Vulkan implementation
-Version: 1.4.0
-Libs: -L$out/lib -lMoltenVK
-Cflags: -I$mvk_vk_include
-EOF
-
 rm -rf "$build" "$stage"
-PATH="$work/venv/bin:$PATH" PKG_CONFIG_PATH="$work/pkgconfig" meson setup "$build" "$src" \
+PATH="$work/venv/bin:$PATH" meson setup "$build" "$src" \
 	--prefix="$out" --libdir=lib --buildtype=release \
-	-Dvenus=true -Dvulkan-dload=false \
+	-Dvenus=true -Dvulkan-dload=true \
 	-Drender-server-mode=thread -Drender-server-worker=thread \
 	-Dneptune=false -Dvtest=false -Dtests=false -Dvideo=false \
 	-Dcheck-gl-errors=false
@@ -120,21 +112,14 @@ staged=$stage$out
 
 lib=$staged/lib/libvirglrenderer.1.dylib
 install_name_tool -id @rpath/libvirglrenderer.1.dylib "$lib"
-if otool -L "$lib" | grep -q /opt/homebrew/opt/molten-vk; then
-	echo "libvirglrenderer links Homebrew MoltenVK" >&2
+if otool -L "$lib" | grep -qiE 'molten|vulkan'; then
+	echo "libvirglrenderer links a Vulkan library (the driver is opened at runtime)" >&2
 	exit 1
 fi
 codesign --force -s - "$lib"
 
-# The installed .pc lists the private `vulkan` package, which only exists in the
-# build-time pkgconfig dir above; consumers of the shared library get MoltenVK
-# as a private link flag instead.
 pc=$staged/lib/pkgconfig/virglrenderer.pc
-sed -i '' \
-	-e 's/^\(Requires.private:.*\), vulkan$/\1/' \
-	-e "s|^Libs.private: |Libs.private: -L$out/lib -lMoltenVK |" \
-	"$pc"
-if grep -q 'vulkan' "$pc"; then
+if grep -qiE 'vulkan|molten' "$pc"; then
 	echo "unexpected virglrenderer.pc layout:" >&2
 	cat "$pc" >&2
 	exit 1
@@ -151,8 +136,14 @@ rm -rf "$stage"
 echo ">> $out/lib/libvirglrenderer.1.dylib"
 otool -L "$out/lib/libvirglrenderer.1.dylib"
 
-# --- standalone Venus check: renderer init, capset, context, host blob exported as shm fd
+# --- standalone Venus check: renderer init, capset, context, host blob exported as shm fd,
+#     with every installed driver (MoltenVK by default, KosmicKrisp when built)
 check=$work/venus_check
 clang -std=c11 -Wall -Werror -o "$check" "$here/test/venus_check.c" \
 	-I"$out/include" -L"$out/lib" -lvirglrenderer -Wl,-rpath,"$out/lib"
+echo ">> venus_check: MoltenVK"
 "$check"
+if [ -f "$kk_lib" ]; then
+	echo ">> venus_check: KosmicKrisp"
+	VKR_VULKAN_DRIVER=@rpath/libvulkan_kosmickrisp.dylib "$check"
+fi
