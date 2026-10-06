@@ -416,7 +416,8 @@ enum CrashReporting {
         let run = locked { tags["run"] } ?? String(format: "%08x", arc4random())
         env[runIdEnv] = run
         setTags(["run": run, "boot": String(boot), "vm_cpus": String(o.cpus), "vm_mem_mib": String(o.memMiB),
-                 "vm_cpus_auto": String(o.cpusSource == .auto), "vm_mem_auto": String(o.memSource == .auto)])
+                 "vm_cpus_auto": String(o.cpusSource == .auto), "vm_mem_auto": String(o.memSource == .auto),
+                 "vulkan_driver": o.vulkanDriver.rawValue])
         memoryWatch.reset()
         followSetting()
     }
