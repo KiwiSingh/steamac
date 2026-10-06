@@ -45,6 +45,8 @@ struct Options {
     var steamClient = LauncherSettings.SteamClient.frame
     /// Settings > General "Use the Mac's time zone": kernel cmdline steamac.tz= (MacTime).
     var macTime = true
+    /// Host Vulkan driver of this boot (virglrenderer opens it; VM.start).
+    var vulkanDriver = LauncherSettings.VulkanDriver.moltenvk
     var shmMiB = 8192
     var gpuFlags: UInt32? = nil
     var gvproxyPath: String?
@@ -99,6 +101,7 @@ struct Options {
                       [--mouse auto|tablet|capture] [--no-gamepad] [--pad auto|xbox360|dualsense|dualshock4]
                       [--krun-log-level 0-5] [--perf-stats]
                       [--no-crash-reports] [--steam-client frame|deck|deckbeta]
+                      [--vulkan-driver moltenvk|kosmickrisp]
            steamac-vm --selftest-display [--headless] [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-overlay [--selftest-out DIR] [--display WxH]
            steamac-vm --selftest-stall [--selftest-out DIR] [--display WxH]
@@ -111,8 +114,8 @@ struct Options {
 
     Without a flag, next-start values come from the Settings window (defaults domain es.fxgam.steamac):
     vCPUs, RAM, SSH port, network, sound, virtual pad, refresh, window size, physical size (DPI),
-    fullscreen, perf stats, Steam client, Mac time zone (Settings > General: adds steamac.tz=<the
-    Mac's zone> to the kernel cmdline unless --cmdline sets it).
+    fullscreen, perf stats, Steam client, Vulkan driver, Mac time zone (Settings > General: adds
+    steamac.tz=<the Mac's zone> to the kernel cmdline unless --cmdline sets it).
     Inside FX Steam Launcher.app, --kernel/--initrd/--disk default to the bundled Image, initramfs and
     layer plus the disk image chosen in Settings > Advanced.
 
@@ -171,6 +174,11 @@ struct Options {
                            deck: public ARM64 Steam Deck client (steamdeck_stable);
                            deckbeta: Steam Deck client beta (steamdeck_publicbeta).
                            Switching downloads the other client (~1 GB) when Steam starts.
+      --vulkan-driver D    host Vulkan driver behind Venus (default: Settings > Advanced "Vulkan driver"):
+                           moltenvk: MoltenVK with steamac's patches (every Mac);
+                           kosmickrisp: Mesa's KosmicKrisp on Metal 4, experimental (macOS 26 or newer,
+                           builds that include it: host/kosmickrisp). Switching makes Steam and games
+                           rebuild their shader caches.
 
     Creating a SteamOS disk (no Docker; the same code as Settings > Advanced "Create New Disk…"):
       --create-disk PATH   download the signed SteamOS bundle of the branch (default: the saved setting,
@@ -298,6 +306,12 @@ struct Options {
                     throw OptionError("--steam-client: frame, deck or deckbeta")
                 }
                 o.steamClient = c
+            case "--vulkan-driver":
+                let v = try value(a)
+                guard let d = LauncherSettings.VulkanDriver(rawValue: v) else {
+                    throw OptionError("--vulkan-driver: moltenvk or kosmickrisp")
+                }
+                o.vulkanDriver = d
             case "--shm-mib": o.shmMiB = try int(a)
             case "--gpu-flags":
                 let v = try value(a)
@@ -385,6 +399,13 @@ struct Options {
     static func resolve(_ argv: [String], settings: LauncherSettings) throws -> (Options, [LauncherSettings.Key: String]) {
         var o = try parse(argv)
         var overrides = o.applySettings(settings)
+        if !o.isSelftest, let reason = o.vulkanDriver.unavailableReason {
+            guard !o.explicit.contains("--vulkan-driver") else {
+                throw OptionError("--vulkan-driver \(o.vulkanDriver.rawValue): \(o.vulkanDriver.name) \(reason)")
+            }
+            log("gpu: \(o.vulkanDriver.name) \(reason); using MoltenVK")
+            o.vulkanDriver = .moltenvk
+        }
         if !o.isSelftest {
             AppBundle.fill(&o, settings: settings, overrides: &overrides)
             Provision.attachPending(&o)
@@ -442,6 +463,7 @@ struct Options {
         if given("--no-net") { ov[.network] = "--no-net" } else { network = s.network }
         macTime = s.followMacTime
         if given("--steam-client") { ov[.steamClient] = "--steam-client \(steamClient.rawValue)" } else { steamClient = s.steamClient }
+        if given("--vulkan-driver") { ov[.vulkanDriver] = "--vulkan-driver \(vulkanDriver.rawValue)" } else { vulkanDriver = s.vulkanDriver }
         if given("--no-sound") { ov[.soundEnabled] = "--no-sound" } else { sound = s.soundEnabled }
         if given("--no-gamepad") { ov[.virtualPad] = "--no-gamepad" }
         if let padType { ov[.padType] = "--pad \(padType.rawValue)" }

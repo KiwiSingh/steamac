@@ -473,10 +473,28 @@ int main(int argc, char **argv)
 	uint8_t *readback;
 	VkBuffer readback_buf = host_buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, (void **)&readback);
 
+	/* CVulkanDevice::createPools(): Y'CbCr slots take combinedImageSamplerDescriptorCount
+	 * descriptors each (1 on MoltenVK, the plane count on KosmicKrisp). */
+	VkPhysicalDeviceImageFormatInfo2 nv12_info = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+		.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM,
+		.type = VK_IMAGE_TYPE_2D,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+	};
+	VkSamplerYcbcrConversionImageFormatProperties ycbcr_props = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES,
+	};
+	VkImageFormatProperties2 nv12_props = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+		.pNext = &ycbcr_props,
+	};
+	CK(vkGetPhysicalDeviceImageFormatProperties2(pd, &nv12_info, &nv12_props));
 	VkDescriptorPoolSize sizes[] = {
 		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * VKR_SAMPLER_SLOTS + 2 * VKR_LUT3D_COUNT },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		  (ycbcr_props.combinedImageSamplerDescriptorCount + 1) * VKR_SAMPLER_SLOTS + 2 * VKR_LUT3D_COUNT },
 	};
 	VkDescriptorPoolCreateInfo dpci = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,

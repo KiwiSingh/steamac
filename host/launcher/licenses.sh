@@ -125,6 +125,15 @@ source('MoltenVK-SPIRV-Headers', require(revisions / 'SPIRV-Headers_repo_revisio
        'Apache-2.0', host + '/libMoltenVK.dylib', 'https://github.com/KhronosGroup/SPIRV-Headers', spv_headers,
        [str(p.relative_to(spv_headers)) for p in (spv_headers / 'LICENSES').rglob('*') if p.is_file()])
 # Vulkan-Tools is fetched by MoltenVK for SDK tooling, not linked into the dylib.
+# KosmicKrisp (Mesa), bundled when host/kosmickrisp built it (macOS 26+ build hosts).
+if (root / 'work/out/host/lib/libvulkan_kosmickrisp.dylib').is_file():
+    mesa = root / 'work/build/host-kosmickrisp/src'
+    mesa_commit = re.search(r'^MESA_COMMIT=([0-9a-f]{40})$', (root / 'host/kosmickrisp/build.sh').read_text(), re.M)
+    if not mesa_commit:
+        raise RuntimeError('missing pinned KosmicKrisp Mesa commit')
+    source('KosmicKrisp-Mesa', mesa_commit.group(1)[:10], 'MIT', host + '/libvulkan_kosmickrisp.dylib',
+           'https://gitlab.freedesktop.org/mesa/mesa/-/tree/' + mesa_commit.group(1), mesa,
+           ['docs/license.rst'] + [str(p.relative_to(mesa)) for p in sorted((mesa / 'licenses').rglob('*')) if p.is_file()])
 epoxy = Path(run('brew', '--prefix', 'libepoxy'))
 source('libepoxy', run('brew', 'list', '--versions', 'libepoxy').split()[-1], 'MIT',
        host + '/libepoxy.0.dylib', 'https://github.com/anholt/libepoxy', epoxy)

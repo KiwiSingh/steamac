@@ -1,8 +1,12 @@
 #!/bin/sh
-# Host reproductions of guest workloads on the built MoltenVK (no VM needed).
+# Host reproductions of guest workloads on a built host Vulkan driver (no VM needed).
 #
-#   host/moltenvk/repro/run.sh [libdir]
-#
+#   host/moltenvk/repro/run.sh [libdir]                   MoltenVK: libMoltenVK.dylib in [libdir]
+#                                                         (default work/out/host/lib), linked directly
+#   REPRO_DRIVER=kosmickrisp host/moltenvk/repro/run.sh <libvulkan_kosmickrisp.dylib>
+#                                                         KosmicKrisp through the Khronos loader
+#                                                         (Homebrew vulkan-loader, test only: steamac
+#                                                         opens the driver without a loader)
 # 1. gamescope_cs.c: fetches gamescope 3.16.28 (pinned), compiles src/shaders/cs_*.comp with
 #    glslang like gamescope's meson build (glslangValidator -V) and creates every pipeline
 #    variant; cs_composite_blit must write the expected pixels from s_samplers[0] and from
@@ -63,7 +67,14 @@
 #    inline array<T, 1000000> and program, ~100 MB per pipeline).
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
-# All are built against libMoltenVK in [libdir] (default work/out/host/lib) and must pass.
+# All must pass on MoltenVK. On KosmicKrisp 1-4, 6-8, 11, 12, 14 and 15 must pass (1 sizes the descriptor pool
+# with combinedImageSamplerDescriptorCount like gamescope; 2 skips the VK_NULL_HANDLE binds, which
+# virglrenderer no longer passes to the driver); not run there, known KosmicKrisp gaps: 5 (Mesa !44928 is a
+# draft: strip-GS transform feedback pipelines fail to create, the counter overshoots on overflow), 9
+# (8-sample pipelines fail to create; MSL logging is MoltenVK's), 10 (expects MoltenVK's clean creation
+# failures; KosmicKrisp creates and draws these layouts), 13 (no single texel alignment: vkd3d-proton's
+# D3D12CreateDevice gate fails), 16 (likewise: texel views at 4-byte offsets, Metal aborts the buffer-backed
+# texture).
 set -eu
 
 GAMESCOPE_REPO=https://github.com/ValveSoftware/gamescope.git
@@ -72,13 +83,45 @@ GAMESCOPE_COMMIT=fa0b4d3342078f01eadff0193e09c3b561f40c03
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-work=$root/work/build/host-moltenvk/repro
-libdir=${1:-$root/work/out/host/lib}
 inc=$root/work/build/host-moltenvk/src/Package/Release/MoltenVK/include
+driver=${REPRO_DRIVER:-moltenvk}
+case $driver in
+moltenvk)
+	work=$root/work/build/host-moltenvk/repro
+	libdir=${1:-$root/work/out/host/lib}
+	link="-L$libdir -lMoltenVK -Wl,-rpath,$libdir"
+	export MVK_CONFIG_LOG_LEVEL=1
+	;;
+kosmickrisp)
+	work=$root/work/build/host-kosmickrisp/repro
+	kk=${1:?usage: REPRO_DRIVER=kosmickrisp $0 <libvulkan_kosmickrisp.dylib>}
+	brew list --versions vulkan-loader > /dev/null 2>&1 || brew install vulkan-loader
+	loader=$(brew --prefix vulkan-loader)/lib
+	link="-L$loader -lvulkan -Wl,-rpath,$loader"
+	mkdir -p "$work"
+	printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
+		"$kk" > "$work/kosmickrisp_icd.json"
+	export VK_DRIVER_FILES="$work/kosmickrisp_icd.json"
+	unset VK_ICD_FILENAMES
+	;;
+*)
+	echo "REPRO_DRIVER must be moltenvk or kosmickrisp" >&2
+	exit 2
+	;;
+esac
+export MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert
 
 brew list --versions glslang > /dev/null 2>&1 || brew install glslang
 brew list --versions spirv-tools > /dev/null 2>&1 || brew install spirv-tools
 mkdir -p "$work"
+
+# build <program> [cflags...]: $here/<program>.c -> $work/<program>, linked against the driver
+build() {
+	prog=$1
+	shift
+	# shellcheck disable=SC2086
+	xcrun clang -std=c11 -Wall -Werror -O1 "$@" -I"$inc" "$here/$prog.c" $link -o "$work/$prog"
+}
 
 src=$work/gamescope
 if [ ! -d "$src/.git" ]; then
@@ -98,10 +141,9 @@ for s in "$src"/src/shaders/cs_*.comp; do
 	glslangValidator -V --quiet "$s" -o "$spv/$(basename "$s" .comp).spv"
 done
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/gamescope_cs.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/gamescope_cs"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/gamescope_cs" "$spv" robust2
+build gamescope_cs
+"$work/gamescope_cs" "$spv"
+"$work/gamescope_cs" "$spv" robust2
 
 gspv=$work/geometry-spv
 rm -rf "$gspv"
@@ -115,69 +157,63 @@ done
 for s in "$here"/shaders/*.spvasm; do
 	spirv-as --target-env vulkan1.0 "$s" -o "$gspv/$(basename "$s" .spvasm).spv"
 done
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/geometry.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/geometry"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/geometry" "$gspv"
+build geometry
+"$work/geometry" "$gspv"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/depth_stencil.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/depth_stencil"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/depth_stencil"
+build depth_stencil
+"$work/depth_stencil"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/linear_pitch.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/linear_pitch"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/linear_pitch"
+build linear_pitch
+"$work/linear_pitch"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/xfb.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/xfb"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/xfb" "$gspv"
-
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/zero_init.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/zero_init"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/zero_init" "$gspv"
-
-glslangValidator -V --quiet -x "$here/shaders/busy.comp" -o "$work/busy.comp.inc"
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$work" -I"$inc" "$here/free_after_signal.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/free_after_signal"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/free_after_signal"
-
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/robust_access.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/robust_access"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/robust_access" "$gspv"
-
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/invalid_usage.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/invalid_usage"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv"
-# The failing MSL is logged after the error: the first lines without SPIRV-Cross' helper templates, and the
-# lines around the error locations, each once (the two errors are on neighboring lines).
-msl_log=$work/msl-log.txt
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/invalid_usage" "$gspv" msl-log 2> "$msl_log"
-msl_context=$(grep '^\[mvk-msl\] [0-9][0-9]*: ' "$msl_log" || true)
-if grep -q '^\[mvk-msl\] #include <metal_stdlib>$' "$msl_log" && grep -q '^\[mvk-msl\] \.\.\. ([0-9]* lines of templates left out)$' "$msl_log" &&
-	! grep -q '^\[mvk-msl\] struct spvUnsafeArray' "$msl_log" && [ "$(printf '%s\n' "$msl_context" | grep -c 'double')" -eq 2 ] &&
-	[ -z "$(printf '%s\n' "$msl_context" | sed 's/: .*//' | sort | uniq -d)" ]; then
-	echo "OK   failing MSL logged: $(grep -c '^\[mvk-msl\] ' "$msl_log") [mvk-msl] lines, $(grep '^\[mvk-msl\] \.\.\. (' "$msl_log" | sed 's/^\[mvk-msl\] //' | tr '\n' ' ')error context (each line once):"
-	printf '%s\n' "$msl_context"
-else
-	echo "FAIL failing MSL not logged as [mvk-msl] lines (head without templates, both error lines, each context line once):"
-	cat "$msl_log"
-	exit 1
+if [ "$driver" = moltenvk ]; then
+	build xfb
+	"$work/xfb" "$gspv"
 fi
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/vertex_input.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/vertex_input"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/vertex_input" "$gspv"
+build zero_init
+"$work/zero_init" "$gspv"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/device_address.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/device_address"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/device_address" "$gspv"
+glslangValidator -V --quiet -x "$here/shaders/busy.comp" -o "$work/busy.comp.inc"
+build free_after_signal -I"$work"
+"$work/free_after_signal"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/queries.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/queries"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/queries" "$gspv"
+build robust_access
+"$work/robust_access" "$gspv"
 
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/texel_buffer.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/texel_buffer"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/texel_buffer" "$gspv"
+if [ "$driver" = moltenvk ]; then
+	build invalid_usage
+	"$work/invalid_usage" "$gspv"
+	# The failing MSL is logged after the error: the first lines without SPIRV-Cross' helper templates, and the
+	# lines around the error locations, each once (the two errors are on neighboring lines).
+	msl_log=$work/msl-log.txt
+	"$work/invalid_usage" "$gspv" msl-log 2> "$msl_log"
+	msl_context=$(grep '^\[mvk-msl\] [0-9][0-9]*: ' "$msl_log" || true)
+	if grep -q '^\[mvk-msl\] #include <metal_stdlib>$' "$msl_log" && grep -q '^\[mvk-msl\] \.\.\. ([0-9]* lines of templates left out)$' "$msl_log" &&
+		! grep -q '^\[mvk-msl\] struct spvUnsafeArray' "$msl_log" && [ "$(printf '%s\n' "$msl_context" | grep -c 'double')" -eq 2 ] &&
+		[ -z "$(printf '%s\n' "$msl_context" | sed 's/: .*//' | sort | uniq -d)" ]; then
+		echo "OK   failing MSL logged: $(grep -c '^\[mvk-msl\] ' "$msl_log") [mvk-msl] lines, $(grep '^\[mvk-msl\] \.\.\. (' "$msl_log" | sed 's/^\[mvk-msl\] //' | tr '\n' ' ')error context (each line once):"
+		printf '%s\n' "$msl_context"
+	else
+		echo "FAIL failing MSL not logged as [mvk-msl] lines (head without templates, both error lines, each context line once):"
+		cat "$msl_log"
+		exit 1
+	fi
+
+	build vertex_input
+	"$work/vertex_input" "$gspv"
+fi
+
+build device_address
+"$work/device_address" "$gspv"
+
+build queries
+"$work/queries" "$gspv"
+
+if [ "$driver" = moltenvk ]; then
+	build texel_buffer
+	"$work/texel_buffer" "$gspv"
+fi
 
 mspv=$work/multi-entry-spv
 rm -rf "$mspv"
@@ -188,9 +224,8 @@ for env in vulkan1.0 vulkan1.3; do
 	glslangValidator -V --quiet --target-env $env -e cs_main --source-entrypoint main "$here/shaders/multi_entry/cs.comp" -o "$mspv/cs.$env.spv"
 	spirv-link --target-env $env "$mspv/vs.$env.spv" "$mspv/fs.$env.spv" "$mspv/cs.$env.spv" -o "$mspv/multi_entry.$env.spv"
 done
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/multi_entry.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/multi_entry"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/multi_entry" "$mspv"
+build multi_entry
+"$work/multi_entry" "$mspv"
 
 wspv=$work/wgsize-spv
 rm -rf "$wspv"
@@ -198,11 +233,11 @@ mkdir -p "$wspv"
 for s in "$here"/shaders/wgsize/*.spvasm; do
 	spirv-as --target-env vulkan1.3 "$s" -o "$wspv/$(basename "$s" .spvasm).spv"
 done
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/wgsize.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/wgsize"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/wgsize" "$wspv"
+build wgsize
+"$work/wgsize" "$wspv"
 
-spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
-xcrun clang -std=c11 -Wall -Werror -O1 -I"$inc" "$here/descriptor_heap.c" \
-	-L"$libdir" -lMoltenVK -Wl,-rpath,"$libdir" -o "$work/descriptor_heap"
-MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MVK_CONFIG_LOG_LEVEL=1 "$work/descriptor_heap" "$gspv"
+if [ "$driver" = moltenvk ]; then
+	spirv-as --target-env vulkan1.3 "$here/shaders/heap/dh_loop_header.spvasm" -o "$gspv/dh_loop_header.spv"
+	build descriptor_heap
+	"$work/descriptor_heap" "$gspv"
+fi

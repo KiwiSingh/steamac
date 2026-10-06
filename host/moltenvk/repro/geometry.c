@@ -31,8 +31,12 @@
  *                                  {30} without GS): buffer-size constants (robust UBO arrays), the GS
  *                                  DrawInfo buffer and vertex buffers must not share a Metal index
  *   lines + zink_lines + fprim     GS with line input (line list), lines expanded to quads
- *   VK_NULL_HANDLE bound as graphics and compute pipeline (what a guest does through Venus
+ *   VK_NULL_HANDLE bound as graphics and compute pipeline (what a guest did through Venus
  *   when the host failed to create a pipeline), then draw + dispatch: no crash, nothing drawn
+ *   (MoltenVK only: virglrenderer patch 0014 no longer passes these binds to the driver;
+ *   Mesa drivers dereference the pipeline)
+ *   v + f, polygonMode LINE        wireframe (DXVK requires fillModeNonSolid): the two triangles' interiors
+ *                                  stay clear, only their edges are drawn
  *   v + msl_type_names             fragment shader with textures named "sampler" and "array"
  *                                  (pipeline creation only)
  *   v + prim + fprim               GS that reads only some vertex outputs (location-based payload)
@@ -120,6 +124,8 @@ static const uint32_t *high_bindings;
 static uint32_t high_binding_count;
 /* Whether the next pipeline has VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY (zink). */
 static int dynamic_topology;
+/* Rasterization polygon mode of the next pipeline (DRAW_WIREFRAME: LINE). */
+static VkPolygonMode polygon_mode = VK_POLYGON_MODE_FILL;
 
 static VkPipeline graphics(const char *vs, const char *gs, const char *fs, VkPrimitiveTopology topology,
                            VkPipelineLayout pl)
@@ -179,7 +185,7 @@ static VkPipeline graphics(const char *vs, const char *gs, const char *fs, VkPri
 	VkPipelineViewportStateCreateInfo vps = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
 		.viewportCount = 1, .pViewports = &vp, .scissorCount = 1, .pScissors = &sc };
 	VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
+		.polygonMode = polygon_mode, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
 	VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
 	VkPipelineColorBlendAttachmentState cba = { .colorWriteMask = 0xf };
@@ -212,6 +218,10 @@ int main(int argc, char **argv)
 	CK(vkCreateInstance(&ici, NULL, &inst));
 	uint32_t n = 1;
 	CK(vkEnumeratePhysicalDevices(inst, &n, &pd));
+	VkPhysicalDeviceDriverProperties drv = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+	VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv };
+	vkGetPhysicalDeviceProperties2(pd, &p2);
+	const int moltenvk = drv.driverID == VK_DRIVER_ID_MOLTENVK;
 	/* Features zink enables that matter here: robustness2 (robust buffer access on UBO arrays),
 	 * scalar block layout, push descriptors. */
 	VkPhysicalDeviceRobustness2FeaturesEXT rb2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
@@ -331,7 +341,7 @@ int main(int argc, char **argv)
 	/* Vertex buffer (vattr.vert): v.vert's six positions, 16 bytes per vertex, padding = junk. */
 	enum draw_mode { DRAW_DIRECT, DRAW_FIRST_VERTEX, DRAW_INDIRECT, DRAW_INDEXED_INDIRECT, DRAW_STATIC_STRIDE,
 	                 DRAW_DYNAMIC_STRIDE, DRAW_INSTANCED, DRAW_DYNAMIC_FAN, DRAW_SSCALED16, DRAW_SNORM16, DRAW_SNORM8,
-	                 DRAW_HIGH_BINDINGS, DRAW_BINDINGS_0_10, DRAW_BINDINGS_0_15, DRAW_BINDING_30 };
+	                 DRAW_HIGH_BINDINGS, DRAW_BINDINGS_0_10, DRAW_BINDINGS_0_15, DRAW_BINDING_30, DRAW_WIREFRAME };
 	static const uint32_t bindings_0_7[] = { 0, 1, 2, 3, 4, 5, 6, 7 }, bindings_0_10[] = { 0, 10 },
 		bindings_0_15[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, bindings_30[] = { 30 };
 	VkBufferCreateInfo argbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 128,
@@ -394,6 +404,8 @@ int main(int argc, char **argv)
 	} tests[] = {
 		{ "v.vert.spv", NULL, "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 2 }, { 10, 2 } },
 		  { { 0, 255, 0, 255 }, { 0, 255, 0, 255 } }, 0, 0, DRAW_DIRECT },
+		{ "v.vert.spv", NULL, "f.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6, { { 2, 4 }, { 10, 2 } },
+		  { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } }, 0, 0, DRAW_WIREFRAME },
 		{ "v.vert.spv", "zink_passthrough.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 6,
 		  { { 2, 2 }, { 10, 2 } }, { { 0, 255, 64, 255 }, { 0, 255, 128, 255 } }, 0, 0, DRAW_DIRECT },
 		{ "strip.vert.spv", "zink_passthrough.geom.spv", "fprim.frag.spv", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 4,
@@ -463,11 +475,17 @@ int main(int argc, char **argv)
 	for (size_t t = 0; t < sizeof(tests) / sizeof(tests[0]); t++) {
 		const char *verdict_fail = tests[t].known_limitation ? "KNOWN" : "FAIL";
 		VkPipeline p = VK_NULL_HANDLE;
+		if (tests[t].null_pipeline && !moltenvk) {
+			printf("SKIP draw + dispatch with VK_NULL_HANDLE pipelines bound (%s: virglrenderer drops them)\n",
+			       drv.driverName);
+			continue;
+		}
 		if (!tests[t].null_pipeline) {
 			vertex_input = tests[t].draw_mode == DRAW_STATIC_STRIDE ? VI_STATIC_STRIDE :
 			               tests[t].draw_mode == DRAW_DYNAMIC_STRIDE ? VI_DYNAMIC_STRIDE :
 			               tests[t].draw_mode == DRAW_INSTANCED ? VI_INSTANCE : VI_NONE;
 			dynamic_topology = tests[t].draw_mode == DRAW_DYNAMIC_FAN;
+			polygon_mode = tests[t].draw_mode == DRAW_WIREFRAME ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
 			if (tests[t].draw_mode == DRAW_SSCALED16) vertex_input = VI_SSCALED16;
 			if (tests[t].draw_mode == DRAW_SNORM16) vertex_input = VI_SNORM16;
 			if (tests[t].draw_mode == DRAW_SNORM8) vertex_input = VI_SNORM8;
@@ -513,6 +531,7 @@ int main(int argc, char **argv)
 		}
 		switch (tests[t].draw_mode) {
 		case DRAW_DIRECT:
+		case DRAW_WIREFRAME:
 			vkCmdDraw(cmd, tests[t].vertex_count, 1, 0, 0);
 			break;
 		case DRAW_FIRST_VERTEX:
@@ -590,6 +609,15 @@ int main(int argc, char **argv)
 			printf("     primitive %d pixel: %3u %3u %3u %3u (want %3u %3u %3u %3u)\n", k, got[0], got[1], got[2],
 			       got[3], tests[t].want[k][0], tests[t].want[k][1], tests[t].want[k][2], tests[t].want[k][3]);
 		}
+		if (tests[t].draw_mode == DRAW_WIREFRAME) {
+			/* Filled, the two triangles cover half of the 16x16 target (128 pixels). */
+			int lit = 0;
+			for (int i = 0; i < W * H; i++)
+				lit += px[i * 4 + 1] > 128;
+			if (lit < 8 || lit >= 100)
+				ok = 0;
+			printf("     %d edge pixels lit (want 8..99; 128 when filled)\n", lit);
+		}
 		if (tests[t].null_pipeline)
 			printf("%-4s draw + dispatch with VK_NULL_HANDLE pipelines bound: no crash, nothing drawn\n",
 			       ok ? "OK" : "FAIL");
@@ -611,7 +639,7 @@ int main(int argc, char **argv)
 			                         "R8G8_SNORM positions, R8G8B8A8_UNORM colors",
 			                         "vertex bindings 0..7 declared (implicit buffers moved down)",
 			                         "vertex bindings {0, 10} declared", "vertex bindings 0..15 declared",
-			                         "vertex binding 30 declared" }[tests[t].draw_mode]);
+			                         "vertex binding 30 declared", "polygonMode LINE" }[tests[t].draw_mode]);
 		if (!tests[t].known_limitation)
 			fails += !ok;
 		if (p)

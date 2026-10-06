@@ -32,14 +32,14 @@ final class LauncherSettings: ObservableObject {
         // Sound
         case soundEnabled, soundOutputUID, soundVolume, soundMute, soundLatency
         // Advanced
-        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch, steamClient
+        case cpus, memMiB, sshEnabled, sshPort, network, diskImage, steamosBranch, steamClient, vulkanDriver
 
         var nextStart: Bool {
             switch self {
             case .openFullscreen, .dpiSource, .fixedDPI, .fixedWidthMM, .fixedHeightMM, .refreshRate,
                  .windowWidth, .windowHeight, .windowSizePreset, .soundEnabled, .cpus, .memMiB, .sshEnabled,
                  .sshPort, .network,
-                 .diskImage, .steamClient, .followMacTime:
+                 .diskImage, .steamClient, .followMacTime, .vulkanDriver:
                 return true
             default:
                 return false
@@ -121,6 +121,59 @@ final class LauncherSettings: ObservableObject {
 
         /// Switching re-downloads the client (about 1 GB) on the next start.
         static let switchNote = "Switching downloads the other client (about 1 GB) when Steam starts."
+    }
+
+    /// Host Vulkan driver behind Venus: virglrenderer, in the VM process, opens its dylib
+    /// (VKR_VULKAN_DRIVER, set by VM.start).
+    enum VulkanDriver: String, CaseIterable, Identifiable {
+        /// MoltenVK with steamac's patches (host/moltenvk): every supported Mac.
+        case moltenvk
+        /// KosmicKrisp, Mesa's driver on Metal 4 (host/kosmickrisp): macOS 26 or newer.
+        case kosmickrisp
+        var id: String { rawValue }
+
+        /// Short name (boot overlay, logs, reports).
+        var name: String {
+            switch self {
+            case .moltenvk: return "MoltenVK"
+            case .kosmickrisp: return "KosmicKrisp"
+            }
+        }
+
+        var title: String { self == .kosmickrisp ? name + " (experimental)" : name }
+
+        var detail: String {
+            switch self {
+            case .moltenvk:
+                return "Vulkan on Metal through MoltenVK with steamac's patches. Games are tested with it."
+            case .kosmickrisp:
+                return "Mesa's Vulkan driver on Metal 4 (macOS 26 or newer). Experimental: D3D12 games (vkd3d-proton) "
+                    + "are not expected to start, and pipelines the driver cannot build are skipped."
+            }
+        }
+
+        /// Switching changes the Venus driver identity: Steam and games rebuild their shader caches.
+        static let switchNote = "Switching makes Steam and games rebuild their shader caches."
+
+        /// The dylib virglrenderer opens through @rpath (the app's Frameworks, work/out/host/lib).
+        var library: String {
+            switch self {
+            case .moltenvk: return "libMoltenVK.dylib"
+            case .kosmickrisp: return "libvulkan_kosmickrisp.dylib"
+            }
+        }
+
+        /// Why this Mac or this build cannot use the driver; nil if it can.
+        var unavailableReason: String? {
+            guard self == .kosmickrisp else { return nil }
+            let tahoe = OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+            guard ProcessInfo.processInfo.isOperatingSystemAtLeast(tahoe) else { return "needs macOS 26 or newer (Metal 4)" }
+            guard let handle = dlopen("@rpath/" + library, RTLD_LAZY | RTLD_LOCAL) else {
+                return "not included in this build (\(library))"
+            }
+            dlclose(handle)
+            return nil
+        }
     }
 
     /// Default window size choices (window points = guest pixels).
@@ -237,6 +290,8 @@ final class LauncherSettings: ObservableObject {
     @Published var steamosBranch = "stable" { didSet { save(.steamosBranch, steamosBranch) } }
     /// Steam client of the next start (`steamac.steam_client=`).
     @Published var steamClient = SteamClient.frame { didSet { save(.steamClient, steamClient.rawValue) } }
+    /// Host Vulkan driver of the next start (VulkanDriver).
+    @Published var vulkanDriver = VulkanDriver.moltenvk { didSet { save(.vulkanDriver, vulkanDriver.rawValue) } }
 
     init() {
         let domain = LauncherSettings.domain
@@ -309,6 +364,7 @@ final class LauncherSettings: ObservableObject {
         string(.steamosBranch, &steamosBranch)
         if !DiskCreator.branches.contains(steamosBranch) { steamosBranch = "stable" }
         if let s = d.string(forKey: Key.steamClient.rawValue).flatMap(SteamClient.init(rawValue:)) { steamClient = s }
+        if let v = d.string(forKey: Key.vulkanDriver.rawValue).flatMap(VulkanDriver.init(rawValue:)) { vulkanDriver = v }
         reloadGames()
     }
 
@@ -376,6 +432,7 @@ final class LauncherSettings: ObservableObject {
         case .diskImage: diskImage = text == "default" ? "" : text
         case .steamosBranch: guard DiskCreator.branches.contains(text) else { return false }; steamosBranch = text
         case .steamClient: guard let v = SteamClient(rawValue: text) else { return false }; steamClient = v
+        case .vulkanDriver: guard let v = VulkanDriver(rawValue: text) else { return false }; vulkanDriver = v
         }
         return true
     }
@@ -403,6 +460,7 @@ final class LauncherSettings: ObservableObject {
         soundVolume = fresh.soundVolume; soundMute = fresh.soundMute; soundLatency = fresh.soundLatency
         cpus = fresh.cpus; memMiB = fresh.memMiB; sshEnabled = fresh.sshEnabled; sshPort = fresh.sshPort; network = fresh.network
         diskImage = fresh.diskImage; steamosBranch = fresh.steamosBranch; steamClient = fresh.steamClient
+        vulkanDriver = fresh.vulkanDriver
         loading = false
         reloadGames()
         log("settings: reset to defaults")
@@ -436,6 +494,7 @@ final class LauncherSettings: ObservableObject {
             .soundEnabled: soundEnabled, .cpus: cpus, .memMiB: memMiB, .sshEnabled: sshEnabled, .sshPort: sshPort,
             .network: network,
             .diskImage: diskImage, .steamClient: steamClient.rawValue, .followMacTime: followMacTime,
+            .vulkanDriver: vulkanDriver.rawValue,
         ]
         var s: [Key: String] = [:]
         for (k, v) in values where k.nextStart && overrides[k] == nil { s[k] = "\(v)" }

@@ -8,19 +8,21 @@ Hypervisor.framework (libkrun) с GPU-ускорением через Venus.
 ```
 игра (DX9/10/11) ─ DXVK (Proton 11, x86 через FEX) ─ Vulkan
    └─ гостевой Mesa Venus ─ virtio-gpu (blob, 16K-выравнивание)
-        └─ libkrun ─ virglrenderer (Venus) ─ MoltenVK ─ Metal
+        └─ libkrun ─ virglrenderer (Venus) ─ MoltenVK | KosmicKrisp ─ Metal
 ```
 
-Vulkan на Metal — MoltenVK из форка UTM (геометрические шейдеры, robustness2) +
-`VK_EXT_depth_clip_enable` (PR #2712) + наши исправления. KosmicKrisp (Mesa Vulkan-on-Metal) не
-подходит: он требует Metal 4 / macOS 26.
+Vulkan на Metal — по умолчанию MoltenVK из форка UTM (геометрические шейдеры, robustness2) +
+`VK_EXT_depth_clip_enable` (PR #2712) + наши исправления. KosmicKrisp (Vulkan-драйвер Mesa на
+Metal 4) — экспериментальная альтернатива на macOS 26+ (см. «Vulkan-драйвер»).
 
 ## Требования
 
 - Mac на Apple Silicon, macOS 15+, ~150 ГБ свободного места (образ диска разреженный).
 - Xcode 26+ (полный: его `actool` собирает иконку приложения из Icon Composer-документа), Homebrew, rustup.
+- KosmicKrisp (необязательно, альтернативный Vulkan-драйвер): собирается только на macOS 26+;
+  `host/kosmickrisp/build.sh` сам ставит Homebrew-зависимости (`llvm spirv-llvm-translator spirv-tools vulkan-loader glslang`).
 - OrbStack (или Docker с arm64 и `--privileged`): ядро, Mesa и образ диска собираются в Linux-контейнерах.
-- Homebrew-пакеты: `meson ninja pkg-config dtc xz lld libepoxy sshpass`.
+- Homebrew-пакеты: `meson ninja pkg-config dtc xz lld libepoxy sshpass go` (`go`: лицензии вложенных gvproxy/desync).
 
 ## Сборка и запуск
 
@@ -162,7 +164,7 @@ SSH включён у dev-лаунчера (`work/out/steamac-vm`, `./run.sh`, �
 | Mouse | авто-захват в играх; список игр (имя из `appmanifest_<appid>.acf`, Default/Auto/Off, удалить) | — |
 | Controller | какой физический контроллер (GameController) ведёт виртуальный pad (первый подключённый или выбранный), получает ли SteamOS pad и каким он виден (`--no-gamepad`, `--pad`, см. «Контроллер»), A/B и X/Y местами, мёртвая зона стиков, живой тест ввода | — |
 | Sound | устройство вывода (System default следует за macOS или конкретное CoreAudio-устройство), громкость/mute, буфер Low/Normal/Safe — через `krun_snd_set_*` (ищутся `dlsym`; со старым libkrun поля выключены с пояснением) | звук (`--no-sound`) |
-| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk…, клиент Steam (`--steam-client`, см. «Клиент Steam») |
+| Advanced | — | vCPU (`--cpus`), RAM (`--mem`), SSH вкл/выкл + порт (`--ssh-port`, `--no-ssh`) и сгенерированный пароль, сеть (`--no-net`), образ диска (`--disk`), Create New Disk…, клиент Steam (`--steam-client`, см. «Клиент Steam»), Vulkan-драйвер (`--vulkan-driver`, см. «Vulkan-драйвер») |
 
 Для тестов: `STEAMAC_DEFAULTS_DOMAIN=<домен>` подменяет домен настроек; `--selftest-settings
 --selftest-out DIR` открывает окно без ВМ и пишет PNG каждой вкладки; в `--control-fifo` есть
@@ -420,6 +422,28 @@ to apply»), для одного запуска — `--steam-client frame|deck|d
 выбран `frame` (или лаунчер не передаёт параметр — старые версии, свой `--cmdline`); выбор `deck` /
 `deckbeta` в лаунчере важнее файла.
 
+## Vulkan-драйвер (Vulkan driver)
+
+Vulkan-драйвер хоста за Venus выбирается в **Settings → Advanced → Vulkan driver** (при следующем
+запуске) или на один запуск флагом `--vulkan-driver moltenvk|kosmickrisp`. virglrenderer открывает
+драйвер во время работы (без Vulkan-загрузчика): перед стартом ВМ лаунчер ставит `VKR_VULKAN_DRIVER`
+в `@rpath/libMoltenVK.dylib` или `@rpath/libvulkan_kosmickrisp.dylib`. Оверлей загрузки показывает
+драйвер («Venus → KosmicKrisp»); в отчётах о сбоях есть `vulkan_driver` и ревизия патчей драйвера.
+
+| Вариант | Что это | Плюсы и минусы |
+|---|---|---|
+| **MoltenVK** (`moltenvk`, по умолчанию) | `host/moltenvk/`: форк UTM + патчи steamac | любой поддерживаемый Mac; игры проверены с ним; проверки устройства D3D12 (vkd3d-proton) проходят |
+| **KosmicKrisp** (`kosmickrisp`, экспериментально) | `host/kosmickrisp/`: Mesa main + открытые MR (геометрические шейдеры !44786, transform feedback !44928, tiled-изображения в host-pointer памяти !44929, device-local тип памяти !44221, линейные цели рендера !44782/!44222) + патчи steamac (явный row pitch LINEAR, LINEAR как input attachment, `fillModeNonSolid`, без которого DXVK не запускается) | только macOS 26+ (Metal 4); собирается, только если сборка идёт на macOS 26+, иначе настройка откатывается на MoltenVK. Интерфейс Steam и gamescope работают; известные пробелы (repro на хосте): transform feedback со strip-геометрическими шейдерами, 8-сэмпловые конвейеры (draw пропускаются), нет выравнивания texel-буферов по одному текселю, поэтому vkd3d-proton (D3D12) запускаться не должен |
+
+Смена драйвера меняет идентичность драйвера Venus (UUID кэша конвейеров): Steam и игры заново
+собирают кэши шейдеров. Конвейер, который драйвер хоста не смог собрать, остаётся заглушкой в
+virglrenderer: его draw и dispatch отбрасываются, `VK_NULL_HANDLE` до драйвера не доходит.
+
+Проверки без ВМ: `host/kosmickrisp/build.sh` гоняет `host/moltenvk/probe` и repro
+(`REPRO_DRIVER=kosmickrisp host/moltenvk/repro/run.sh <dylib>`, через Khronos-загрузчик, только для
+тестов) на собранном драйвере; `host/virglrenderer/build.sh` гоняет `venus_check` с каждым
+установленным драйвером.
+
 ## Вход в Steam (Signing in)
 
 Экран входа клиента Steam Frame рассчитан на шлем: «Tap to confirm» связывается с телефоном по
@@ -624,8 +648,9 @@ Report ID (первые 8 знаков ID события). Не удалось �
 
 | Каталог | Что внутри |
 |---|---|
-| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), texel-буферы со смещением на любой тексель (vkd3d-proton), запись в маленькие буферы push-дескрипторов с robustness2, массивы дескрипторов переменной длины как runtime-массивы (Metal держал 32 МБ на массив кучи vkd3d-proton и программу), распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal; `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками; `bench/shaders.sh <дамп или пак>` меряет компиляцию шейдеров игры (SPIR-V → MSL, MSL → библиотека Metal, pipeline state; холодный/тёплый кэш, потоки) по дампу шейдеров MoltenVK или 10%-выборке из `bench/pack.py` |
-| `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров, пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков |
+| `host/moltenvk/` | MoltenVK utmapp `geometry-shaders` @05604465 + патчи: depth_clip_enable, YCbCr-массивы, null-дескрипторы, эмуляция геометрических шейдеров для zink/DXVK (шаг вершин, instancing, adjacency, fans, SCALED-форматы, `gl_in`), transform feedback (stream output DXVK) и его запросы (статистика SO), доступность результатов запросов при копировании (occlusion-запросы DXVK через Venus), атомики на компонентах векторов по адресам буферов (BDA, vkd3d-proton), texel-буферы со смещением на любой тексель (vkd3d-proton), запись в маленькие буферы push-дескрипторов с robustness2, массивы дескрипторов переменной длины как runtime-массивы (Metal держал 32 МБ на массив кучи vkd3d-proton и программу), распределение служебных буферов, отложенное освобождение Metal-ресурсов, хеш патчей в UUID кэша конвейеров; тесты в `repro/` гоняются под валидацией Metal (и на KosmicKrisp: `REPRO_DRIVER=kosmickrisp`); `bench/run.sh <libdir>…` сравнивает производительность изменений между сборками; `bench/shaders.sh <дамп или пак>` меряет компиляцию шейдеров игры (SPIR-V → MSL, MSL → библиотека Metal, pipeline state; холодный/тёплый кэш, потоки) по дампу шейдеров MoltenVK или 10%-выборке из `bench/pack.py` |
+| `host/kosmickrisp/` | KosmicKrisp (Mesa main @ce576c29) + открытые MR Mesa и патчи steamac (см. «Vulkan-драйвер»), без LLVM во время работы (`-Dllvm=disabled`, `mesa_clc` из первой сборки), `-Db_ndebug=true`; только macOS 26+ |
+| `host/virglrenderer/` | virglrenderer UTM `macos-next` + слияние с upstream main (venus-protocol 1.1.3) + LINEAR-модификатор, импорт shm как host memory, заглушки для неудавшихся конвейеров (draw отбрасываются в virglrenderer), пересоздание отвергнутого кэша, отложенный unmap shm, QoS потоков, Vulkan-драйвер открывается во время работы (`VKR_VULKAN_DRIVER`) |
 | `host/libkrun/` | libkrun v1.19.6 + патчи: `VIRTIO_GPU_F_BLOB_ALIGNMENT` (16K), маска SME для M4, 2D-ресурсы без virgl, `SET_SCANOUT_BLOB`, маппинг SHM-блобов, сигнализация Venus-фенсов, логи virglrenderer, `krun_display_resize` (смена разрешения на лету), QoS vCPU/GPU-потоков |
 | `host/launcher/` | `steamac-vm` (Swift/AppKit): окно на Metal, оверлей «FX STEAM LAUNCHER» с прогрессом загрузки/выключения, разрешение гостя = размер окна при постоянном DPI (EDID из физического размера экрана), клавиатура/мышь/планшет, pad гостя Xbox 360 / DualSense / DualShock 4 из GameController.framework с вибрацией (`fx.pad`), сеть через gvproxy, перезапуск ВМ при reboot гостя, `--perf-stats` |
 | `guest/kernel/` | Linux 7.2.9, всё встроено, 4K-страницы, выравнивание blob-узлов по 16K, Apple TSO для FEX |

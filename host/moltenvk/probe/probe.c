@@ -1,10 +1,11 @@
 /*
- * MoltenVK feature probe for steamac.
+ * Host Vulkan driver feature probe for steamac (MoltenVK, KosmicKrisp).
  *
- * Linked directly against libMoltenVK.dylib (no Vulkan loader), the same way
- * virglrenderer uses it. Prints the API version and the features/extensions
- * DXVK, vkd3d-proton and Zink care about, then exits non-zero if one of the
- * features steamac depends on is missing.
+ * Linked against libMoltenVK.dylib directly (no Vulkan loader), the way virglrenderer used
+ * it, or against the Khronos loader with VK_DRIVER_FILES naming KosmicKrisp (which exports
+ * only the loader-ICD interface). Prints the API version and the features/extensions DXVK,
+ * vkd3d-proton and Zink care about, then exits non-zero if one of the features steamac
+ * depends on is missing.
  *
  *   probe            print and check
  */
@@ -130,9 +131,10 @@ int main(void)
 
 	/* Depth/stencil formats zink uses for GL renderbuffers: S8_UINT (GL_STENCIL_INDEX8) and
 	 * D32_SFLOAT_S8_UINT (GL_DEPTH24_STENCIL8, D24S8 is not supported on Apple GPUs) must be
-	 * depth/stencil attachments. They must not report HOST_IMAGE_TRANSFER: their images live in
-	 * private memory, so a HOST_TRANSFER image would have no memory type (zink allocates
-	 * renderbuffers with HOST_TRANSFER whenever the format reports it). */
+	 * depth/stencil attachments. On MoltenVK they must not report HOST_IMAGE_TRANSFER: its
+	 * depth/stencil images live in private memory, so a HOST_TRANSFER image would have no memory
+	 * type (zink allocates renderbuffers with HOST_TRANSFER whenever the format reports it).
+	 * KosmicKrisp gives them a memory type (repro/depth_stencil.c). */
 	const VkFormat zs_formats[] = { VK_FORMAT_S8_UINT, VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT,
 		VK_FORMAT_D32_SFLOAT_S8_UINT };
 	int s8_attachment = 0, d32s8_attachment = 0, zs_no_host_transfer = 1;
@@ -163,7 +165,7 @@ int main(void)
 		{ "linearColorAttachment",          linear_renderable, 1 },
 		{ "S8_UINT DS attachment",          s8_attachment, 1 },
 		{ "D32_SFLOAT_S8_UINT DS attachment", d32s8_attachment, 1 },
-		{ "depth/stencil no host transfer", zs_no_host_transfer, 1 },
+		{ "depth/stencil no host transfer", zs_no_host_transfer, drv.driverID == VK_DRIVER_ID_MOLTENVK },
 		{ "KHR_load_store_op_none",         ext_lson, 0 },
 		{ "scalarBlockLayout",              v12.scalarBlockLayout, 0 },
 		{ "subgroupSizeControl",            v13.subgroupSizeControl, 0 },
