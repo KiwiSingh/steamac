@@ -24,6 +24,12 @@
     <true/>
     <key>GCSupportsControllerUserInteraction</key>
     <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.games</string>
+    <key>GCSupportsGameMode</key>
+    <true/>
+    <key>LSSupportsGameMode</key>
+    <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>The SteamOS virtual machine records from the microphone while a game or Steam voice chat in it uses one.</string>
 </dict>

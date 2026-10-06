@@ -108,7 +108,7 @@ heartbeat не ждётся, пока агент новой сессии его 
 
 | Клавиши в окне | |
 |---|---|
-| Ctrl+Cmd+F | полный экран |
+| Ctrl+Cmd+F | полный экран (macOS включает Game Mode: Info.plist объявляет игру — `LSApplicationCategoryType` `public.app-category.games`, `GCSupportsGameMode`, `LSSupportsGameMode`; `gamepolicyd` пишет «Game mode status is now on») |
 | Ctrl+Cmd+G | захватить / отпустить мышь вручную |
 | Ctrl+Cmd+P | Metal Performance HUD Apple (FPS, интервал кадров, время GPU, память) вкл/выкл; то же View → Show Metal Performance HUD и Settings > Display |
 | Ctrl+Option | отпустить захваченную мышь |

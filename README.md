@@ -111,7 +111,7 @@ start over.
 
 | Keys in the window | |
 |---|---|
-| Ctrl+Cmd+F | full screen |
+| Ctrl+Cmd+F | full screen (macOS turns on Game Mode: Info.plist declares a game — `LSApplicationCategoryType` `public.app-category.games`, `GCSupportsGameMode`, `LSSupportsGameMode`; `gamepolicyd` logs “Game mode status is now on”) |
 | Ctrl+Cmd+G | manually capture / release the mouse |
 | Ctrl+Cmd+P | toggle Apple's Metal Performance HUD (FPS, frame interval, GPU time, memory); also View → Show Metal Performance HUD and Settings > Display |
 | Ctrl+Option | release the captured mouse |

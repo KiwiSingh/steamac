@@ -319,7 +319,7 @@ h1 em {
 .shots figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .compare { margin: 0 0 22px; }
 .compare video {
-  display: block; width: 100%; height: auto; aspect-ratio: 2556 / 1586; border-radius: 12px; background: #000;
+  display: block; width: 100%; height: auto; aspect-ratio: 3258 / 1586; border-radius: 12px; background: #000;
   border: 1px solid rgba(255, 255, 255, .1); box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
 }
 .compare figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); }
