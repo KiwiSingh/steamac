@@ -38,7 +38,7 @@ enum GuestPad: Equatable {
     var buttonCodes: [UInt16] {
         let common = [BTN.SOUTH, BTN.EAST, BTN.NORTH, BTN.WEST, BTN.TL, BTN.TR,
                       BTN.SELECT, BTN.START, BTN.MODE, BTN.THUMBL, BTN.THUMBR]
-        return sony ? common + [BTN.TL2, BTN.TR2] : common
+        return sony ? common + [BTN.TL2, BTN.TR2, BTN.SONY_TOUCHPAD_CLICK] : common
     }
 
     /// Axes (the same for all three): sticks, analog triggers, the dpad as a hat.
@@ -73,7 +73,8 @@ enum GuestPad: Equatable {
 /// The `fx.pad` virtio-console port to the guest's root service fx-pad (`fx-progress-agent pad`,
 /// guest/progress-agent/src/pad.rs), which owns the guest's gamepad as a uinput device:
 ///   host → guest  `create <bus> <vendor> <product> <version> <keys> <axes> <name>` (GuestPad),
-///                 `remove`, `ev <type>:<code>:<value> …` (one input frame)
+///                 `remove`, `ev <type>:<code>:<value> …` (one input frame),
+///                 `battery <percent> <state>` (controller battery; state is unknown/discharging/charging/full)
 ///   guest → host  `hello` (the service started, without a pad), `rumble <strong> <weak>` (0…65535)
 final class PadPort {
     static let name = "fx.pad"
@@ -310,6 +311,37 @@ final class GamepadBridge {
     private func update(from pad: GCExtendedGamepad) {
         apply(GamepadBridge.read(pad, as: guestPad ?? .xbox360, swapABXY: settings.swapABXY,
                                  deadzone: Float(settings.stickDeadzone) / 100))
+        sendBattery()
+    }
+
+    /// Forward the physical controller's battery state to native-HID guest pads.
+    /// GameController reports level as 0...1; the guest translates that to the
+    /// coarser battery representation used by the DualSense HID protocol.
+    private var lastBatteryReport: (percent: Int, state: String)?
+
+    private func sendBattery() {
+        guard guestPad?.sony == true, let battery = controller?.battery else { return }
+
+        let percent = Int((max(0, min(1, battery.batteryLevel)) * 100).rounded())
+        let state: String
+        switch battery.batteryState {
+        case .discharging:
+            state = "discharging"
+        case .charging:
+            state = "charging"
+        case .full:
+            state = "full"
+        default:
+            state = "unknown"
+        }
+
+        let report = (percent: percent, state: state)
+        guard lastBatteryReport?.percent != report.percent ||
+              lastBatteryReport?.state != report.state else { return }
+
+        if port.send("battery \(percent) \(state)") {
+            lastBatteryReport = report
+        }
     }
 
     private static func axis(_ v: Float) -> Int32 {
@@ -339,6 +371,12 @@ final class GamepadBridge {
             s.buttons[BTN.NORTH] = north.isPressed
             s.buttons[BTN.TL2] = p.leftTrigger.isPressed
             s.buttons[BTN.TR2] = p.rightTrigger.isPressed
+
+            if let dualSense = p as? GCDualSenseGamepad {
+                s.buttons[BTN.SONY_TOUCHPAD_CLICK] = dualSense.touchpadButton.isPressed
+            } else if let dualShock = p as? GCDualShockGamepad {
+                s.buttons[BTN.SONY_TOUCHPAD_CLICK] = dualShock.touchpadButton.isPressed
+            }
         } else {
             s.buttons[BTN.NORTH] = west.isPressed
             s.buttons[BTN.WEST] = north.isPressed

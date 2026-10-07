@@ -52,6 +52,10 @@ enum BTN {
     static let MODE: UInt16 = 0x13c
     static let THUMBL: UInt16 = 0x13d
     static let THUMBR: UInt16 = 0x13e
+
+    // Internal fx.pad transport code for a physical PlayStation touchpad click.
+    // The guest translates this to the native PlayStation HID report.
+    static let SONY_TOUCHPAD_CLICK: UInt16 = 0x2c0
 }
 
 enum BUS {
