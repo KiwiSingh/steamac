@@ -71,10 +71,17 @@ final class UpdateChecker {
         return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    /// `vX.Y[.Z…]` / `X.Y[.Z…]` -> numeric components (nil for anything else, e.g. `v1.4-rc1`).
+    /// `vX.Y[.Z…]` / `X.Y[.Z…]` -> numeric components.
+    /// Fork release tags may append `-kiwi.N`; the suffix does not affect the upstream version.
     static func parse(_ text: String) -> [Int]? {
         var t = Substring(text.trimmingCharacters(in: .whitespaces))
         if t.first == "v" || t.first == "V" { t = t.dropFirst() }
+        if let range = t.range(of: "-kiwi.") {
+            let suffix = t[range.upperBound...]
+            guard !suffix.isEmpty,
+                  suffix.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            t = t[..<range.lowerBound]
+        }
         let parts = t.split(separator: ".", omittingEmptySubsequences: false)
         guard (1...4).contains(parts.count) else { return nil }
         var out: [Int] = []
@@ -125,7 +132,7 @@ final class UpdateChecker {
     static func selfCheck() -> [String] {
         var failures: [String] = []
         let parsed: [(String, [Int]?)] = [("v1.3.1", [1, 3, 1]), ("1.3", [1, 3]), ("V2", [2]), ("v1.3.10", [1, 3, 10]),
-                                          ("v1.4-rc1", nil), ("v1..2", nil), ("", nil), ("latest", nil), ("v1.2.3.4.5", nil)]
+                                          ("v1.7.6-kiwi.1", [1, 7, 6]), ("v1.4-rc1", nil), ("v1..2", nil), ("", nil), ("latest", nil), ("v1.2.3.4.5", nil)]
         for (text, want) in parsed where parse(text) != want { failures.append("update: parse \"\(text)\" → \(String(describing: parse(text)))") }
         let order: [(String, String, ComparisonResult)] = [("1.3.10", "1.3.9", .orderedDescending), ("1.3", "1.3.0", .orderedSame),
                                                             ("1.3", "1.3.1", .orderedAscending), ("2.0", "1.99.99", .orderedDescending),
