@@ -131,7 +131,7 @@ struct Options {
       --disk PATH[:ro]     raw virtio-blk disk; repeatable, order = vda, vdb, ...
       --cpus N             vCPUs (default: Settings > Advanced, automatic = this Mac's performance
                            cores, 2..8)
-      --mem MiB            guest RAM (default: Settings > Advanced, automatic = half this Mac's RAM,
+      --mem MiB            guest RAM (default: Settings > Advanced, automatic = 75% of this Mac's RAM,
                            4096..16384; the GPU's memory comes from the same RAM)
       --display WxH        initial virtio-gpu display size (default 1280x800); afterwards the guest
                            display follows the window: content size in points = guest pixels (even,
