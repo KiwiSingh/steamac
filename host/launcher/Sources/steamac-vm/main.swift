@@ -280,6 +280,10 @@ do {
         CrashReporting.consoleLine(line)
     }
     let progressPort = try ProgressPort()
+    let bepisBridgePort = try BepisBridgePort()
+    if let runDir = Supervisor.runDir {
+        try bepisBridgePort.start(runDir: runDir)
+    }
     // Log bundles requested by Report a Problem arrive on the same port.
     let guestLogs = GuestLogs(port: progressPort)
     progressPort.start { line in if !guestLogs.handle(line) { progress.guestLine(line) } }
@@ -313,6 +317,7 @@ do {
     let clipboardPort = options.headless ? nil : try ClipboardPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
                     clockPort: clockPort, sleepPort: sleepPort, padPort: padPort, clipboardPort: clipboardPort,
+                    bepisBridgePort: bepisBridgePort,
                     inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
     let gamepad = padPort.map { GamepadBridge(port: $0, settings: settings, typeOverride: options.padType) }

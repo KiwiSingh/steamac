@@ -38,6 +38,7 @@ final class VM {
 
     init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
          clockPort: ClockPort?, sleepPort: SleepPort?, padPort: PadPort?, clipboardPort: ClipboardPort?,
+         bepisBridgePort: BepisBridgePort?,
          inputs: VMInputs?, netSocket: String?) throws {
         VM.raiseFileLimit()
         try krun("krun_init_log", krun_init_log(KRUN_LOG_TARGET_DEFAULT, o.krunLogLevel, UInt32(KRUN_LOG_STYLE_AUTO), 0))
@@ -74,6 +75,12 @@ final class VM {
         if let c = clipboardPort {
             try krun("krun_add_console_port_inout(\(ClipboardPort.name))",
                      krun_add_console_port_inout(ctx, UInt32(con), ClipboardPort.name, c.guestInputFd, c.guestOutputFd))
+        }
+        // BepisLoader <-> SteamOS integration bridge.
+        if let b = bepisBridgePort {
+            try krun("krun_add_console_port_inout(\(BepisBridgePort.name))",
+                     krun_add_console_port_inout(ctx, UInt32(con), BepisBridgePort.name,
+                                                b.guestInputFd, b.guestOutputFd))
         }
 
         try krun("krun_set_kernel", krun_set_kernel(ctx, o.kernel, STEAMAC_KERNEL_FORMAT_RAW, o.initrd, o.cmdline))

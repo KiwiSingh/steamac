@@ -18,6 +18,7 @@ cd /src/guest/progress-agent
 cargo test --locked --release --target aarch64-unknown-linux-musl
 cargo build --locked --release --target aarch64-unknown-linux-musl
 bin=$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/fx-progress-agent
+bepis_bin=$CARGO_TARGET_DIR/aarch64-unknown-linux-musl/release/fx-bepis-agent
 
 # Must be fully static: the guest has no musl loader (a PT_INTERP would name it).
 if grep -q 'ld-musl' "$bin"; then
@@ -25,4 +26,13 @@ if grep -q 'ld-musl' "$bin"; then
 fi
 install -m 0755 "$bin" "$OUT/fx-progress-agent.tmp"
 mv "$OUT/fx-progress-agent.tmp" "$OUT/fx-progress-agent"
+
+if grep -q 'ld-musl' "$bepis_bin"; then
+    echo "[progress-agent] $bepis_bin is dynamically linked" >&2
+    exit 1
+fi
+install -m 0755 "$bepis_bin" "$OUT/fx-bepis-agent.tmp"
+mv "$OUT/fx-bepis-agent.tmp" "$OUT/fx-bepis-agent"
+
 echo "[progress-agent] $OUT/fx-progress-agent: $(stat -c %s "$OUT/fx-progress-agent") bytes, sha256 $(sha256sum "$OUT/fx-progress-agent" | cut -c1-16), $(rustc -V)"
+echo "[progress-agent] $OUT/fx-bepis-agent: $(stat -c %s "$OUT/fx-bepis-agent") bytes, sha256 $(sha256sum "$OUT/fx-bepis-agent" | cut -c1-16)"

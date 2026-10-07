@@ -33,11 +33,17 @@ fi
 AGENT=/work/cache/progress-agent/fx-progress-agent
 [[ -x $AGENT ]] || { echo "[layer] $AGENT missing: run step 25 (scripts/build-image.sh layer does)" >&2; exit 1; }
 install -m 0755 "$AGENT" "$ST/usr/lib/steamac/fx-progress-agent"
+
+BEPIS_AGENT=/work/cache/progress-agent/fx-bepis-agent
+[[ -x $BEPIS_AGENT ]] || { echo "[layer] $BEPIS_AGENT missing: run step 25" >&2; exit 1; }
+install -m 0755 "$BEPIS_AGENT" "$ST/usr/lib/steamac/fx-bepis-agent"
 for target in gamescope-session.target plasma-session.target; do
     [[ -L $ST/usr/lib/systemd/user/$target.wants/fx-progress-agent.service ]] \
         || { echo "[layer] fx-progress-agent.service is not wanted by $target" >&2; exit 1; }
     [[ -L $ST/usr/lib/systemd/user/$target.wants/fx-clipboard-agent.service ]] \
         || { echo "[layer] fx-clipboard-agent.service is not wanted by $target" >&2; exit 1; }
+    [[ -L $ST/usr/lib/systemd/user/$target.wants/fx-bepis-agent.service ]] \
+        || { echo "[layer] fx-bepis-agent.service is not wanted by $target" >&2; exit 1; }
 done
 # Desktop Mode: our plasma-session.target replaces the Frame's VR desktop target
 # (SteamVR units are masked); gamescope-session runs the nested desktop, whose
