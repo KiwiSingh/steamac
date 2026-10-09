@@ -129,7 +129,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "remove" if rest.trim().is_empty() => Some(Command::Remove),
         "hid-input" => {
             let report = unhex(rest.trim())?;
-            (!report.is_empty() && report.len() <= uhid::DATA_MAX).then_some(Command::HidInput(report))
+            (!report.is_empty() && report.len() <= uhid::DATA_MAX)
+                .then_some(Command::HidInput(report))
         }
         "hid-get-reply" => {
             let f: Vec<&str> = rest.split_whitespace().collect();
@@ -138,12 +139,19 @@ pub fn parse(line: &str) -> Option<Command> {
             }
             let data = f.get(2).map_or(Some(Vec::new()), |s| unhex(s))?;
             (data.len() <= uhid::DATA_MAX).then_some(())?;
-            Some(Command::HidGetReply { id: f[0].parse().ok()?, err: f[1].parse().ok()?, data })
+            Some(Command::HidGetReply {
+                id: f[0].parse().ok()?,
+                err: f[1].parse().ok()?,
+                data,
+            })
         }
         "hid-set-reply" => {
             let f: Vec<&str> = rest.split_whitespace().collect();
             (f.len() == 2).then_some(())?;
-            Some(Command::HidSetReply { id: f[0].parse().ok()?, err: f[1].parse().ok()? })
+            Some(Command::HidSetReply {
+                id: f[0].parse().ok()?,
+                err: f[1].parse().ok()?,
+            })
         }
         "hid-create" => {
             let f: Vec<&str> = rest.splitn(7, ' ').collect();
@@ -170,7 +178,11 @@ pub fn parse(line: &str) -> Option<Command> {
             let mut events = Vec::new();
             for e in rest.split_whitespace() {
                 let mut f = e.split(':');
-                let (t, c, v) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?, f.next()?.parse().ok()?);
+                let (t, c, v) = (
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                );
                 if f.next().is_some() || !matches!(t, EV_KEY | EV_ABS) {
                     return None;
                 }
@@ -187,7 +199,9 @@ pub fn parse(line: &str) -> Option<Command> {
             let keys = if f[4] == "-" {
                 Vec::new()
             } else {
-                f[4].split(',').map(|k| k.parse().ok().filter(|&k: &u16| k <= KEY_MAX)).collect::<Option<Vec<u16>>>()?
+                f[4].split(',')
+                    .map(|k| k.parse().ok().filter(|&k: &u16| k <= KEY_MAX))
+                    .collect::<Option<Vec<u16>>>()?
             };
             let axes = if f[5] == "-" {
                 Vec::new()
@@ -198,7 +212,13 @@ pub fn parse(line: &str) -> Option<Command> {
                         let n = |i: usize| v.get(i).and_then(|s| s.parse::<i32>().ok());
                         let code = v.first()?.parse::<u16>().ok().filter(|&c| c <= ABS_MAX)?;
                         (v.len() == 5).then_some(())?;
-                        Some(Axis { code, min: n(1)?, max: n(2)?, fuzz: n(3)?, flat: n(4)? })
+                        Some(Axis {
+                            code,
+                            min: n(1)?,
+                            max: n(2)?,
+                            fuzz: n(3)?,
+                            flat: n(4)?,
+                        })
                     })
                     .collect::<Option<Vec<Axis>>>()?
             };
@@ -255,14 +275,20 @@ pub struct Rumble {
 impl Rumble {
     /// New or updated effect `id`; a playing effect restarts with the new parameters.
     pub fn upload(&mut self, id: i16, effect: Effect, now: u64) {
-        let play = self.slots.get(&id).and_then(|s| s.play).map(|p| Play { start: now + effect.delay as u64, left: p.left });
+        let play = self.slots.get(&id).and_then(|s| s.play).map(|p| Play {
+            start: now + effect.delay as u64,
+            left: p.left,
+        });
         self.slots.insert(id, Slot { effect, play });
     }
 
     /// EV_FF `id` with `count`: play it that many times (0 = stop).
     pub fn play(&mut self, id: i16, count: i32, now: u64) {
         if let Some(s) = self.slots.get_mut(&id) {
-            s.play = (count > 0).then(|| Play { start: now + s.effect.delay as u64, left: count });
+            s.play = (count > 0).then(|| Play {
+                start: now + s.effect.delay as u64,
+                left: count,
+            });
         }
     }
 
@@ -281,7 +307,10 @@ impl Rumble {
                 if now < end {
                     break;
                 }
-                s.play = (p.left > 1).then(|| Play { start: end + s.effect.delay as u64, left: p.left - 1 });
+                s.play = (p.left > 1).then(|| Play {
+                    start: end + s.effect.delay as u64,
+                    left: p.left - 1,
+                });
             }
         }
     }
@@ -342,7 +371,12 @@ struct Device {
 impl Device {
     fn create(path: &str, spec: &Spec) -> io::Result<Device> {
         let c = CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -373,7 +407,12 @@ impl Device {
         setup.id.vendor = spec.vendor;
         setup.id.product = spec.product;
         setup.id.version = spec.version;
-        for (dst, &b) in setup.name.iter_mut().zip(spec.name.as_bytes().iter().take(libc::UINPUT_MAX_NAME_SIZE - 1)) {
+        for (dst, &b) in setup.name.iter_mut().zip(
+            spec.name
+                .as_bytes()
+                .iter()
+                .take(libc::UINPUT_MAX_NAME_SIZE - 1),
+        ) {
             *dst = b as libc::c_char;
         }
         setup.ff_effects_max = FF_EFFECTS_MAX as u32;
@@ -385,7 +424,10 @@ impl Device {
     /// The events and a SYN_REPORT in one write (the kernel takes whole input_event structs).
     fn write_frame(&self, events: &[(u16, u16, i32)]) -> io::Result<()> {
         let mut buf: Vec<libc::input_event> = Vec::with_capacity(events.len() + 1);
-        for &(t, c, v) in events.iter().chain(std::iter::once(&(EV_SYN, SYN_REPORT, 0))) {
+        for &(t, c, v) in events
+            .iter()
+            .chain(std::iter::once(&(EV_SYN, SYN_REPORT, 0)))
+        {
             let mut e: libc::input_event = unsafe { std::mem::zeroed() };
             e.type_ = t;
             e.code = c;
@@ -406,7 +448,13 @@ impl Device {
         let mut out = Vec::new();
         loop {
             let mut e: libc::input_event = unsafe { std::mem::zeroed() };
-            let n = unsafe { libc::read(self.fd, &mut e as *mut _ as *mut libc::c_void, size_of::<libc::input_event>()) };
+            let n = unsafe {
+                libc::read(
+                    self.fd,
+                    &mut e as *mut _ as *mut libc::c_void,
+                    size_of::<libc::input_event>(),
+                )
+            };
             if n == size_of::<libc::input_event>() as isize {
                 out.push(e);
             } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
@@ -506,10 +554,15 @@ pub fn run() -> i32 {
                     rumble = Rumble::default();
                     match Device::create(&uinput, &spec) {
                         Ok(d) => {
-                            eprintln!("fx-pad: created \"{}\" ({:04x}:{:04x})", spec.name, spec.vendor, spec.product);
+                            eprintln!(
+                                "fx-pad: created \"{}\" ({:04x}:{:04x})",
+                                spec.name, spec.vendor, spec.product
+                            );
                             pad = Some(Pad::Uinput(d));
                         }
-                        Err(e) => eprintln!("fx-pad: cannot create \"{}\" on {uinput}: {e}", spec.name),
+                        Err(e) => {
+                            eprintln!("fx-pad: cannot create \"{}\" on {uinput}: {e}", spec.name)
+                        }
                     }
                 }
                 Some(Command::HidCreate(spec)) => {
@@ -523,7 +576,10 @@ pub fn run() -> i32 {
                             );
                             pad = Some(Pad::Hid(d));
                         }
-                        Err(e) => eprintln!("fx-pad: cannot create HID \"{}\" on {uhid_path}: {e}", spec.name),
+                        Err(e) => eprintln!(
+                            "fx-pad: cannot create HID \"{}\" on {uhid_path}: {e}",
+                            spec.name
+                        ),
                     }
                 }
                 Some(Command::Remove) => {
@@ -573,7 +629,9 @@ pub fn run() -> i32 {
                                 eprintln!("fx-pad: force-feedback request {}: {err}", e.code);
                             }
                         }
-                        EV_FF if e.code < FF_EFFECTS_MAX => rumble.play(e.code as i16, e.value, now),
+                        EV_FF if e.code < FF_EFFECTS_MAX => {
+                            rumble.play(e.code as i16, e.value, now)
+                        }
                         _ => {}
                     }
                 }
@@ -587,9 +645,13 @@ pub fn run() -> i32 {
                         uhid::Event::GetReport { id, rnum, rtype } => {
                             port.send_quiet(&format!("hid-get {id} {} {rnum}", rtype.name()))
                         }
-                        uhid::Event::SetReport { id, rtype, data, .. } => {
-                            port.send_quiet(&format!("hid-set {id} {} {}", rtype.name(), hex(&data)))
-                        }
+                        uhid::Event::SetReport {
+                            id, rtype, data, ..
+                        } => port.send_quiet(&format!(
+                            "hid-set {id} {} {}",
+                            rtype.name(),
+                            hex(&data)
+                        )),
                         other => eprintln!("fx-pad: HID {other:?}"),
                     }
                 }
@@ -597,7 +659,11 @@ pub fn run() -> i32 {
             None => {}
         }
         let now = ms();
-        let level = if matches!(pad, Some(Pad::Uinput(_))) { rumble.level(now) } else { (0, 0) };
+        let level = if matches!(pad, Some(Pad::Uinput(_))) {
+            rumble.level(now)
+        } else {
+            (0, 0)
+        };
         if level != sent {
             port.send_quiet(&format!("rumble {} {}", level.0, level.1));
             sent = level;
@@ -606,12 +672,24 @@ pub fn run() -> i32 {
 
         // Wait for host lines, uinput requests / FF events / uhid requests, the next rumble
         // change, or (while bytes for the host are waiting) a retry tick.
-        let Some(port_fd) = port.read_fd() else { return 0 };
+        let Some(port_fd) = port.read_fd() else {
+            return 0;
+        };
         let mut pfds = [
-            libc::pollfd { fd: port_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: pad.as_ref().map_or(-1, Pad::fd), events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: port_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: pad.as_ref().map_or(-1, Pad::fd),
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
-        let mut wait = rumble.next_change(now).map(|t| t.saturating_sub(now) as i64);
+        let mut wait = rumble
+            .next_change(now)
+            .map(|t| t.saturating_sub(now) as i64);
         if port.has_pending() {
             wait = Some(wait.map_or(200, |w| w.min(200)));
         }
@@ -652,23 +730,64 @@ mod tests {
 
     #[test]
     fn parses_create_with_name_spaces() {
-        let Some(Command::Create(s)) = parse(DS) else { panic!("not a create") };
-        assert_eq!((s.bus, s.vendor, s.product, s.version), (3, 0x054c, 0x0ce6, 0x8111));
+        let Some(Command::Create(s)) = parse(DS) else {
+            panic!("not a create")
+        };
+        assert_eq!(
+            (s.bus, s.vendor, s.product, s.version),
+            (3, 0x054c, 0x0ce6, 0x8111)
+        );
         assert_eq!(s.keys, vec![304, 305, 307]);
-        assert_eq!(s.axes[0], Axis { code: 0, min: -32768, max: 32767, fuzz: 16, flat: 128 });
+        assert_eq!(
+            s.axes[0],
+            Axis {
+                code: 0,
+                min: -32768,
+                max: 32767,
+                fuzz: 16,
+                flat: 128
+            }
+        );
         assert_eq!(s.axes[1].code, 2);
-        assert_eq!(s.name, "Sony Interactive Entertainment DualSense Wireless Controller");
+        assert_eq!(
+            s.name,
+            "Sony Interactive Entertainment DualSense Wireless Controller"
+        );
     }
 
     #[test]
     fn rejects_malformed_lines() {
-        assert_eq!(parse("create 0003 054c 0ce6 8111 304 0:0:1:0:0"), None, "no name");
-        assert_eq!(parse("create 0003 054c 0ce6 8111 304 0:0:1:0 name"), None, "axis with 4 fields");
-        assert_eq!(parse("create 0003 054c 0ce6 8111 768 - name"), None, "key code beyond KEY_MAX");
-        assert_eq!(parse("create 0003 054c 0ce6 8111 - - name"), None, "no capabilities");
-        assert_eq!(parse("create zz03 054c 0ce6 8111 304 - name"), None, "bad hex id");
+        assert_eq!(
+            parse("create 0003 054c 0ce6 8111 304 0:0:1:0:0"),
+            None,
+            "no name"
+        );
+        assert_eq!(
+            parse("create 0003 054c 0ce6 8111 304 0:0:1:0 name"),
+            None,
+            "axis with 4 fields"
+        );
+        assert_eq!(
+            parse("create 0003 054c 0ce6 8111 768 - name"),
+            None,
+            "key code beyond KEY_MAX"
+        );
+        assert_eq!(
+            parse("create 0003 054c 0ce6 8111 - - name"),
+            None,
+            "no capabilities"
+        );
+        assert_eq!(
+            parse("create zz03 054c 0ce6 8111 304 - name"),
+            None,
+            "bad hex id"
+        );
         assert_eq!(parse("ev 1:304"), None);
-        assert_eq!(parse("ev 21:0:1"), None, "only EV_KEY / EV_ABS from the host");
+        assert_eq!(
+            parse("ev 21:0:1"),
+            None,
+            "only EV_KEY / EV_ABS from the host"
+        );
         assert_eq!(parse("ev"), None);
         assert_eq!(parse("remove now"), None);
         assert_eq!(parse("hello"), None);
@@ -676,38 +795,89 @@ mod tests {
 
     #[test]
     fn parses_frames_and_remove() {
-        assert_eq!(parse("ev 1:304:1 3:0:-32768\n"), Some(Command::Frame(vec![(1, 304, 1), (3, 0, -32768)])));
+        assert_eq!(
+            parse("ev 1:304:1 3:0:-32768\n"),
+            Some(Command::Frame(vec![(1, 304, 1), (3, 0, -32768)]))
+        );
         assert_eq!(parse("remove"), Some(Command::Remove));
     }
 
     #[test]
     fn parses_hid_create_with_descriptor_and_name() {
-        let Some(Command::HidCreate(s)) = parse("hid-create 0005 054c 0ce6 0100 21 05010905a101 DualSense Wireless Controller")
+        let Some(Command::HidCreate(s)) =
+            parse("hid-create 0005 054c 0ce6 0100 21 05010905a101 DualSense Wireless Controller")
         else {
             panic!("not a hid-create")
         };
-        assert_eq!((s.bus, s.vendor, s.product, s.version, s.country), (5, 0x054c, 0x0ce6, 0x0100, 0x21));
+        assert_eq!(
+            (s.bus, s.vendor, s.product, s.version, s.country),
+            (5, 0x054c, 0x0ce6, 0x0100, 0x21)
+        );
         assert_eq!(s.descriptor, vec![0x05, 0x01, 0x09, 0x05, 0xa1, 0x01]);
         assert_eq!(s.name, "DualSense Wireless Controller");
     }
 
     #[test]
     fn parses_hid_reports_and_replies() {
-        assert_eq!(parse("hid-input 01807f"), Some(Command::HidInput(vec![0x01, 0x80, 0x7f])));
-        assert_eq!(parse("hid-get-reply 7 0 0501"), Some(Command::HidGetReply { id: 7, err: 0, data: vec![0x05, 0x01] }));
-        assert_eq!(parse("hid-get-reply 8 5"), Some(Command::HidGetReply { id: 8, err: 5, data: vec![] }), "an error without data");
-        assert_eq!(parse("hid-set-reply 9 0"), Some(Command::HidSetReply { id: 9, err: 0 }));
+        assert_eq!(
+            parse("hid-input 01807f"),
+            Some(Command::HidInput(vec![0x01, 0x80, 0x7f]))
+        );
+        assert_eq!(
+            parse("hid-get-reply 7 0 0501"),
+            Some(Command::HidGetReply {
+                id: 7,
+                err: 0,
+                data: vec![0x05, 0x01]
+            })
+        );
+        assert_eq!(
+            parse("hid-get-reply 8 5"),
+            Some(Command::HidGetReply {
+                id: 8,
+                err: 5,
+                data: vec![]
+            }),
+            "an error without data"
+        );
+        assert_eq!(
+            parse("hid-set-reply 9 0"),
+            Some(Command::HidSetReply { id: 9, err: 0 })
+        );
     }
 
     #[test]
     fn rejects_malformed_hid_lines() {
-        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 0501"), None, "no name");
-        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 - name"), None, "no descriptor");
-        assert_eq!(parse("hid-create 0005 054c 0ce6 0100 21 050 name"), None, "odd hex");
-        let huge = format!("hid-create 0003 054c 0ce6 0100 0 {} name", "00".repeat(uhid::DATA_MAX + 1));
-        assert_eq!(parse(&huge), None, "descriptor beyond HID_MAX_DESCRIPTOR_SIZE");
+        assert_eq!(
+            parse("hid-create 0005 054c 0ce6 0100 21 0501"),
+            None,
+            "no name"
+        );
+        assert_eq!(
+            parse("hid-create 0005 054c 0ce6 0100 21 - name"),
+            None,
+            "no descriptor"
+        );
+        assert_eq!(
+            parse("hid-create 0005 054c 0ce6 0100 21 050 name"),
+            None,
+            "odd hex"
+        );
+        let huge = format!(
+            "hid-create 0003 054c 0ce6 0100 0 {} name",
+            "00".repeat(uhid::DATA_MAX + 1)
+        );
+        assert_eq!(
+            parse(&huge),
+            None,
+            "descriptor beyond HID_MAX_DESCRIPTOR_SIZE"
+        );
         assert_eq!(parse("hid-input"), None, "empty report");
-        assert_eq!(parse(&format!("hid-input {}", "00".repeat(uhid::DATA_MAX + 1))), None, "report beyond UHID_DATA_MAX");
+        assert_eq!(
+            parse(&format!("hid-input {}", "00".repeat(uhid::DATA_MAX + 1))),
+            None,
+            "report beyond UHID_DATA_MAX"
+        );
         assert_eq!(parse("hid-get-reply 7"), None);
         assert_eq!(parse("hid-get-reply x 0 01"), None);
         assert_eq!(parse("hid-set-reply 9"), None);
@@ -715,7 +885,12 @@ mod tests {
     }
 
     fn fx(strong: u16, weak: u16, length: u16, delay: u16) -> Effect {
-        Effect { strong, weak, length, delay }
+        Effect {
+            strong,
+            weak,
+            length,
+            delay,
+        }
     }
 
     #[test]
@@ -776,10 +951,18 @@ mod tests {
         r.play(0, 1, 0);
         r.upload(0, fx(3000, 0, 100, 0), 80);
         assert_eq!(r.level(80), (3000, 0));
-        assert_eq!(r.level(150), (3000, 0), "the new parameters run their full length from the update");
+        assert_eq!(
+            r.level(150),
+            (3000, 0),
+            "the new parameters run their full length from the update"
+        );
         assert_eq!(r.level(180), (0, 0));
         r.upload(0, fx(5000, 0, 100, 0), 200);
-        assert_eq!(r.level(200), (0, 0), "an idle effect stays idle when updated");
+        assert_eq!(
+            r.level(200),
+            (0, 0),
+            "an idle effect stays idle when updated"
+        );
     }
 
     #[test]

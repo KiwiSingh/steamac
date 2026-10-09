@@ -84,6 +84,47 @@ for p in "$here"/patches/*.patch; do
 	git -C "$src" apply "$p"
 done
 
+# libkrun's init_blob build script splits CC_LINUX on ASCII whitespace.
+# The macOS cross-compiler command contains absolute sysroot paths, so a
+# Steamac checkout whose path contains spaces gets split into bogus clang
+# arguments. Give the Linux sysroot a temporary no-space alias and rewrite
+# the Darwin CC_LINUX command to use that alias.
+sysroot_link="/tmp/steamac-libkrun-sysroot-$$"
+rm -f "$sysroot_link"
+ln -s "$src/linux-sysroot" "$sysroot_link"
+trap 'rm -f "$sysroot_link"' EXIT INT TERM
+
+python3 - "$src/Makefile" "$sysroot_link" <<'PYFIX'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+sysroot = sys.argv[2]
+text = path.read_text()
+
+old = (
+    "    CC_LINUX=$(CLANG) -target $(GCC_TRIPLET) -fuse-ld=lld "
+    "-Wl,-strip-debug --sysroot $(abspath $(SYSROOT_LINUX)) "
+    "-B$(GCC_LIB_DIR) -L$(GCC_LIB_DIR) -Wno-c23-extensions\n"
+)
+
+new = (
+    "    CC_LINUX=$(CLANG) -target $(GCC_TRIPLET) -fuse-ld=lld "
+    f"-Wl,-strip-debug --sysroot {sysroot} "
+    f"-B{sysroot}/usr/lib/gcc/$(GCC_TRIPLET)/$(GCC_VERSION) "
+    f"-L{sysroot}/usr/lib/gcc/$(GCC_TRIPLET)/$(GCC_VERSION) "
+    "-Wno-c23-extensions\n"
+)
+
+if old not in text:
+    raise SystemExit(
+        "Refusing libkrun whitespace fix: expected Darwin CC_LINUX line not found"
+    )
+
+path.write_text(text.replace(old, new, 1))
+print(">> libkrun: using no-space Linux sysroot alias")
+PYFIX
+
 # --- build
 (
 	cd "$src"
@@ -99,9 +140,15 @@ done
 	make $MAKE_FLAGS
 	make PREFIX="$out" libkrun.pc
 	# Unit tests of the patched virtio-gpu code (EDID/display resize, blob scanouts).
+	# RUSTFLAGS is whitespace-tokenized by Cargo/rustc, so use a no-space
+	# alias when the Steamac checkout path itself contains whitespace.
+	test_lib_link="/tmp/steamac-libkrun-test-lib-$$"
+	rm -f "$test_lib_link"
+	ln -s "$out/lib" "$test_lib_link"
 	cd src/devices
-	RUSTFLAGS="-L native=$out/lib -C link-args=-Wl,-rpath,$out/lib" \
+	RUSTFLAGS="-L native=$test_lib_link -C link-args=-Wl,-rpath,$test_lib_link" \
 		cargo test -q --features gpu --lib -- virtio::gpu
+	rm -f "$test_lib_link"
 )
 
 # --- install (temp file + rename for every output)

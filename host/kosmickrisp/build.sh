@@ -121,14 +121,26 @@ fi
 
 # --- (1) host compiler tools: mesa_clc + vtn_bindgen2
 rm -rf "$work/build-clc" "$clc"
-PATH="$work/venv/bin:$PATH:$(brew --prefix llvm)/bin" meson setup "$work/build-clc" "$src" \
+
+# Mesa's host CLC build needs LLVMSPIRVLib from Homebrew's
+# spirv-llvm-translator. Make the Homebrew pkg-config roots explicit instead
+# of relying on pkg-config's ambient search path.
+brew_prefix=$(brew --prefix)
+llvm_prefix=$(brew --prefix llvm)
+spirv_llvm_prefix=$(brew --prefix spirv-llvm-translator)
+host_pkg_config_path="$brew_prefix/lib/pkgconfig:$llvm_prefix/lib/pkgconfig:$spirv_llvm_prefix/lib/pkgconfig"
+if [ -n "${PKG_CONFIG_PATH:-}" ]; then
+	host_pkg_config_path="$host_pkg_config_path:$PKG_CONFIG_PATH"
+fi
+
+PKG_CONFIG_PATH="$host_pkg_config_path" PATH="$work/venv/bin:$PATH:$llvm_prefix/bin" meson setup "$work/build-clc" "$src" \
 	--prefix="$clc" --buildtype=release -Db_ndebug=true \
 	-Dplatforms= -Dvulkan-drivers= -Dgallium-drivers= -Dopengl=false -Dglx=disabled \
 	-Degl=disabled -Dgbm=disabled -Dzstd=disabled \
 	-Dllvm=enabled -Dshared-llvm=enabled \
 	-Dmesa-clc=enabled -Dinstall-mesa-clc=true \
 	-Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true
-PATH="$work/venv/bin:$PATH:$(brew --prefix llvm)/bin" ninja -C "$work/build-clc" install > /dev/null
+PKG_CONFIG_PATH="$host_pkg_config_path" PATH="$work/venv/bin:$PATH:$llvm_prefix/bin" ninja -C "$work/build-clc" install > /dev/null
 
 # --- (2) the driver
 rm -rf "$work/build"

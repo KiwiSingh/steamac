@@ -56,9 +56,12 @@ pub fn parse_wake(line: &str, token: &str) -> Option<i128> {
 /// Executable hooks, sorted by file name, a name in a higher-priority directory
 /// hiding the same name further down (a /dev/null symlink masks it).
 pub fn hooks(dirs: &[&str]) -> Vec<std::path::PathBuf> {
-    let mut by_name: std::collections::BTreeMap<std::ffi::OsString, std::path::PathBuf> = Default::default();
+    let mut by_name: std::collections::BTreeMap<std::ffi::OsString, std::path::PathBuf> =
+        Default::default();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             by_name.entry(e.file_name()).or_insert_with(|| e.path());
         }
@@ -77,7 +80,11 @@ pub fn hooks(dirs: &[&str]) -> Vec<std::path::PathBuf> {
 fn run_hooks(phase: &str, action: &str) {
     let mut running: Vec<(std::path::PathBuf, Child)> = Vec::new();
     for hook in hooks(&HOOK_DIRS) {
-        match Command::new(&hook).args([phase, action]).env("SYSTEMD_SLEEP_ACTION", action).spawn() {
+        match Command::new(&hook)
+            .args([phase, action])
+            .env("SYSTEMD_SLEEP_ACTION", action)
+            .spawn()
+        {
             Ok(c) => running.push((hook, c)),
             Err(e) => eprintln!("{TAG}: {}: {e}", hook.display()),
         }
@@ -92,7 +99,11 @@ fn run_hooks(phase: &str, action: &str) {
                 false
             }
             Ok(None) if Instant::now() >= deadline => {
-                eprintln!("{TAG}: {} {phase} {action}: still running after {} s; killed", hook.display(), HOOK_TIMEOUT.as_secs());
+                eprintln!(
+                    "{TAG}: {} {phase} {action}: still running after {} s; killed",
+                    hook.display(),
+                    HOOK_TIMEOUT.as_secs()
+                );
                 let _ = child.kill();
                 let _ = child.wait();
                 false
@@ -113,7 +124,13 @@ fn write_line(fd: i32, line: &str) -> io::Result<()> {
     let bytes = format!("{line}\n").into_bytes();
     let mut off = 0;
     while off < bytes.len() {
-        let n = unsafe { libc::write(fd, bytes[off..].as_ptr() as *const libc::c_void, bytes.len() - off) };
+        let n = unsafe {
+            libc::write(
+                fd,
+                bytes[off..].as_ptr() as *const libc::c_void,
+                bytes.len() - off,
+            )
+        };
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {
@@ -162,13 +179,21 @@ fn wait_wake(fd: i32, token: &str, path: &str) -> Option<i128> {
 
 pub fn run(action: &str) -> i32 {
     let path = std::env::var("FX_SLEEP_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
-    let Ok(c) = CString::new(path.clone()) else { return 1 };
+    let Ok(c) = CString::new(path.clone()) else {
+        return 1;
+    };
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOCTTY) };
     if fd < 0 {
-        eprintln!("{TAG}: {path}: {}; not suspending (nothing could wake the VM)", io::Error::last_os_error());
+        eprintln!(
+            "{TAG}: {path}: {}; not suspending (nothing could wake the VM)",
+            io::Error::last_os_error()
+        );
         return 1;
     }
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
     let token = format!("{}", ts.tv_sec as i128 * 1_000_000_000 + ts.tv_nsec as i128);
 
@@ -201,7 +226,10 @@ mod tests {
 
     #[test]
     fn parses_wake_lines() {
-        assert_eq!(parse_wake("wake 123 1791144110393000000\n", "123"), Some(1791144110393000000));
+        assert_eq!(
+            parse_wake("wake 123 1791144110393000000\n", "123"),
+            Some(1791144110393000000)
+        );
         assert_eq!(parse_wake("wake 124 1791144110393000000", "123"), None);
         assert_eq!(parse_wake("wake 123", "123"), None);
         assert_eq!(parse_wake("wake 123 -5", "123"), None);

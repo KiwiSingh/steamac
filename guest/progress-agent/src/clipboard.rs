@@ -92,7 +92,11 @@ impl Content {
                 h.write(p);
             }
         }
-        Some(Content { text: text.map(Arc::new), png: png.map(Arc::new), hash: h.0 })
+        Some(Content {
+            text: text.map(Arc::new),
+            png: png.map(Arc::new),
+            hash: h.0,
+        })
     }
 
     /// "text 31 B, image 5.9 KiB" for the journal.
@@ -137,14 +141,22 @@ pub fn capped(text: Option<Vec<u8>>, png: Option<Vec<u8>>, what: &str) -> Option
     let text = text.filter(|t| {
         let ok = t.len() <= TEXT_MAX;
         if !ok {
-            eprintln!("{TAG}: {what}: text of {} exceeds the {} limit: not shared", size(t.len()), size(TEXT_MAX));
+            eprintln!(
+                "{TAG}: {what}: text of {} exceeds the {} limit: not shared",
+                size(t.len()),
+                size(TEXT_MAX)
+            );
         }
         ok
     });
     let png = png.filter(|p| {
         let ok = p.len() <= IMAGE_MAX;
         if !ok {
-            eprintln!("{TAG}: {what}: image of {} exceeds the {} limit: not shared", size(p.len()), size(IMAGE_MAX));
+            eprintln!(
+                "{TAG}: {what}: image of {} exceeds the {} limit: not shared",
+                size(p.len()),
+                size(IMAGE_MAX)
+            );
         }
         ok
     });
@@ -171,9 +183,16 @@ pub fn encode(kind: u8, seq: u32, payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn set_payload(c: &Content) -> Vec<u8> {
-    let items: Vec<(&str, &Arc<Vec<u8>>)> =
-        [(MIME_TEXT, &c.text), (MIME_PNG, &c.png)].into_iter().filter_map(|(m, d)| d.as_ref().map(|d| (m, d))).collect();
-    let mut p = Vec::with_capacity(2 + items.iter().map(|(m, d)| 6 + m.len() + d.len()).sum::<usize>());
+    let items: Vec<(&str, &Arc<Vec<u8>>)> = [(MIME_TEXT, &c.text), (MIME_PNG, &c.png)]
+        .into_iter()
+        .filter_map(|(m, d)| d.as_ref().map(|d| (m, d)))
+        .collect();
+    let mut p = Vec::with_capacity(
+        2 + items
+            .iter()
+            .map(|(m, d)| 6 + m.len() + d.len())
+            .sum::<usize>(),
+    );
     p.extend_from_slice(&(items.len() as u16).to_le_bytes());
     for (mime, data) in items {
         p.extend_from_slice(&(mime.len() as u16).to_le_bytes());
@@ -252,7 +271,12 @@ impl Decoder {
             let h = &self.buf[..HEADER];
             let kind = h[4];
             let len = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
-            if !(T_HELLO..=T_ACK).contains(&kind) || h[5] != 0 || h[6] != 0 || h[7] != 0 || len > MAX_PAYLOAD {
+            if !(T_HELLO..=T_ACK).contains(&kind)
+                || h[5] != 0
+                || h[6] != 0
+                || h[7] != 0
+                || len > MAX_PAYLOAD
+            {
                 self.buf.drain(..1); // not a frame start: look for the next magic
                 continue;
             }
@@ -318,7 +342,13 @@ pub struct Inbox {
 pub fn mailbox() -> io::Result<(Mailbox, Inbox)> {
     let wake = Arc::new(EventFd::new()?);
     let (tx, rx) = mpsc::channel();
-    Ok((Mailbox { tx, wake: wake.clone() }, Inbox { rx, wake }))
+    Ok((
+        Mailbox {
+            tx,
+            wake: wake.clone(),
+        },
+        Inbox { rx, wake },
+    ))
 }
 
 pub struct EventFd(RawFd);
@@ -425,11 +455,18 @@ impl Coordinator {
                 self.broadcast(&c, Some(&src));
                 if self.enabled {
                     self.seq = self.seq.wrapping_add(1);
-                    eprintln!("{TAG}: SteamOS -> Mac #{}: {} (copied on {src})", self.seq, c.describe());
+                    eprintln!(
+                        "{TAG}: SteamOS -> Mac #{}: {} (copied on {src})",
+                        self.seq,
+                        c.describe()
+                    );
                     let (seq, p) = (self.seq, set_payload(&c));
                     self.send_frame(T_SET, seq, &p);
                 } else {
-                    eprintln!("{TAG}: copied on {src}: {}; sharing is off, not sent", c.describe());
+                    eprintln!(
+                        "{TAG}: copied on {src}: {}; sharing is off, not sent",
+                        c.describe()
+                    );
                 }
             }
         }
@@ -447,7 +484,10 @@ impl Coordinator {
             }
             T_SET => {
                 if !self.enabled {
-                    eprintln!("{TAG}: Mac -> SteamOS #{} while sharing is off: ignored", f.seq);
+                    eprintln!(
+                        "{TAG}: Mac -> SteamOS #{} while sharing is off: ignored",
+                        f.seq
+                    );
                     return self.ack(f.seq, ACK_REJECTED);
                 }
                 let Some((text, png)) = parse_set(&f.payload) else {
@@ -458,10 +498,19 @@ impl Coordinator {
                     return self.ack(f.seq, ACK_REJECTED);
                 };
                 if self.current.as_ref().is_some_and(|cur| cur.hash == c.hash) {
-                    eprintln!("{TAG}: Mac -> SteamOS #{}: {} (already the clipboard)", f.seq, c.describe());
+                    eprintln!(
+                        "{TAG}: Mac -> SteamOS #{}: {} (already the clipboard)",
+                        f.seq,
+                        c.describe()
+                    );
                     return self.ack(f.seq, ACK_SAME);
                 }
-                eprintln!("{TAG}: Mac -> SteamOS #{}: {} -> {} display(s)", f.seq, c.describe(), self.workers.len());
+                eprintln!(
+                    "{TAG}: Mac -> SteamOS #{}: {} -> {} display(s)",
+                    f.seq,
+                    c.describe(),
+                    self.workers.len()
+                );
                 let c = Arc::new(c);
                 self.current = Some(c.clone());
                 self.broadcast(&c, None);
@@ -482,7 +531,8 @@ impl Coordinator {
 }
 
 fn open_port(path: &str) -> io::Result<std::fs::File> {
-    let c = std::ffi::CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let c =
+        std::ffi::CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOCTTY) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
@@ -585,7 +635,8 @@ pub fn x11_display(name: &str) -> Option<String> {
 
 /// `wayland-<n>` (not its `.lock`).
 pub fn is_wayland_socket(name: &str) -> bool {
-    name.strip_prefix("wayland-").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    name.strip_prefix("wayland-")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn is_socket(path: &str) -> bool {
@@ -597,7 +648,8 @@ fn is_socket(path: &str) -> bool {
 /// $XDG_RUNTIME_DIR or one directory below it (the nested Plasma session's
 /// own runtime directory), now and whenever one is created (inotify, no polling).
 fn discover(tx: Sender<Ev>) {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
     let ino = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     let mut dirs: HashMap<i32, String> = HashMap::new();
     let mask = libc::IN_CREATE | libc::IN_MOVED_TO;
@@ -605,7 +657,9 @@ fn discover(tx: Sender<Ev>) {
         if ino < 0 {
             return;
         }
-        let Ok(c) = std::ffi::CString::new(dir) else { return };
+        let Ok(c) = std::ffi::CString::new(dir) else {
+            return;
+        };
         let wd = unsafe { libc::inotify_add_watch(ino, c.as_ptr(), mask) };
         if wd >= 0 {
             dirs.insert(wd, dir.to_string());
@@ -620,7 +674,9 @@ fn discover(tx: Sender<Ev>) {
     };
     let scan = |dir: &str| -> Vec<Ev> {
         std::fs::read_dir(dir).map_or(Vec::new(), |rd| {
-            rd.flatten().filter_map(|e| report(dir, &e.file_name().to_string_lossy())).collect()
+            rd.flatten()
+                .filter_map(|e| report(dir, &e.file_name().to_string_lossy()))
+                .collect()
         })
     };
     watch(&mut dirs, X11_DIR);
@@ -628,7 +684,10 @@ fn discover(tx: Sender<Ev>) {
     let mut initial = scan(X11_DIR);
     initial.extend(scan(&runtime));
     if let Ok(rd) = std::fs::read_dir(&runtime) {
-        for e in rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        for e in rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        {
             let sub = format!("{runtime}/{}", e.file_name().to_string_lossy());
             watch(&mut dirs, &sub);
             initial.extend(scan(&sub));
@@ -640,7 +699,10 @@ fn discover(tx: Sender<Ev>) {
         }
     }
     if ino < 0 {
-        eprintln!("{TAG}: inotify: {}; only the displays present at start are shared", io::Error::last_os_error());
+        eprintln!(
+            "{TAG}: inotify: {}; only the displays present at start are shared",
+            io::Error::last_os_error()
+        );
         return;
     }
     let mut buf = vec![0u8; 16 * 1024];
@@ -657,9 +719,13 @@ fn discover(tx: Sender<Ev>) {
             let ev = unsafe { &*(buf.as_ptr().add(at) as *const libc::inotify_event) };
             let name_start = at + std::mem::size_of::<libc::inotify_event>();
             let name_bytes = &buf[name_start..name_start + ev.len as usize];
-            let name = String::from_utf8_lossy(name_bytes.split(|&b| b == 0).next().unwrap_or_default()).into_owned();
+            let name =
+                String::from_utf8_lossy(name_bytes.split(|&b| b == 0).next().unwrap_or_default())
+                    .into_owned();
             at = name_start + ev.len as usize;
-            let Some(dir) = dirs.get(&ev.wd).cloned() else { continue };
+            let Some(dir) = dirs.get(&ev.wd).cloned() else {
+                continue;
+            };
             let found = if ev.mask & libc::IN_ISDIR != 0 {
                 if dir != runtime || name == "doc" {
                     continue;
@@ -683,7 +749,14 @@ fn discover(tx: Sender<Ev>) {
 
 /// poll(2) on `fds` for POLLIN; `timeout` None = forever. Returns the revents.
 pub fn poll_in(fds: &[RawFd], timeout: Option<Duration>) -> Vec<i16> {
-    let mut p: Vec<libc::pollfd> = fds.iter().map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let mut p: Vec<libc::pollfd> = fds
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
     let ms = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
     let r = unsafe { libc::poll(p.as_mut_ptr(), p.len() as libc::nfds_t, ms) };
     if r < 0 {
@@ -698,7 +771,11 @@ mod tests {
 
     #[test]
     fn frame_round_trip_and_resync() {
-        let c = Content::new(Some("привет 🎮".as_bytes().to_vec()), Some(vec![0x89, b'P', b'N', b'G'])).unwrap();
+        let c = Content::new(
+            Some("привет 🎮".as_bytes().to_vec()),
+            Some(vec![0x89, b'P', b'N', b'G']),
+        )
+        .unwrap();
         let set = encode(T_SET, 7, &set_payload(&c));
         let mut stream = b"garbage FXC".to_vec();
         stream.extend_from_slice(&set);
@@ -714,8 +791,18 @@ mod tests {
         let (text, png) = parse_set(&frames[0].payload).unwrap();
         let back = Content::new(text, png).unwrap();
         assert_eq!(back.hash, c.hash);
-        assert_eq!(back.text.as_deref().map(|v| v.as_slice()), Some("привет 🎮".as_bytes()));
-        assert_eq!(frames[1], Frame { kind: T_STATE, seq: 0, payload: vec![1] });
+        assert_eq!(
+            back.text.as_deref().map(|v| v.as_slice()),
+            Some("привет 🎮".as_bytes())
+        );
+        assert_eq!(
+            frames[1],
+            Frame {
+                kind: T_STATE,
+                seq: 0,
+                payload: vec![1]
+            }
+        );
     }
 
     #[test]

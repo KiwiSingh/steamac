@@ -34,7 +34,15 @@ pub struct Tailer {
 
 impl Tailer {
     pub fn new(path: String, not_before: i64) -> Tailer {
-        Tailer { path, not_before, file: None, ino: 0, offset: 0, partial: Vec::new(), discovered: false }
+        Tailer {
+            path,
+            not_before,
+            file: None,
+            ino: 0,
+            offset: 0,
+            partial: Vec::new(),
+            discovered: false,
+        }
     }
 
     /// New complete lines since the last call.
@@ -98,18 +106,34 @@ impl Tailer {
 
 fn parse_line(raw: &str) -> Line {
     // "[2026-10-03 13:57:47] Downloading update (12,514 of 662,547 KB)..."
-    if raw.len() >= 22 && raw.as_bytes()[0] == b'[' && raw.as_bytes()[20] == b']' && raw.is_char_boundary(22) {
+    if raw.len() >= 22
+        && raw.as_bytes()[0] == b'['
+        && raw.as_bytes()[20] == b']'
+        && raw.is_char_boundary(22)
+    {
         let ts = parse_local_time(&raw[1..20]);
-        return Line { ts, text: raw[22..].trim().to_string() };
+        return Line {
+            ts,
+            text: raw[22..].trim().to_string(),
+        };
     }
-    Line { ts: None, text: raw.trim().to_string() }
+    Line {
+        ts: None,
+        text: raw.trim().to_string(),
+    }
 }
 
 /// "YYYY-MM-DD HH:MM:SS" in the guest's local time zone -> Unix time
 /// (musl's mktime reads TZ or /etc/localtime).
 fn parse_local_time(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() != 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b' ' || b[13] != b':' || b[16] != b':' {
+    if b.len() != 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b' '
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i32>().ok();

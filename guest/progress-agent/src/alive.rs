@@ -18,15 +18,32 @@ pub struct Heartbeat {
 impl Heartbeat {
     /// None if timerfd is unavailable (then there are no heartbeats).
     pub fn new() -> Option<Heartbeat> {
-        let fd = unsafe { libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC) };
+        let fd = unsafe {
+            libc::timerfd_create(
+                libc::CLOCK_MONOTONIC,
+                libc::TFD_NONBLOCK | libc::TFD_CLOEXEC,
+            )
+        };
         if fd < 0 {
-            eprintln!("fx-progress: timerfd_create: {}; no heartbeats", std::io::Error::last_os_error());
+            eprintln!(
+                "fx-progress: timerfd_create: {}; no heartbeats",
+                std::io::Error::last_os_error()
+            );
             return None;
         }
-        let second = libc::timespec { tv_sec: 1, tv_nsec: 0 };
-        let spec = libc::itimerspec { it_interval: second, it_value: second };
+        let second = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        let spec = libc::itimerspec {
+            it_interval: second,
+            it_value: second,
+        };
         if unsafe { libc::timerfd_settime(fd, 0, &spec, std::ptr::null_mut()) } < 0 {
-            eprintln!("fx-progress: timerfd_settime: {}; no heartbeats", std::io::Error::last_os_error());
+            eprintln!(
+                "fx-progress: timerfd_settime: {}; no heartbeats",
+                std::io::Error::last_os_error()
+            );
             unsafe { libc::close(fd) };
             return None;
         }
@@ -40,7 +57,13 @@ impl Heartbeat {
     /// Drain the timer; send one beat if it expired since the last call.
     pub fn pump(&self, port: &mut Port) {
         let mut expirations = 0u64;
-        let n = unsafe { libc::read(self.fd, &mut expirations as *mut u64 as *mut libc::c_void, 8) };
+        let n = unsafe {
+            libc::read(
+                self.fd,
+                &mut expirations as *mut u64 as *mut libc::c_void,
+                8,
+            )
+        };
         if n == 8 && expirations > 0 && !port.has_pending() {
             port.send_quiet(&line());
         }
@@ -55,7 +78,10 @@ impl Drop for Heartbeat {
 
 /// `alive <ms since boot> <1-minute load average>`.
 fn line() -> String {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
     let uptime_ms = ts.tv_sec as i64 * 1000 + ts.tv_nsec as i64 / 1_000_000;
     let mut info: libc::sysinfo = unsafe { std::mem::zeroed() };

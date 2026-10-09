@@ -29,11 +29,17 @@ impl Kind {
 
 /// None = not a system shutdown (only the session is going away).
 pub fn detect() -> Option<Kind> {
-    if let Some(jobs) = run("/usr/bin/systemctl", &["list-jobs", "--no-legend", "--no-pager"], Duration::from_millis(1000)) {
+    if let Some(jobs) = run(
+        "/usr/bin/systemctl",
+        &["list-jobs", "--no-legend", "--no-pager"],
+        Duration::from_millis(1000),
+    ) {
         for line in jobs.lines() {
             let unit = line.split_whitespace().nth(1).unwrap_or("");
             match unit {
-                "reboot.target" | "kexec.target" | "soft-reboot.target" => return Some(Kind::Reboot),
+                "reboot.target" | "kexec.target" | "soft-reboot.target" => {
+                    return Some(Kind::Reboot)
+                }
                 "poweroff.target" | "halt.target" => return Some(Kind::Poweroff),
                 _ => {}
             }
@@ -42,7 +48,11 @@ pub fn detect() -> Option<Kind> {
     // No target job visible (query failed/timed out, or the job already ran):
     // if the system is stopping it is a shutdown of unknown kind. Report
     // poweroff; the launcher still sees "reboot: Restarting system" on hvc0.
-    match run("/usr/bin/systemctl", &["is-system-running"], Duration::from_millis(500)) {
+    match run(
+        "/usr/bin/systemctl",
+        &["is-system-running"],
+        Duration::from_millis(500),
+    ) {
         Some(s) if s.trim() == "stopping" => Some(Kind::Poweroff),
         _ => None,
     }

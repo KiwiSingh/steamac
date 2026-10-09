@@ -39,15 +39,51 @@ pub enum Msg {
 /// public/steambootstrapper_english.txt). `Downloading(0, 0)` stands for the
 /// download line; its numbers come from %bytes% / %size%.
 const KEYS: &[(&str, Msg, &str)] = &[
-    ("SteamBootstrapper_InstallVerify", Msg::Verifying, "Verifying installation..."),
-    ("SteamBootstrapper_UpdateChecking", Msg::Checking, "Checking for available updates..."),
-    ("SteamBootstrapper_UpdateDownload", Msg::DownloadStarting, "Downloading update..."),
-    ("SteamBootstrapper_UpdateDownloading", Msg::Downloading(0, 0), "Downloading update (%bytes% of %size% KB)..."),
-    ("SteamBootstrapper_DownloadComplete", Msg::Downloaded, "Download complete."),
-    ("SteamBootstrapper_UpdateExtractingPackage", Msg::Extracting, "Extracting package..."),
-    ("SteamBootstrapper_UpdateInstalling", Msg::Installing, "Installing update..."),
-    ("SteamBootstrapper_UpdateCleanup", Msg::CleaningUp, "Cleaning up..."),
-    ("SteamBootstrapper_UpdateComplete", Msg::UpdateComplete, "Update complete, launching %appname%..."),
+    (
+        "SteamBootstrapper_InstallVerify",
+        Msg::Verifying,
+        "Verifying installation...",
+    ),
+    (
+        "SteamBootstrapper_UpdateChecking",
+        Msg::Checking,
+        "Checking for available updates...",
+    ),
+    (
+        "SteamBootstrapper_UpdateDownload",
+        Msg::DownloadStarting,
+        "Downloading update...",
+    ),
+    (
+        "SteamBootstrapper_UpdateDownloading",
+        Msg::Downloading(0, 0),
+        "Downloading update (%bytes% of %size% KB)...",
+    ),
+    (
+        "SteamBootstrapper_DownloadComplete",
+        Msg::Downloaded,
+        "Download complete.",
+    ),
+    (
+        "SteamBootstrapper_UpdateExtractingPackage",
+        Msg::Extracting,
+        "Extracting package...",
+    ),
+    (
+        "SteamBootstrapper_UpdateInstalling",
+        Msg::Installing,
+        "Installing update...",
+    ),
+    (
+        "SteamBootstrapper_UpdateCleanup",
+        Msg::CleaningUp,
+        "Cleaning up...",
+    ),
+    (
+        "SteamBootstrapper_UpdateComplete",
+        Msg::UpdateComplete,
+        "Update complete, launching %appname%...",
+    ),
 ];
 
 /// Retry interval for loading the language files while they do not exist yet.
@@ -92,18 +128,32 @@ impl Messages {
             self.next_try = Instant::now() + RETRY;
             self.load();
         }
-        lookup(&self.table, text).or_else(|| parse_download_any(text).map(|(d, t)| Msg::Downloading(d, t)))
+        lookup(&self.table, text)
+            .or_else(|| parse_download_any(text).map(|(d, t)| Msg::Downloading(d, t)))
     }
 
     fn load(&mut self) {
-        let lang = std::fs::read_to_string(&self.registry).ok().and_then(|s| registry_language(&s));
-        let Ok(dir) = std::fs::read_dir(self.steam_root.join("public")) else { return };
+        let lang = std::fs::read_to_string(&self.registry)
+            .ok()
+            .and_then(|s| registry_language(&s));
+        let Ok(dir) = std::fs::read_dir(self.steam_root.join("public")) else {
+            return;
+        };
         let mut files: Vec<(u8, String, PathBuf)> = dir
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
-                let l = name.strip_prefix("steambootstrapper_")?.strip_suffix(".txt")?.to_ascii_lowercase();
-                let rank = if Some(&l) == lang.as_ref() { 0 } else if l == "english" { 1 } else { 2 };
+                let l = name
+                    .strip_prefix("steambootstrapper_")?
+                    .strip_suffix(".txt")?
+                    .to_ascii_lowercase();
+                let rank = if Some(&l) == lang.as_ref() {
+                    0
+                } else if l == "english" {
+                    1
+                } else {
+                    2
+                };
                 Some((rank, l, e.path()))
             })
             .collect();
@@ -136,14 +186,24 @@ impl Messages {
 }
 
 fn builtin() -> Vec<Template> {
-    KEYS.iter().filter_map(|&(_, msg, text)| Some(Template { msg, parts: compile(text)? })).collect()
+    KEYS.iter()
+        .filter_map(|&(_, msg, text)| {
+            Some(Template {
+                msg,
+                parts: compile(text)?,
+            })
+        })
+        .collect()
 }
 
 /// The message templates of one steambootstrapper_<language>.txt.
 fn parse_strings(text: &str) -> Vec<Template> {
     let mut out = Vec::new();
     kv_for_each(text, |path, key, value| {
-        if !path.last().is_some_and(|p| p.eq_ignore_ascii_case("Tokens")) {
+        if !path
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case("Tokens"))
+        {
             return;
         }
         if let Some(&(_, msg, _)) = KEYS.iter().find(|(k, _, _)| k.eq_ignore_ascii_case(key)) {
@@ -162,7 +222,11 @@ fn lookup(table: &[Template], text: &str) -> Option<Msg> {
         if matches(&t.parts, text, &mut caps) {
             return Some(match t.msg {
                 Msg::Downloading(..) => {
-                    let var = |name: &str| caps.iter().find(|(n, _)| *n == name).and_then(|(_, v)| digits(v));
+                    let var = |name: &str| {
+                        caps.iter()
+                            .find(|(n, _)| *n == name)
+                            .and_then(|(_, v)| digits(v))
+                    };
                     match (var("bytes"), var("size")) {
                         (Some(done), Some(total)) => Msg::Downloading(done, total),
                         // Template without the expected placeholders: the numbers by shape.
@@ -194,7 +258,9 @@ fn compile(text: &str) -> Option<Vec<Part>> {
             rest = r;
             continue;
         }
-        let name_len = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+        let name_len = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
         if name_len > 0 && after[name_len..].starts_with('%') {
             if !lit.is_empty() {
                 parts.push(Part::Lit(std::mem::take(&mut lit)));
@@ -222,7 +288,9 @@ fn compile(text: &str) -> Option<Vec<Part>> {
 fn matches<'a>(parts: &'a [Part], text: &'a str, caps: &mut Vec<(&'a str, &'a str)>) -> bool {
     match parts.split_first() {
         None => text.is_empty(),
-        Some((Part::Lit(l), rest)) => text.strip_prefix(l.as_str()).is_some_and(|t| matches(rest, t, caps)),
+        Some((Part::Lit(l), rest)) => text
+            .strip_prefix(l.as_str())
+            .is_some_and(|t| matches(rest, t, caps)),
         Some((Part::Var(name), rest)) => match rest.first() {
             // Last part: the rest of the line.
             None => {
@@ -291,7 +359,8 @@ fn numbers(s: &str) -> Vec<u64> {
             continue;
         }
         let mut value: Option<u64> = Some(0);
-        let push = |v: Option<u64>, d: char| v?.checked_mul(10)?.checked_add(d.to_digit(10)? as u64);
+        let push =
+            |v: Option<u64>, d: char| v?.checked_mul(10)?.checked_add(d.to_digit(10)? as u64);
         while i < chars.len() && chars[i].is_ascii_digit() {
             value = push(value, chars[i]);
             i += 1;
@@ -418,7 +487,11 @@ mod tests {
         for f in [ENGLISH, RUSSIAN, GERMAN, JAPANESE, SCHINESE] {
             let t = parse_strings(f);
             for &(key, msg, _) in KEYS {
-                assert!(t.iter().any(|t| t.msg == msg), "{key} missing in {:?}", f.lines().next());
+                assert!(
+                    t.iter().any(|t| t.msg == msg),
+                    "{key} missing in {:?}",
+                    f.lines().next()
+                );
             }
         }
     }
@@ -431,12 +504,18 @@ mod tests {
         assert_eq!(c("Проверка установки..."), Some(Msg::Verifying));
         assert_eq!(c("Загрузка обновления..."), Some(Msg::DownloadStarting));
         assert_eq!(c("Проверка на наличие обновлений..."), Some(Msg::Checking));
-        assert_eq!(c("Загрузка обновления (493,215 из 564,334 КБ)..."), Some(Msg::Downloading(493215, 564334)));
+        assert_eq!(
+            c("Загрузка обновления (493,215 из 564,334 КБ)..."),
+            Some(Msg::Downloading(493215, 564334))
+        );
         assert_eq!(c("Загрузка выполнена."), Some(Msg::Downloaded));
         assert_eq!(c("Разархивирование пакета..."), Some(Msg::Extracting));
         assert_eq!(c("Установка обновления..."), Some(Msg::Installing));
         assert_eq!(c("Очистка..."), Some(Msg::CleaningUp));
-        assert_eq!(c("Обновление завершено, запуск Steam..."), Some(Msg::UpdateComplete));
+        assert_eq!(
+            c("Обновление завершено, запуск Steam..."),
+            Some(Msg::UpdateComplete)
+        );
         // Plain log lines are not bootstrapper messages.
         assert_eq!(c("Verification complete"), None);
         assert_eq!(c("Manifest download: send request"), None);
@@ -448,12 +527,18 @@ mod tests {
         let c = |s: &str| lookup(&t, s);
         assert_eq!(c("Installation wird überprüft …"), Some(Msg::Verifying));
         assert_eq!(c("Suche nach verfügbaren Updates …"), Some(Msg::Checking));
-        assert_eq!(c("Update wird heruntergeladen (12.514 von 662.547 KB) …"), Some(Msg::Downloading(12514, 662547)));
+        assert_eq!(
+            c("Update wird heruntergeladen (12.514 von 662.547 KB) …"),
+            Some(Msg::Downloading(12514, 662547))
+        );
         assert_eq!(c("Download ist abgeschlossen."), Some(Msg::Downloaded));
         assert_eq!(c("Paket wird extrahiert …"), Some(Msg::Extracting));
         assert_eq!(c("Update wird installiert …"), Some(Msg::Installing));
         assert_eq!(c("Bereinigen …"), Some(Msg::CleaningUp));
-        assert_eq!(c("Aktualisierung abgeschlossen, Steam wird geladen …"), Some(Msg::UpdateComplete));
+        assert_eq!(
+            c("Aktualisierung abgeschlossen, Steam wird geladen …"),
+            Some(Msg::UpdateComplete)
+        );
     }
 
     #[test]
@@ -462,11 +547,20 @@ mod tests {
         let c = |s: &str| lookup(&t, s);
         assert_eq!(c("インストール状況を確認中..."), Some(Msg::Verifying));
         assert_eq!(c("更新を確認中..."), Some(Msg::Checking));
-        assert_eq!(c("更新をダウンロード中（12,514 / 662,547 KB）..."), Some(Msg::Downloading(12514, 662547)));
+        assert_eq!(
+            c("更新をダウンロード中（12,514 / 662,547 KB）..."),
+            Some(Msg::Downloading(12514, 662547))
+        );
         assert_eq!(c("ダウンロードが終了しました。"), Some(Msg::Downloaded));
-        assert_eq!(c("更新が完了しました。Steam を起動します..."), Some(Msg::UpdateComplete));
+        assert_eq!(
+            c("更新が完了しました。Steam を起動します..."),
+            Some(Msg::UpdateComplete)
+        );
         assert_eq!(c("正在验证安装..."), Some(Msg::Verifying));
-        assert_eq!(c("正在下载更新 (已下载 12,514，共 662,547 KB)..."), Some(Msg::Downloading(12514, 662547)));
+        assert_eq!(
+            c("正在下载更新 (已下载 12,514，共 662,547 KB)..."),
+            Some(Msg::Downloading(12514, 662547))
+        );
         assert_eq!(c("正在展开安装包..."), Some(Msg::Extracting));
         assert_eq!(c("更新完成，正在启动 Steam..."), Some(Msg::UpdateComplete));
     }
@@ -474,10 +568,22 @@ mod tests {
     #[test]
     fn english_builtin() {
         let t = builtin();
-        assert_eq!(lookup(&t, "Downloading update (12,514 of 662,547 KB)..."), Some(Msg::Downloading(12514, 662547)));
-        assert_eq!(lookup(&t, "Downloading update..."), Some(Msg::DownloadStarting));
-        assert_eq!(lookup(&t, "Update complete, launching Steam..."), Some(Msg::UpdateComplete));
-        assert_eq!(lookup(&t, "Verifying installation..."), Some(Msg::Verifying));
+        assert_eq!(
+            lookup(&t, "Downloading update (12,514 of 662,547 KB)..."),
+            Some(Msg::Downloading(12514, 662547))
+        );
+        assert_eq!(
+            lookup(&t, "Downloading update..."),
+            Some(Msg::DownloadStarting)
+        );
+        assert_eq!(
+            lookup(&t, "Update complete, launching Steam..."),
+            Some(Msg::UpdateComplete)
+        );
+        assert_eq!(
+            lookup(&t, "Verifying installation..."),
+            Some(Msg::Verifying)
+        );
         assert_eq!(lookup(&t, "Verifying file sizes only"), None);
     }
 
@@ -485,13 +591,28 @@ mod tests {
     fn download_shape_fallback() {
         let d = parse_download_any;
         // Languages without a table, any digit grouping.
-        assert_eq!(d("Загрузка обновления (493,215 из 564,334 КБ)..."), Some((493215, 564334)));
-        assert_eq!(d("Téléchargement de la mise à jour (12 514 sur 662 547 Ko)…"), Some((12514, 662547)));
-        assert_eq!(d("Mise à jour (12\u{202f}514 sur 662\u{202f}547 Ko)..."), Some((12514, 662547)));
-        assert_eq!(d("更新をダウンロード中（12,514 / 662,547 KB）..."), Some((12514, 662547)));
+        assert_eq!(
+            d("Загрузка обновления (493,215 из 564,334 КБ)..."),
+            Some((493215, 564334))
+        );
+        assert_eq!(
+            d("Téléchargement de la mise à jour (12 514 sur 662 547 Ko)…"),
+            Some((12514, 662547))
+        );
+        assert_eq!(
+            d("Mise à jour (12\u{202f}514 sur 662\u{202f}547 Ko)..."),
+            Some((12514, 662547))
+        );
+        assert_eq!(
+            d("更新をダウンロード中（12,514 / 662,547 KB）..."),
+            Some((12514, 662547))
+        );
         assert_eq!(d("Pobieranie (0 z 564334 KB)..."), Some((0, 564334)));
         // Size first in some language: still (done, total).
-        assert_eq!(d("Download (564,334 KB: 493,215)..."), Some((493215, 564334)));
+        assert_eq!(
+            d("Download (564,334 KB: 493,215)..."),
+            Some((493215, 564334))
+        );
         // Not download lines.
         assert_eq!(d("uninstalled manifest found in /home/steamos/.local/share/Steam/package/steam_client_steamdeck_stable_linuxarm64 (1)."), None);
         assert_eq!(d("Saving metrics to disk (/home/steamos/.local/share/Steam/package/steam_client_metrics.bin)"), None);
@@ -510,7 +631,10 @@ mod tests {
         // No files yet: built-in English and the download shape.
         assert_eq!(m.classify("Cleaning up..."), Some(Msg::CleaningUp));
         assert_eq!(m.classify("Очистка..."), None);
-        assert_eq!(m.classify("Загрузка обновления (1,000 из 2,000 КБ)..."), Some(Msg::Downloading(1000, 2000)));
+        assert_eq!(
+            m.classify("Загрузка обновления (1,000 из 2,000 КБ)..."),
+            Some(Msg::Downloading(1000, 2000))
+        );
 
         std::fs::write(public.join("steambootstrapper_english.txt"), ENGLISH).unwrap();
         std::fs::write(public.join("steambootstrapper_russian.txt"), RUSSIAN).unwrap();
@@ -541,10 +665,16 @@ mod tests {
     fn templates() {
         assert_eq!(
             compile("%percent%%% complete"),
-            Some(vec![Part::Var("percent".into()), Part::Lit("% complete".into())])
+            Some(vec![
+                Part::Var("percent".into()),
+                Part::Lit("% complete".into())
+            ])
         );
         // Two adjacent variables cannot be split: not used.
         assert!(compile("%a%%b%").is_none());
-        assert_eq!(compile("100% done"), Some(vec![Part::Lit("100% done".into())]));
+        assert_eq!(
+            compile("100% done"),
+            Some(vec![Part::Lit("100% done".into())])
+        );
     }
 }

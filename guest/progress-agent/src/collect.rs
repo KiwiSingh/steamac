@@ -56,7 +56,11 @@ impl Collector {
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) } < 0 {
             fds = [-1, -1];
         }
-        Collector { pending: None, wake_r: fds[0], wake_w: fds[1] }
+        Collector {
+            pending: None,
+            wake_r: fds[0],
+            wake_w: fds[1],
+        }
     }
 
     /// Readable when a bundle is ready (for the idle loop's ppoll set).
@@ -67,7 +71,10 @@ impl Collector {
     /// Host request `collect-logs <id>` (dispatched by main.rs): start
     /// gathering in a worker thread; the bundle goes out from `pump`.
     pub fn request(&mut self, id: &str, port: &mut Port) {
-        if id.is_empty() || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        if id.is_empty()
+            || id.len() > 32
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
             eprintln!("fx-progress: ignoring malformed collect-logs request");
             return;
         }
@@ -90,7 +97,14 @@ impl Collector {
     /// iteration.
     pub fn pump(&mut self, port: &mut Port) {
         let mut buf = [0u8; 64];
-        while unsafe { libc::read(self.wake_r, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) } > 0 {}
+        while unsafe {
+            libc::read(
+                self.wake_r,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        } > 0
+        {}
         let Some(rx) = &self.pending else { return };
         let done = match rx.try_recv() {
             Ok(d) => d,
@@ -113,7 +127,11 @@ impl Collector {
                 eprintln!(
                     "fx-progress: log bundle {id}: {} bytes {}",
                     bundle.len(),
-                    if ok { "sent" } else { "NOT sent (host not reading)" }
+                    if ok {
+                        "sent"
+                    } else {
+                        "NOT sent (host not reading)"
+                    }
                 );
             }
             (id, Err(reason)) => {
@@ -152,11 +170,11 @@ pub fn run_cli() -> i32 {
     }
 }
 
-
 fn collect(id: &str) -> Result<Vec<u8>, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
     let steam = PathBuf::from(
-        std::env::var("FX_PROGRESS_STEAM_ROOT").unwrap_or_else(|_| format!("{home}/.local/share/Steam")),
+        std::env::var("FX_PROGRESS_STEAM_ROOT")
+            .unwrap_or_else(|_| format!("{home}/.local/share/Steam")),
     );
     let base = PathBuf::from(format!("/tmp/.fx-logs-{}-{id}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -172,25 +190,79 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .map_err(|e| format!("read boot ID: {e}"))?;
     let boot_match = format!("_BOOT_ID={}", boot_id.trim().replace('-', ""));
-    let mut notes = vec![format!("account/persona names recognised for scrubbing: {}", s.names.len())];
+    let mut notes = vec![format!(
+        "account/persona names recognised for scrubbing: {}",
+        s.names.len()
+    )];
     let mut out = |name: &str, args: &[&str], max: usize| {
         let note = run(dir, name, args, max, &s);
         notes.push(format!("{name}: {note}"));
     };
     out("id.txt", &["id"], 4096);
-    out("journal.txt", &["journalctl", "-b", "--no-pager", "-o", "short-monotonic", "-n", JOURNAL_LINES], 6 << 20);
-    out("journal-user.txt", &["journalctl", "--user", "-b", "--no-pager", "-o", "short-monotonic", "-n", "2000"], 2 << 20);
-    out("coredumps.txt", &["coredumpctl", "list", "--no-pager", &boot_match], 256 << 10);
-    out("coredump-last.txt", &["coredumpctl", "-1", "info", "--no-pager", &boot_match], 512 << 10);
+    out(
+        "journal.txt",
+        &[
+            "journalctl",
+            "-b",
+            "--no-pager",
+            "-o",
+            "short-monotonic",
+            "-n",
+            JOURNAL_LINES,
+        ],
+        6 << 20,
+    );
+    out(
+        "journal-user.txt",
+        &[
+            "journalctl",
+            "--user",
+            "-b",
+            "--no-pager",
+            "-o",
+            "short-monotonic",
+            "-n",
+            "2000",
+        ],
+        2 << 20,
+    );
+    out(
+        "coredumps.txt",
+        &["coredumpctl", "list", "--no-pager", &boot_match],
+        256 << 10,
+    );
+    out(
+        "coredump-last.txt",
+        &["coredumpctl", "-1", "info", "--no-pager", &boot_match],
+        512 << 10,
+    );
     out(
         "coredump-pending.txt",
-        &["systemctl", "list-units", "systemd-coredump@*.service", "--state=running", "--no-pager"],
+        &[
+            "systemctl",
+            "list-units",
+            "systemd-coredump@*.service",
+            "--state=running",
+            "--no-pager",
+        ],
         64 << 10,
     );
-    out("coredump-config.txt", &["systemd-analyze", "cat-config", "systemd/coredump.conf"], 64 << 10);
+    out(
+        "coredump-config.txt",
+        &["systemd-analyze", "cat-config", "systemd/coredump.conf"],
+        64 << 10,
+    );
     out("dmesg.txt", &["dmesg"], 2 << 20);
-    out("systemctl-failed.txt", &["systemctl", "--failed", "--no-pager"], 64 << 10);
-    out("systemctl-user-failed.txt", &["systemctl", "--user", "--failed", "--no-pager"], 64 << 10);
+    out(
+        "systemctl-failed.txt",
+        &["systemctl", "--failed", "--no-pager"],
+        64 << 10,
+    );
+    out(
+        "systemctl-user-failed.txt",
+        &["systemctl", "--user", "--failed", "--no-pager"],
+        64 << 10,
+    );
     out("uname.txt", &["uname", "-a"], 4096);
     out("df.txt", &["df", "-h"], 64 << 10);
     out("free.txt", &["free", "-m"], 4096);
@@ -228,7 +300,6 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
         notes.push(format!("{name}: {note}"));
     }
 
-
     let logs = steam.join("logs");
     let steam_dir = dir.join("steam");
     let _ = std::fs::create_dir_all(&steam_dir);
@@ -256,7 +327,11 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let mut proton_logs = newest(home, |n| n.starts_with("steam-") && n.ends_with(".log"));
     proton_logs.truncate(5);
     for p in &proton_logs {
-        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let note = copy_tail(p, &proton_dir.join(&name), PROTON_LOG_TAIL, &s);
         notes.push(format!("proton/{name}: {note}"));
     }
@@ -264,11 +339,20 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let mut prefixes = newest(&compat, |n| n.bytes().all(|b| b.is_ascii_digit()));
     prefixes.truncate(5);
     for p in &prefixes {
-        let appid = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let appid = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         for f in ["version", "config_info"] {
             let src = p.join(f);
             if src.exists() {
-                let note = copy_tail(&src, &proton_dir.join(format!("{appid}-{f}.txt")), 16 << 10, &s);
+                let note = copy_tail(
+                    &src,
+                    &proton_dir.join(format!("{appid}-{f}.txt")),
+                    16 << 10,
+                    &s,
+                );
                 notes.push(format!("proton/{appid}-{f}.txt: {note}"));
             }
         }
@@ -280,40 +364,80 @@ fn gather(dir: &Path, steam: &Path, home: &Path) -> Result<(), String> {
     let _ = std::fs::create_dir_all(&fex_dir);
     let fex_tool = steam.join("steamapps/common/FEX-Emu");
     for (name, src) in [
-        ("appmanifest.txt", steam.join("steamapps/appmanifest_3127680.acf")),
+        (
+            "appmanifest.txt",
+            steam.join("steamapps/appmanifest_3127680.acf"),
+        ),
         ("config-template.json", fex_tool.join("ConfigTemplate.json")),
-        ("steam-amtrucks-config.json", compat.join("270880/fex-emu/Config.json")),
-        ("steam-amtrucks-app-config.json", compat.join("270880/fex-emu/app_config.json")),
+        (
+            "steam-amtrucks-config.json",
+            compat.join("270880/fex-emu/Config.json"),
+        ),
+        (
+            "steam-amtrucks-app-config.json",
+            compat.join("270880/fex-emu/app_config.json"),
+        ),
         ("config.json", home.join(".fex-emu/Config.json")),
-        ("amtrucks.json", home.join(".fex-emu/AppConfig/amtrucks.json")),
+        (
+            "amtrucks.json",
+            home.join(".fex-emu/AppConfig/amtrucks.json"),
+        ),
     ] {
         let note = copy_tail(&src, &fex_dir.join(name), 64 << 10, &s);
         notes.push(format!("fex/{name}: {note}"));
     }
     let fex_binary = fex_tool.join("usr/bin/FEX");
     if fex_binary.is_file() {
-        let note = run(&fex_dir, "build-id.txt", &["readelf", "-n", &fex_binary.to_string_lossy()], 64 << 10, &s);
+        let note = run(
+            &fex_dir,
+            "build-id.txt",
+            &["readelf", "-n", &fex_binary.to_string_lossy()],
+            64 << 10,
+            &s,
+        );
         notes.push(format!("fex/build-id.txt: {note}"));
     }
     let fex_info = fex_tool.join("usr/bin/FEXGetConfig");
     if fex_info.is_file() {
-        let note = run(&fex_dir, "emulator-info.txt", &[&fex_info.to_string_lossy(), "--all-emu-info"], 64 << 10, &s);
+        let note = run(
+            &fex_dir,
+            "emulator-info.txt",
+            &[&fex_info.to_string_lossy(), "--all-emu-info"],
+            64 << 10,
+            &s,
+        );
         notes.push(format!("fex/emulator-info.txt: {note}"));
     }
-    let note = copy_tail(&home.join("fex-amtrucks.log"), &fex_dir.join("amtrucks.log"), STEAM_LOG_TAIL, &s);
+    let note = copy_tail(
+        &home.join("fex-amtrucks.log"),
+        &fex_dir.join("amtrucks.log"),
+        STEAM_LOG_TAIL,
+        &s,
+    );
     notes.push(format!("fex/amtrucks.log: {note}"));
     notes.push("To enable FEX diagnostics for ATS, use Steam launch options: FEX_SILENTLOG=0 FEX_OUTPUTLOG=/home/steamos/fex-amtrucks.log %command%".into());
-    let note = copy_tail(&home.join(".local/state/steamac/fault-report.txt"), &fex_dir.join("fault-report.txt"), 256 << 10, &s);
+    let note = copy_tail(
+        &home.join(".local/state/steamac/fault-report.txt"),
+        &fex_dir.join("fault-report.txt"),
+        256 << 10,
+        &s,
+    );
     notes.push(format!("fex/fault-report.txt: {note}"));
     notes.push("To record where an emulated x86 game faults, use Steam launch options: LD_PRELOAD=/usr/lib/steamac/x86_64/fault-report.so:$LD_PRELOAD %command%".into());
     let game_dir = dir.join("games");
     let _ = std::fs::create_dir_all(&game_dir);
     let game_log = home.join(".local/share/American Truck Simulator/game.log.txt");
-    let note = copy_tail(&game_log, &game_dir.join("amtrucks-game.log.txt"), STEAM_LOG_TAIL, &s);
+    let note = copy_tail(
+        &game_log,
+        &game_dir.join("amtrucks-game.log.txt"),
+        STEAM_LOG_TAIL,
+        &s,
+    );
     notes.push(format!("games/amtrucks-game.log.txt: {note}"));
 
     notes.push(String::new());
-    std::fs::write(dir.join("collect-notes.txt"), notes.join("\n")).map_err(|e| format!("write notes: {e}"))
+    std::fs::write(dir.join("collect-notes.txt"), notes.join("\n"))
+        .map_err(|e| format!("write notes: {e}"))
 }
 
 /// Run a command (10 s limit) and keep the tail of its scrubbed output.
@@ -360,9 +484,16 @@ fn copy_tail(src: &Path, dst: &Path, max: usize, s: &Scrubber) -> String {
     match read_tail() {
         Ok((data, size)) => {
             let text = String::from_utf8_lossy(&data);
-            let text = if size > max as u64 { text.split_once('\n').map_or(text.as_ref(), |(_, rest)| rest) } else { &text };
+            let text = if size > max as u64 {
+                text.split_once('\n')
+                    .map_or(text.as_ref(), |(_, rest)| rest)
+            } else {
+                &text
+            };
             match std::fs::write(dst, s.scrub(text)) {
-                Ok(()) if size > max as u64 => format!("last {} KiB of {} KiB", max >> 10, size >> 10),
+                Ok(()) if size > max as u64 => {
+                    format!("last {} KiB of {} KiB", max >> 10, size >> 10)
+                }
                 Ok(()) => format!("{} bytes", data.len()),
                 Err(e) => format!("write failed ({e})"),
             }
@@ -374,7 +505,9 @@ fn copy_tail(src: &Path, dst: &Path, max: usize, s: &Scrubber) -> String {
 
 /// Entries of `dir` whose name matches, newest first.
 fn newest(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut v: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
         .filter(|e| e.file_name().to_str().is_some_and(&keep))
@@ -460,7 +593,12 @@ impl Scrubber {
 
     #[cfg(test)]
     fn with_names(list: &[(&str, &'static str)]) -> Scrubber {
-        Scrubber { names: list.iter().map(|(n, r)| (n.to_ascii_lowercase(), *r)).collect() }
+        Scrubber {
+            names: list
+                .iter()
+                .map(|(n, r)| (n.to_ascii_lowercase(), *r))
+                .collect(),
+        }
     }
 
     pub fn scrub(&self, text: &str) -> String {
@@ -512,7 +650,8 @@ fn steam64_ids(text: &str) -> String {
         let start = i + off;
         let end = start + 17;
         let digits_ok = end <= b.len() && b[start..end].iter().all(|c| c.is_ascii_digit());
-        let bounded = (start == 0 || !b[start - 1].is_ascii_digit()) && (end >= b.len() || !b[end].is_ascii_digit());
+        let bounded = (start == 0 || !b[start - 1].is_ascii_digit())
+            && (end >= b.len() || !b[end].is_ascii_digit());
         if digits_ok && bounded {
             out.push_str(&text[last..start]);
             out.push_str("<steamid>");
@@ -527,8 +666,19 @@ fn steam64_ids(text: &str) -> String {
 }
 
 /// systemd unit types: `name@instance.<type>` is a unit, not an email address.
-const UNIT_SUFFIXES: &[&str] =
-    &["service", "socket", "target", "mount", "automount", "timer", "path", "slice", "scope", "device", "swap"];
+const UNIT_SUFFIXES: &[&str] = &[
+    "service",
+    "socket",
+    "target",
+    "mount",
+    "automount",
+    "timer",
+    "path",
+    "slice",
+    "scope",
+    "device",
+    "swap",
+];
 
 fn emails(text: &str) -> String {
     if !text.contains('@') {
@@ -557,7 +707,10 @@ fn emails(text: &str) -> String {
         }
         // systemd instance units (getty@tty1.service, user-runtime-dir@1000.service) are not addresses.
         let tld_ok = host.rsplit_once('.').is_some_and(|(h, t)| {
-            !h.is_empty() && t.len() >= 2 && t.bytes().all(|c| c.is_ascii_alphabetic()) && !UNIT_SUFFIXES.contains(&t)
+            !h.is_empty()
+                && t.len() >= 2
+                && t.bytes().all(|c| c.is_ascii_alphabetic())
+                && !UNIT_SUFFIXES.contains(&t)
         });
         if s < at && tld_ok {
             out.push_str(&text[last..s]);
@@ -602,15 +755,24 @@ mod tests {
 
     #[test]
     fn ids() {
-        assert_eq!(steam3_ids("Logged on [U:1:123456] ok [U:1:]"), "Logged on [U:1:<id>] ok [U:1:]");
-        assert_eq!(steam64_ids("id 76561198000000001, x 765611980000000012"), "id <steamid>, x 765611980000000012");
+        assert_eq!(
+            steam3_ids("Logged on [U:1:123456] ok [U:1:]"),
+            "Logged on [U:1:<id>] ok [U:1:]"
+        );
+        assert_eq!(
+            steam64_ids("id 76561198000000001, x 765611980000000012"),
+            "id <steamid>, x 765611980000000012"
+        );
     }
 
     #[test]
     fn mail() {
         assert_eq!(emails("from a.b+c@example.com."), "from <email>.");
         assert_eq!(emails("x@y nope, user@host.co ok"), "x@y nope, <email> ok");
-        assert_eq!(emails("Started getty@tty1.service and dbus-:1.2-org@0.service"), "Started getty@tty1.service and dbus-:1.2-org@0.service");
+        assert_eq!(
+            emails("Started getty@tty1.service and dbus-:1.2-org@0.service"),
+            "Started getty@tty1.service and dbus-:1.2-org@0.service"
+        );
     }
 
     #[test]

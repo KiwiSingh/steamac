@@ -75,23 +75,23 @@
 //! fx.clipboard).
 
 mod alive;
-mod clock;
+mod appname;
 mod clipboard;
 mod clipwl;
 mod clipx11;
-mod appname;
+mod clock;
 mod codec;
 mod collect;
 mod focus;
+mod freeze;
 mod pad;
 mod port;
 mod shutdown;
 mod sleep;
 mod steamlog;
 mod steamstrings;
-mod ui;
 mod uhid;
-mod freeze;
+mod ui;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -136,7 +136,10 @@ fn terminated() -> bool {
 
 /// One nanosleep; returns early when a signal arrives.
 fn nap(ms: u64) {
-    let ts = libc::timespec { tv_sec: (ms / 1000) as _, tv_nsec: ((ms % 1000) * 1_000_000) as _ };
+    let ts = libc::timespec {
+        tv_sec: (ms / 1000) as _,
+        tv_nsec: ((ms % 1000) * 1_000_000) as _,
+    };
     unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
 }
 
@@ -240,7 +243,11 @@ impl Reporter {
     /// "Downloading update (<done> of <total> KB)..." -> stage + "583 / 662 MB · 12.4 MB/s".
     fn download(&mut self, ts: Option<i64>, done: u64, total: u64) {
         self.pending_start = None;
-        let pct = if total > 0 { (done * 100 / total).min(100) as i32 } else { -1 };
+        let pct = if total > 0 {
+            (done * 100 / total).min(100) as i32
+        } else {
+            -1
+        };
         self.stage(Stage::Download, pct, "Downloading Steam update");
         if let Some(ts) = ts {
             self.dl_samples.push((ts, done));
@@ -248,7 +255,9 @@ impl Reporter {
         }
         let mb = |kb: u64| kb as f64 / 1000.0;
         let rate = match (self.dl_samples.first(), self.dl_samples.last()) {
-            (Some(&(t0, k0)), Some(&(t1, k1))) if t1 > t0 && k1 >= k0 => Some(mb(k1 - k0) / (t1 - t0) as f64),
+            (Some(&(t0, k0)), Some(&(t1, k1))) if t1 > t0 && k1 >= k0 => {
+                Some(mb(k1 - k0) / (t1 - t0) as f64)
+            }
             _ => None,
         };
         let detail = match rate {
@@ -270,7 +279,9 @@ impl Reporter {
 
 /// Is a process with this comm running (/proc scan, cheap)?
 fn process_running(comm: &str) -> bool {
-    let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
     for e in dir.flatten() {
         let name = e.file_name();
         let Some(n) = name.to_str() else { continue };
@@ -289,12 +300,18 @@ fn process_running(comm: &str) -> bool {
 fn boot_time() -> i64 {
     std::fs::read_to_string("/proc/stat")
         .ok()
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("btime ").and_then(|v| v.trim().parse().ok())))
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("btime ").and_then(|v| v.trim().parse().ok()))
+        })
         .unwrap_or(0)
 }
 
 fn boot_id() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default().trim().to_string()
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn ready_marker() -> String {
@@ -303,16 +320,26 @@ fn ready_marker() -> String {
 
 /// Host -> guest requests on the port: `<command> [args]`, one per line,
 /// never blocking (each handler only starts work or answers right away).
-fn serve_host(port: &mut Port, collector: &mut collect::Collector, freezer: &mut freeze::Freezer, focus: &focus::Focus) {
+fn serve_host(
+    port: &mut Port,
+    collector: &mut collect::Collector,
+    freezer: &mut freeze::Freezer,
+    focus: &focus::Focus,
+) {
     for line in port.read_lines() {
         let line = line.trim();
-        let (cmd, arg) = line.split_once(' ').map_or((line, ""), |(c, a)| (c, a.trim()));
+        let (cmd, arg) = line
+            .split_once(' ')
+            .map_or((line, ""), |(c, a)| (c, a.trim()));
         match cmd {
             "collect-logs" => collector.request(arg, port),
             "freeze-game" => match arg.parse::<u32>() {
                 // Only the game that has the focus (the host may be a step behind).
                 Ok(id) if focus.game() == Some(id) => freezer.freeze(id),
-                Ok(id) => eprintln!("fx-progress: freeze-game {id}: not the focused game ({:?})", focus.game()),
+                Ok(id) => eprintln!(
+                    "fx-progress: freeze-game {id}: not the focused game ({:?})",
+                    focus.game()
+                ),
                 Err(_) => eprintln!("fx-progress: freeze-game: bad app id {arg:?}"),
             },
             "thaw-game" => freezer.thaw("launcher active again"),
@@ -358,7 +385,9 @@ fn report_boot(
         if now >= next_proc {
             next_proc = now + Duration::from_secs(1);
             // UI process up while no update is in progress: Steam is starting.
-            if (rep.stage <= Stage::Check || rep.stage == Stage::Start) && process_running("steamwebhelper") {
+            if (rep.stage <= Stage::Check || rep.stage == Stage::Start)
+                && process_running("steamwebhelper")
+            {
                 rep.pending_start = None;
                 rep.stage(Stage::Start, 50, "Loading Steam UI");
             }
@@ -396,7 +425,10 @@ fn report_boot(
             hb.pump(&mut rep.port);
         }
         if now.duration_since(begin) > GIVE_UP {
-            eprintln!("fx-progress: no Steam UI after {} min, stop reporting boot progress", GIVE_UP.as_secs() / 60);
+            eprintln!(
+                "fx-progress: no Steam UI after {} min, stop reporting boot progress",
+                GIVE_UP.as_secs() / 60
+            );
             return;
         }
         nap(TICK_MS);
@@ -406,7 +438,9 @@ fn report_boot(
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("clock-sync") => std::process::exit(clock::run()),
-        Some("sleep") => std::process::exit(sleep::run(&std::env::args().nth(2).unwrap_or_else(|| "suspend".into()))),
+        Some("sleep") => std::process::exit(sleep::run(
+            &std::env::args().nth(2).unwrap_or_else(|| "suspend".into()),
+        )),
         Some("pad") => std::process::exit(pad::run()),
         Some("clipboard") => std::process::exit(clipboard::run()),
         Some("collect") => std::process::exit(collect::run_cli()),
@@ -423,7 +457,8 @@ fn main() {
     };
     install_signals();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/steamos".into());
-    let steam_root = std::env::var("FX_PROGRESS_STEAM_ROOT").unwrap_or_else(|_| format!("{home}/.local/share/Steam"));
+    let steam_root = std::env::var("FX_PROGRESS_STEAM_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.local/share/Steam"));
     let mut rep = Reporter {
         port,
         stage: Stage::Session,
@@ -436,13 +471,15 @@ fn main() {
     };
 
     // Desktop Mode: Plasma instead of Steam in this gamescope session (focus.rs).
-    let desktop = std::env::var("GAMESCOPE_SESSION_TARGET").is_ok_and(|t| t == "plasma-session.target");
+    let desktop =
+        std::env::var("GAMESCOPE_SESSION_TARGET").is_ok_and(|t| t == "plasma-session.target");
     let mut focus = focus::Focus::new(desktop);
     let heartbeat = alive::Heartbeat::new();
     let mut collector = collect::Collector::new();
     let mut freezer = freeze::Freezer::new();
     let force = std::env::var("FX_PROGRESS_FORCE").map_or(false, |v| v == "1");
-    let already = !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
+    let already =
+        !force && std::fs::read_to_string(ready_marker()).map_or(false, |s| s.trim() == boot_id());
     let mut desktop_ready_pending = false;
     if already {
         eprintln!("fx-progress: ready already reported this boot; reporting focus/shutdown only");
@@ -452,7 +489,13 @@ fn main() {
         rep.stage(Stage::Session, 100, "Session started");
         desktop_ready_pending = true;
     } else {
-        report_boot(&mut rep, &mut focus, heartbeat.as_ref(), &mut collector, &mut freezer);
+        report_boot(
+            &mut rep,
+            &mut focus,
+            heartbeat.as_ref(),
+            &mut collector,
+            &mut freezer,
+        );
     }
     // Once after `ready` (or at agent start on a later session): current focus.
     focus.pump(&mut rep.port, true);
@@ -486,15 +529,31 @@ fn main() {
                 hb.pump(&mut rep.port);
             }
             let mut pfds = [
-                libc::pollfd { fd: focus.fd().unwrap_or(-1), events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: heartbeat.as_ref().map_or(-1, |h| h.fd()), events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: rep.port.read_fd().unwrap_or(-1), events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: collector.wake_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd {
+                    fd: focus.fd().unwrap_or(-1),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: heartbeat.as_ref().map_or(-1, |h| h.fd()),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: rep.port.read_fd().unwrap_or(-1),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: collector.wake_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
             ];
             let wait_ms: i64 = if rep.port.has_pending() {
                 TICK_MS as i64
             } else if let Some(ms) = freezer.wait_ms() {
-                ms   // keepalive deadline while a game is frozen
+                ms // keepalive deadline while a game is frozen
             } else if focus.connected() {
                 -1
             } else {
@@ -504,7 +563,10 @@ fn main() {
             let tsp = if wait_ms < 0 {
                 std::ptr::null()
             } else {
-                ts = libc::timespec { tv_sec: (wait_ms / 1000) as _, tv_nsec: ((wait_ms % 1000) * 1_000_000) as _ };
+                ts = libc::timespec {
+                    tv_sec: (wait_ms / 1000) as _,
+                    tv_nsec: ((wait_ms % 1000) * 1_000_000) as _,
+                };
                 &ts as *const libc::timespec
             };
             libc::ppoll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, tsp, &old);

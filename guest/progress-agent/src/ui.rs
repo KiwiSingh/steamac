@@ -73,7 +73,11 @@ pub struct Ui {
 
 impl Ui {
     pub fn new() -> Ui {
-        Ui { conn: None, next_connect: Instant::now(), on_screen: String::new() }
+        Ui {
+            conn: None,
+            next_connect: Instant::now(),
+            on_screen: String::new(),
+        }
     }
 
     pub fn check(&mut self) -> UiState {
@@ -106,7 +110,9 @@ impl Ui {
 fn connect() -> Option<Conn> {
     let (conn, screen) = RustConnection::connect(None).ok()?;
     let root = conn.setup().roots.get(screen)?.root;
-    let atom = |name: &[u8]| -> Option<u32> { Some(conn.intern_atom(false, name).ok()?.reply().ok()?.atom) };
+    let atom = |name: &[u8]| -> Option<u32> {
+        Some(conn.intern_atom(false, name).ok()?.reply().ok()?.atom)
+    };
     let atoms = Atoms {
         net_wm_name: atom(b"_NET_WM_NAME")?,
         net_wm_pid: atom(b"_NET_WM_PID")?,
@@ -143,9 +149,18 @@ fn steam_evidence(owner: Option<&str>, class: &[u8], title: &[u8]) -> String {
     if let Some(c) = owner.filter(|c| STEAM_NAMES.contains(c)) {
         why.push(format!("owner {c}"));
     }
-    let is_steam = |s: &[u8]| STEAM_NAMES.iter().any(|n| s.eq_ignore_ascii_case(n.as_bytes()));
+    let is_steam = |s: &[u8]| {
+        STEAM_NAMES
+            .iter()
+            .any(|n| s.eq_ignore_ascii_case(n.as_bytes()))
+    };
     if class.split(|&b| b == 0).any(is_steam) {
-        why.push(format!("WM_CLASS {}", String::from_utf8_lossy(class).trim_end_matches('\0').replace('\0', "/")));
+        why.push(format!(
+            "WM_CLASS {}",
+            String::from_utf8_lossy(class)
+                .trim_end_matches('\0')
+                .replace('\0', "/")
+        ));
     }
     if title == UI_TITLE {
         why.push("English title".into());
@@ -154,8 +169,13 @@ fn steam_evidence(owner: Option<&str>, class: &[u8], title: &[u8]) -> String {
 }
 
 /// Is the focus on window `w` and the Steam UI app (None = not published)?
-fn focused(w: Window, focused_window: Option<Option<u32>>, focused_app: Option<Option<u32>>) -> bool {
-    focused_window.map_or(true, |f| f == Some(w)) && focused_app.map_or(true, |a| a == Some(STEAM_UI_APPID))
+fn focused(
+    w: Window,
+    focused_window: Option<Option<u32>>,
+    focused_app: Option<Option<u32>>,
+) -> bool {
+    focused_window.map_or(true, |f| f == Some(w))
+        && focused_app.map_or(true, |a| a == Some(STEAM_UI_APPID))
 }
 
 fn query(c: &Conn, on_screen: &mut String) -> Option<UiState> {
@@ -186,7 +206,9 @@ fn query(c: &Conn, on_screen: &mut String) -> Option<UiState> {
     let mut candidates = Vec::new();
     for (w, attr, pid, class, net_name, icccm_name) in cookies {
         // A window may vanish between query_tree and the replies: not fatal.
-        let mapped = attr.reply().is_ok_and(|r| r.map_state == MapState::VIEWABLE && !r.override_redirect);
+        let mapped = attr
+            .reply()
+            .is_ok_and(|r| r.map_state == MapState::VIEWABLE && !r.override_redirect);
         let pid = pid.reply().ok().as_ref().and_then(card);
         let class = class.reply().map(|r| r.value).unwrap_or_default();
         let net_name = net_name.reply().map(|r| r.value).unwrap_or_default();
@@ -194,7 +216,11 @@ fn query(c: &Conn, on_screen: &mut String) -> Option<UiState> {
         if !mapped {
             continue;
         }
-        let title = if net_name.is_empty() { icccm_name } else { net_name };
+        let title = if net_name.is_empty() {
+            icccm_name
+        } else {
+            net_name
+        };
         let why = steam_evidence(pid.and_then(comm).as_deref(), &class, &title);
         if !why.is_empty() {
             candidates.push((w, why));
@@ -208,13 +234,17 @@ fn query(c: &Conn, on_screen: &mut String) -> Option<UiState> {
         if !focused(w, focused_window, focused_app) {
             continue;
         }
-        let Ok(Ok(geo)) = conn.get_geometry(w).map(|c| c.reply()) else { continue };
+        let Ok(Ok(geo)) = conn.get_geometry(w).map(|c| c.reply()) else {
+            continue;
+        };
         if geo.width >= root_geo.width && geo.height >= root_geo.height {
             *on_screen = format!(
                 "window {w:#x} {}x{} ({why}; focused app {})",
                 geo.width,
                 geo.height,
-                focused_app.flatten().map_or("-".to_string(), |v| v.to_string())
+                focused_app
+                    .flatten()
+                    .map_or("-".to_string(), |v| v.to_string())
             );
             return Some(UiState::OnScreen);
         }
@@ -229,13 +259,27 @@ mod tests {
     #[test]
     fn evidence() {
         // Big Picture window as measured with xprop (Russian UI).
-        let e = steam_evidence(Some("steamwebhelper"), b"steamwebhelper\0steam\0", "Режим Big Picture".as_bytes());
+        let e = steam_evidence(
+            Some("steamwebhelper"),
+            b"steamwebhelper\0steam\0",
+            "Режим Big Picture".as_bytes(),
+        );
         assert_eq!(e, "owner steamwebhelper, WM_CLASS steamwebhelper/steam");
-        assert_eq!(steam_evidence(None, b"steamwebhelper\0steam\0", b""), "WM_CLASS steamwebhelper/steam");
+        assert_eq!(
+            steam_evidence(None, b"steamwebhelper\0steam\0", b""),
+            "WM_CLASS steamwebhelper/steam"
+        );
         assert_eq!(steam_evidence(None, b"", UI_TITLE), "English title");
         // Bootstrapper updater window: no pid, no class, title "Steam".
         assert_eq!(steam_evidence(None, b"", b"Steam"), "");
-        assert_eq!(steam_evidence(Some("mangoapp"), b"mangoapp overlay window\0mangoapp overlay window\0", b"x"), "");
+        assert_eq!(
+            steam_evidence(
+                Some("mangoapp"),
+                b"mangoapp overlay window\0mangoapp overlay window\0",
+                b"x"
+            ),
+            ""
+        );
     }
 
     #[test]

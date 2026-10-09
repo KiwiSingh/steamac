@@ -61,7 +61,10 @@ pub fn parse(line: &str) -> Option<i128> {
 }
 
 fn realtime_ns() -> i128 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
     ts.tv_sec as i128 * NS + ts.tv_nsec as i128
 }
@@ -95,19 +98,35 @@ pub fn sync(host: i128, after: &str, tag: &str) {
     let secs = |ns: i128| ns as f64 / NS as f64;
     match decide(host, realtime_ns()) {
         Decision::Step(d) => match step(d) {
-            Ok(()) => eprintln!("{tag}: wall clock was {:.3} s behind the host after {after}; stepped forward", secs(d)),
+            Ok(()) => eprintln!(
+                "{tag}: wall clock was {:.3} s behind the host after {after}; stepped forward",
+                secs(d)
+            ),
             Err(e) => eprintln!("{tag}: cannot step the wall clock by {:.3} s: {e}", secs(d)),
         },
-        Decision::Close(d) => eprintln!("{tag}: wall clock within {:.3} s of the host; left to timesyncd", secs(d)),
-        Decision::Ahead(d) => eprintln!("{tag}: wall clock {:.3} s ahead of the host's time; not stepping back", secs(d)),
+        Decision::Close(d) => eprintln!(
+            "{tag}: wall clock within {:.3} s of the host; left to timesyncd",
+            secs(d)
+        ),
+        Decision::Ahead(d) => eprintln!(
+            "{tag}: wall clock {:.3} s ahead of the host's time; not stepping back",
+            secs(d)
+        ),
     }
 }
 
 /// Serve the port until it closes (exit 0) or fails (exit 1).
 pub fn run() -> i32 {
     let path = std::env::var("FX_CLOCK_PORT").unwrap_or_else(|_| DEFAULT_PORT.into());
-    let Ok(c) = CString::new(path.clone()) else { return 1 };
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOCTTY) };
+    let Ok(c) = CString::new(path.clone()) else {
+        return 1;
+    };
+    let fd = unsafe {
+        libc::open(
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOCTTY,
+        )
+    };
     if fd < 0 {
         eprintln!("fx-clock: {path}: {}", io::Error::last_os_error());
         return 1;
@@ -145,7 +164,10 @@ mod tests {
 
     #[test]
     fn parses_time_lines() {
-        assert_eq!(parse("time 1791144110393000000\n"), Some(1791144110393000000));
+        assert_eq!(
+            parse("time 1791144110393000000\n"),
+            Some(1791144110393000000)
+        );
         assert_eq!(parse("time  42 "), Some(42));
         assert_eq!(parse("time -5"), None);
         assert_eq!(parse("time abc"), None);

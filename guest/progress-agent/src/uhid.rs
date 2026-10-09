@@ -76,11 +76,23 @@ pub enum Event {
     Open,
     Close,
     /// An output report (hid_hw_output_report, hidraw write).
-    Output { rtype: ReportType, data: Vec<u8> },
+    Output {
+        rtype: ReportType,
+        data: Vec<u8>,
+    },
     /// GET_REPORT: the driver waits for `get_reply` with this id (uhid gives up after 5 s).
-    GetReport { id: u32, rnum: u8, rtype: ReportType },
+    GetReport {
+        id: u32,
+        rnum: u8,
+        rtype: ReportType,
+    },
     /// SET_REPORT: the driver waits for `set_reply` with this id.
-    SetReport { id: u32, rnum: u8, rtype: ReportType, data: Vec<u8> },
+    SetReport {
+        id: u32,
+        rnum: u8,
+        rtype: ReportType,
+        data: Vec<u8>,
+    },
 }
 
 fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
@@ -160,7 +172,11 @@ pub fn decode(b: &[u8]) -> Option<Event> {
             data: data(4, u16_at(b, 4 + DATA_MAX) as usize),
         }),
         // uhid_get_report_req: u32 id, u8 rnum, u8 rtype.
-        GET_REPORT => Some(Event::GetReport { id: u32_at(b, 4), rnum: b[8], rtype: ReportType::from_raw(b[9])? }),
+        GET_REPORT => Some(Event::GetReport {
+            id: u32_at(b, 4),
+            rnum: b[8],
+            rtype: ReportType::from_raw(b[9])?,
+        }),
         // uhid_set_report_req: u32 id, u8 rnum, u8 rtype, u16 size, data[4096].
         SET_REPORT => Some(Event::SetReport {
             id: u32_at(b, 4),
@@ -180,7 +196,12 @@ pub struct Device {
 impl Device {
     pub fn create(path: &str, spec: &HidSpec) -> io::Result<Device> {
         let c = CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -192,7 +213,8 @@ impl Device {
     /// One whole event; uhid takes each write as one event.
     pub fn write(&self, event: &[u8]) -> io::Result<()> {
         loop {
-            let n = unsafe { libc::write(self.fd, event.as_ptr() as *const libc::c_void, event.len()) };
+            let n =
+                unsafe { libc::write(self.fd, event.as_ptr() as *const libc::c_void, event.len()) };
             if n >= 0 {
                 return Ok(());
             }
@@ -208,7 +230,8 @@ impl Device {
         let mut out = Vec::new();
         let mut buf = vec![0u8; EVENT_SIZE];
         loop {
-            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            let n =
+                unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n == EVENT_SIZE as isize {
                 out.extend(decode(&buf));
             } else if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
@@ -256,14 +279,25 @@ mod tests {
         assert_eq!(&b[132..138], b"fx.pad");
         assert_eq!(u16_at(&b, 260), 4, "rd_size");
         assert_eq!(u16_at(&b, 262), 5, "bus");
-        assert_eq!((u32_at(&b, 264), u32_at(&b, 268), u32_at(&b, 272)), (0x054c, 0x0ce6, 0x0100));
+        assert_eq!(
+            (u32_at(&b, 264), u32_at(&b, 268), u32_at(&b, 272)),
+            (0x054c, 0x0ce6, 0x0100)
+        );
         assert_eq!(u32_at(&b, 276), 0x21, "country");
         assert_eq!(&b[280..284], &[0x05, 0x01, 0x09, 0x05]);
     }
 
     #[test]
     fn long_names_keep_their_terminator() {
-        let spec = HidSpec { bus: 3, vendor: 1, product: 2, version: 0, country: 0, descriptor: vec![0], name: "n".repeat(200) };
+        let spec = HidSpec {
+            bus: 3,
+            vendor: 1,
+            product: 2,
+            version: 0,
+            country: 0,
+            descriptor: vec![0],
+            name: "n".repeat(200),
+        };
         let b = encode_create(&spec, &"p".repeat(100));
         assert_eq!(b[4 + 127], 0);
         assert_eq!(b[132 + 63], 0);
@@ -276,14 +310,27 @@ mod tests {
         put(&mut b, 4, &[0x02, 0xff, 0xf7]);
         put(&mut b, 4 + DATA_MAX, &3u16.to_ne_bytes());
         b[4 + DATA_MAX + 2] = 1;
-        assert_eq!(decode(&b), Some(Event::Output { rtype: ReportType::Output, data: vec![0x02, 0xff, 0xf7] }));
+        assert_eq!(
+            decode(&b),
+            Some(Event::Output {
+                rtype: ReportType::Output,
+                data: vec![0x02, 0xff, 0xf7]
+            })
+        );
 
         let mut b = vec![0u8; EVENT_SIZE];
         put(&mut b, 0, &GET_REPORT.to_ne_bytes());
         put(&mut b, 4, &7u32.to_ne_bytes());
         b[8] = 0x05;
         b[9] = 0;
-        assert_eq!(decode(&b), Some(Event::GetReport { id: 7, rnum: 5, rtype: ReportType::Feature }));
+        assert_eq!(
+            decode(&b),
+            Some(Event::GetReport {
+                id: 7,
+                rnum: 5,
+                rtype: ReportType::Feature
+            })
+        );
 
         let mut b = vec![0u8; EVENT_SIZE];
         put(&mut b, 0, &SET_REPORT.to_ne_bytes());
@@ -292,7 +339,15 @@ mod tests {
         b[9] = 0;
         put(&mut b, 10, &2u16.to_ne_bytes());
         put(&mut b, 12, &[0x80, 0x01]);
-        assert_eq!(decode(&b), Some(Event::SetReport { id: 9, rnum: 0x80, rtype: ReportType::Feature, data: vec![0x80, 0x01] }));
+        assert_eq!(
+            decode(&b),
+            Some(Event::SetReport {
+                id: 9,
+                rnum: 0x80,
+                rtype: ReportType::Feature,
+                data: vec![0x80, 0x01]
+            })
+        );
     }
 
     #[test]
@@ -307,10 +362,16 @@ mod tests {
     #[test]
     fn replies_carry_id_error_and_data() {
         let b = encode_get_reply(3, 0, &[0x09, 1, 2]);
-        assert_eq!((u32_at(&b, 0), u32_at(&b, 4), u16_at(&b, 8), u16_at(&b, 10)), (GET_REPORT_REPLY, 3, 0, 3));
+        assert_eq!(
+            (u32_at(&b, 0), u32_at(&b, 4), u16_at(&b, 8), u16_at(&b, 10)),
+            (GET_REPORT_REPLY, 3, 0, 3)
+        );
         assert_eq!(&b[12..], &[0x09, 1, 2]);
         let b = encode_set_reply(4, 5);
-        assert_eq!((u32_at(&b, 0), u32_at(&b, 4), u16_at(&b, 8)), (SET_REPORT_REPLY, 4, 5));
+        assert_eq!(
+            (u32_at(&b, 0), u32_at(&b, 4), u16_at(&b, 8)),
+            (SET_REPORT_REPLY, 4, 5)
+        );
         let b = encode_input(&[0x01, 0x80]);
         assert_eq!((u32_at(&b, 0), u16_at(&b, 4)), (INPUT2, 2));
         assert_eq!(&b[6..], &[0x01, 0x80]);

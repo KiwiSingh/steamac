@@ -36,7 +36,9 @@ fn tokens(text: &str) -> Vec<String> {
 /// Value of the first `"key" "value"` pair (case-insensitive key).
 fn first_value(text: &str, key: &str) -> Option<String> {
     let t = tokens(text);
-    t.windows(2).find(|w| w[0].eq_ignore_ascii_case(key)).map(|w| w[1].clone())
+    t.windows(2)
+        .find(|w| w[0].eq_ignore_ascii_case(key))
+        .map(|w| w[1].clone())
 }
 
 fn library_dirs(steam_root: &PathBuf) -> Vec<PathBuf> {
@@ -64,7 +66,9 @@ pub fn lookup(appid: u32) -> Option<String> {
         .unwrap_or_else(|_| PathBuf::from(format!("{home}/.local/share/Steam")));
     for dir in library_dirs(&root) {
         let acf = dir.join(format!("steamapps/appmanifest_{appid}.acf"));
-        let Ok(text) = std::fs::read_to_string(&acf) else { continue };
+        let Ok(text) = std::fs::read_to_string(&acf) else {
+            continue;
+        };
         if let Some(name) = first_value(&text, "name") {
             let clean: String = name
                 .chars()
@@ -95,7 +99,14 @@ mod tests {
     fn vdf_paths() {
         let vdf = "\"libraryfolders\"\n{\n\"0\"\n{\n\"path\"\t\t\"/home/steamos/.local/share/Steam\"\n}\n\"1\"\n{\n\"path\"\t\t\"/run/media/sd\"\n}\n}";
         let t = tokens(vdf);
-        let paths: Vec<_> = t.windows(2).filter(|w| w[0] == "path").map(|w| w[1].clone()).collect();
-        assert_eq!(paths, vec!["/home/steamos/.local/share/Steam", "/run/media/sd"]);
+        let paths: Vec<_> = t
+            .windows(2)
+            .filter(|w| w[0] == "path")
+            .map(|w| w[1].clone())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["/home/steamos/.local/share/Steam", "/run/media/sd"]
+        );
     }
 }

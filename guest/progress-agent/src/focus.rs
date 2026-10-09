@@ -17,14 +17,19 @@
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window};
+use x11rb::protocol::xproto::{
+    AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Window,
+};
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
 use crate::port::Port;
 
 fn boot_id() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default().trim().to_string()
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn named_path() -> String {
@@ -32,7 +37,9 @@ fn named_path() -> String {
 }
 
 fn load_named() -> std::collections::HashSet<u32> {
-    let Ok(s) = std::fs::read_to_string(named_path()) else { return Default::default() };
+    let Ok(s) = std::fs::read_to_string(named_path()) else {
+        return Default::default();
+    };
     let mut lines = s.lines();
     if lines.next().map(str::trim) != Some(boot_id().as_str()) {
         return Default::default();
@@ -63,7 +70,13 @@ pub struct Focus {
 
 impl Focus {
     pub fn new(desktop: bool) -> Focus {
-        Focus { conn: None, next_connect: Instant::now(), last: None, named: load_named(), desktop }
+        Focus {
+            conn: None,
+            next_connect: Instant::now(),
+            last: None,
+            named: load_named(),
+            desktop,
+        }
     }
 
     /// Desktop Mode: the desktop window has had gamescope's focus (it is on screen).
@@ -91,7 +104,11 @@ impl Focus {
 
     /// App id of the focused game (last reported), None for Steam / unknown.
     pub fn game(&self) -> Option<u32> {
-        self.last.as_deref()?.strip_prefix("focus game ")?.parse().ok()
+        self.last
+            .as_deref()?
+            .strip_prefix("focus game ")?
+            .parse()
+            .ok()
     }
 
     /// Connect if needed (rate limited to 1/s), drain pending X events and send
@@ -118,7 +135,9 @@ impl Focus {
             match self.conn.as_ref().unwrap().conn.poll_for_event() {
                 Ok(Some(Event::PropertyNotify(e))) => {
                     let c = self.conn.as_ref().unwrap();
-                    if e.window == c.root && (e.atom == c.atom || (self.desktop && e.atom == c.window_atom)) {
+                    if e.window == c.root
+                        && (e.atom == c.atom || (self.desktop && e.atom == c.window_atom))
+                    {
                         changed = true;
                     }
                 }
@@ -164,7 +183,11 @@ impl Focus {
             return;
         };
         let game = value != 0 && value != STEAM_UI_APPID;
-        let msg = if game { format!("focus game {value}") } else { "focus steam".to_string() };
+        let msg = if game {
+            format!("focus game {value}")
+        } else {
+            "focus steam".to_string()
+        };
         if force || self.last.as_deref() != Some(msg.as_str()) {
             port.send(&msg);
             self.last = Some(msg);
@@ -183,8 +206,15 @@ impl Focus {
 /// Size of gamescope's focused window: None = the connection broke, Some(None) =
 /// nothing has the focus (or the window vanished in the meantime).
 fn focused_size(c: &Conn) -> Option<Option<(u16, u16)>> {
-    let r = c.conn.get_property(false, c.root, c.window_atom, AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?;
-    let Some(w) = r.value32().and_then(|mut v| v.next()).filter(|&w| w != 0) else { return Some(None) };
+    let r = c
+        .conn
+        .get_property(false, c.root, c.window_atom, AtomEnum::CARDINAL, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    let Some(w) = r.value32().and_then(|mut v| v.next()).filter(|&w| w != 0) else {
+        return Some(None);
+    };
     let geometry = c.conn.get_geometry(w).ok()?.reply().ok();
     Some(geometry.map(|g| (g.width, g.height)))
 }
@@ -192,12 +222,30 @@ fn focused_size(c: &Conn) -> Option<Option<(u16, u16)>> {
 fn connect() -> Option<Conn> {
     let (conn, screen) = RustConnection::connect(None).ok()?;
     let root = conn.setup().roots.get(screen)?.root;
-    let atom = conn.intern_atom(false, b"GAMESCOPE_FOCUSED_APP").ok()?.reply().ok()?.atom;
-    let window_atom = conn.intern_atom(false, b"GAMESCOPE_FOCUSED_WINDOW").ok()?.reply().ok()?.atom;
-    conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))
+    let atom = conn
+        .intern_atom(false, b"GAMESCOPE_FOCUSED_APP")
         .ok()?
-        .check()
-        .ok()?;
+        .reply()
+        .ok()?
+        .atom;
+    let window_atom = conn
+        .intern_atom(false, b"GAMESCOPE_FOCUSED_WINDOW")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    conn.change_window_attributes(
+        root,
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+    )
+    .ok()?
+    .check()
+    .ok()?;
     conn.flush().ok()?;
-    Some(Conn { conn, root, atom, window_atom })
+    Some(Conn {
+        conn,
+        root,
+        atom,
+        window_atom,
+    })
 }

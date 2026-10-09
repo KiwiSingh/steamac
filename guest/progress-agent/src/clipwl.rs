@@ -18,7 +18,10 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::clipboard::{capped, mailbox, poll_in, Cmd, Content, Ev, Inbox, IMAGE_MAX, MIME_PNG, MIME_TEXT, TAG, TEXT_MAX};
+use crate::clipboard::{
+    capped, mailbox, poll_in, Cmd, Content, Ev, Inbox, IMAGE_MAX, MIME_PNG, MIME_TEXT, TAG,
+    TEXT_MAX,
+};
 
 const MARKER: &str = "application/x-fx-steamac-clipboard";
 const TEXT_MIMES: [&str; 5] = [MIME_TEXT, "UTF8_STRING", "text/plain", "STRING", "TEXT"];
@@ -84,16 +87,26 @@ impl Wl {
     /// Read what is available (never blocks); false = the compositor hung up.
     fn fill(&mut self) -> io::Result<bool> {
         let mut buf = [0u8; 4096];
-        let space = unsafe { libc::CMSG_SPACE((28 * std::mem::size_of::<RawFd>()) as u32) } as usize;
+        let space =
+            unsafe { libc::CMSG_SPACE((28 * std::mem::size_of::<RawFd>()) as u32) } as usize;
         let mut cbuf = vec![0u8; space];
         loop {
-            let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
+            let mut iov = libc::iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            };
             let mut mh: libc::msghdr = unsafe { std::mem::zeroed() };
             mh.msg_iov = &mut iov;
             mh.msg_iovlen = 1;
             mh.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
             mh.msg_controllen = space as _;
-            let n = unsafe { libc::recvmsg(self.sock.as_raw_fd(), &mut mh, libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC) };
+            let n = unsafe {
+                libc::recvmsg(
+                    self.sock.as_raw_fd(),
+                    &mut mh,
+                    libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
+                )
+            };
             if n < 0 {
                 let e = io::Error::last_os_error();
                 return match e.kind() {
@@ -110,9 +123,13 @@ impl Wl {
                 while !c.is_null() {
                     if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
                         let data = libc::CMSG_DATA(c) as *const RawFd;
-                        let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
+                        let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize)
+                            / std::mem::size_of::<RawFd>();
                         for i in 0..count {
-                            self.fds.push_back(OwnedFd::from_raw_fd(std::ptr::read_unaligned(data.add(i))));
+                            self.fds
+                                .push_back(OwnedFd::from_raw_fd(std::ptr::read_unaligned(
+                                    data.add(i),
+                                )));
                         }
                     }
                     c = libc::CMSG_NXTHDR(&mh, c);
@@ -140,7 +157,10 @@ impl Wl {
 }
 
 fn send_with_fds(sock: RawFd, msg: &[u8], fds: &[RawFd]) -> io::Result<()> {
-    let mut iov = libc::iovec { iov_base: msg.as_ptr() as *mut libc::c_void, iov_len: msg.len() };
+    let mut iov = libc::iovec {
+        iov_base: msg.as_ptr() as *mut libc::c_void,
+        iov_len: msg.len(),
+    };
     let mut mh: libc::msghdr = unsafe { std::mem::zeroed() };
     mh.msg_iov = &mut iov;
     mh.msg_iovlen = 1;
@@ -154,13 +174,21 @@ fn send_with_fds(sock: RawFd, msg: &[u8], fds: &[RawFd]) -> io::Result<()> {
             (*c).cmsg_level = libc::SOL_SOCKET;
             (*c).cmsg_type = libc::SCM_RIGHTS;
             (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
-            std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
+            std::ptr::copy_nonoverlapping(
+                fds.as_ptr(),
+                libc::CMSG_DATA(c) as *mut RawFd,
+                fds.len(),
+            );
         }
     }
     loop {
         let n = unsafe { libc::sendmsg(sock, &mh, libc::MSG_NOSIGNAL) };
         if n >= 0 {
-            return if n as usize == msg.len() { Ok(()) } else { Err(io::Error::from(io::ErrorKind::WriteZero)) };
+            return if n as usize == msg.len() {
+                Ok(())
+            } else {
+                Err(io::Error::from(io::ErrorKind::WriteZero))
+            };
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {
@@ -238,7 +266,12 @@ pub fn run(path: String, tx: Sender<Ev>) {
 /// Err((retry, reason)).
 fn connect(path: &str, tx: Sender<Ev>) -> Result<Session, (bool, String)> {
     let sock = UnixStream::connect(path).map_err(|e| (true, format!("cannot connect: {e}")))?;
-    let mut wl = Wl { sock, rx: Vec::new(), fds: VecDeque::new(), next: 4 };
+    let mut wl = Wl {
+        sock,
+        rx: Vec::new(),
+        fds: VecDeque::new(),
+        next: 4,
+    };
     let io = |e: io::Error| (true, e.to_string());
     wl.request(DISPLAY, 1, &[Arg::U(REGISTRY)]).map_err(io)?; // get_registry
     wl.request(DISPLAY, 0, &[Arg::U(SYNC)]).map_err(io)?; // sync
@@ -267,19 +300,35 @@ fn connect(path: &str, tx: Sender<Ev>) -> Result<Session, (bool, String)> {
         }
     }
     let find = |iface: &str| globals.iter().find(|g| g.1 == iface).map(|g| g.0);
-    let manager_global = ["ext_data_control_manager_v1", "zwlr_data_control_manager_v1"]
-        .into_iter()
-        .find_map(|i| find(i).map(|n| (n, i)));
+    let manager_global = [
+        "ext_data_control_manager_v1",
+        "zwlr_data_control_manager_v1",
+    ]
+    .into_iter()
+    .find_map(|i| find(i).map(|n| (n, i)));
     let Some((mname, miface)) = manager_global else {
         return Err((false, "the compositor has no data-control protocol".into()));
     };
-    let Some(sname) = find("wl_seat") else { return Err((false, "no seat".into())) };
+    let Some(sname) = find("wl_seat") else {
+        return Err((false, "no seat".into()));
+    };
     let seat = wl.new_id();
     let manager = wl.new_id();
     let device = wl.new_id();
-    wl.request(REGISTRY, 0, &[Arg::U(sname), Arg::S("wl_seat"), Arg::U(1), Arg::U(seat)]).map_err(io)?;
-    wl.request(REGISTRY, 0, &[Arg::U(mname), Arg::S(miface), Arg::U(1), Arg::U(manager)]).map_err(io)?;
-    wl.request(manager, 1, &[Arg::U(device), Arg::U(seat)]).map_err(io)?; // get_data_device
+    wl.request(
+        REGISTRY,
+        0,
+        &[Arg::U(sname), Arg::S("wl_seat"), Arg::U(1), Arg::U(seat)],
+    )
+    .map_err(io)?;
+    wl.request(
+        REGISTRY,
+        0,
+        &[Arg::U(mname), Arg::S(miface), Arg::U(1), Arg::U(manager)],
+    )
+    .map_err(io)?;
+    wl.request(manager, 1, &[Arg::U(device), Arg::U(seat)])
+        .map_err(io)?; // get_data_device
     eprintln!("{TAG}: {path}: Wayland clipboard through {miface}");
     let mut objs = HashMap::new();
     objs.insert(seat, Obj::Other);
@@ -310,7 +359,10 @@ impl Session {
                 }
             }
             if rev[0] != 0 && !self.wl.fill()? {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "compositor hung up"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "compositor hung up",
+                ));
             }
             while let Some((obj, op, body)) = self.wl.event() {
                 self.dispatch(obj, op, &body)?;
@@ -324,7 +376,9 @@ impl Session {
             match op {
                 0 => {
                     let (o, code, msg) = (b.u32(), b.u32(), b.string());
-                    return Err(io::Error::other(format!("protocol error on {o:?}: {code:?} {msg:?}")));
+                    return Err(io::Error::other(format!(
+                        "protocol error on {o:?}: {code:?} {msg:?}"
+                    )));
                 }
                 1 => {
                     if let Some(id) = b.u32() {
@@ -390,23 +444,35 @@ impl Session {
         }
         self.selection = (id != 0).then_some(id);
         let initial = std::mem::replace(&mut self.initial, false);
-        let Some(mimes) = self.offers.get(&id).cloned() else { return Ok(()) };
+        let Some(mimes) = self.offers.get(&id).cloned() else {
+            return Ok(());
+        };
         if initial || mimes.iter().any(|m| m == MARKER) {
             return Ok(()); // the state before we came, or our own source
         }
-        let text = TEXT_MIMES.iter().find(|m| mimes.iter().any(|x| x == *m)).copied();
+        let text = TEXT_MIMES
+            .iter()
+            .find(|m| mimes.iter().any(|x| x == *m))
+            .copied();
         let png = mimes.iter().any(|m| m == MIME_PNG);
         let text = match text {
             Some(m) => self.receive(id, m, TEXT_MAX)?.map(|t| {
                 if m == "STRING" {
-                    t.iter().map(|&b| b as char).collect::<String>().into_bytes()
+                    t.iter()
+                        .map(|&b| b as char)
+                        .collect::<String>()
+                        .into_bytes()
                 } else {
                     String::from_utf8_lossy(&t).into_owned().into_bytes()
                 }
             }),
             None => None,
         };
-        let png = if png { self.receive(id, MIME_PNG, IMAGE_MAX)? } else { None };
+        let png = if png {
+            self.receive(id, MIME_PNG, IMAGE_MAX)?
+        } else {
+            None
+        };
         if let Some(c) = capped(text, png, &self.name) {
             let _ = self.tx.send(Ev::Guest(self.name.clone(), c));
         }
@@ -421,14 +487,18 @@ impl Session {
             return Err(io::Error::last_os_error());
         }
         let (r, w) = unsafe { (OwnedFd::from_raw_fd(p[0]), OwnedFd::from_raw_fd(p[1])) };
-        self.wl.request(offer, 0, &[Arg::S(mime), Arg::Fd(w.as_raw_fd())])?;
+        self.wl
+            .request(offer, 0, &[Arg::S(mime), Arg::Fd(w.as_raw_fd())])?;
         drop(w);
         let mut file = std::fs::File::from(r);
         let mut data = Vec::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             if poll_in(&[file.as_raw_fd()], Some(STALL))[0] == 0 {
-                eprintln!("{TAG}: {}: the clipboard owner did not send {mime}; change not shared", self.name);
+                eprintln!(
+                    "{TAG}: {}: the clipboard owner did not send {mime}; change not shared",
+                    self.name
+                );
                 return Ok(None);
             }
             match file.read(&mut buf) {
@@ -478,22 +548,29 @@ fn write_out(fd: OwnedFd, mime: &str, c: Arc<Content>) {
         c.png.clone()
     } else if mime == "STRING" {
         c.text.as_ref().map(|t| {
-            Arc::new(String::from_utf8_lossy(t).chars().map(|ch| if (ch as u32) < 256 { ch as u8 } else { b'?' }).collect())
+            Arc::new(
+                String::from_utf8_lossy(t)
+                    .chars()
+                    .map(|ch| if (ch as u32) < 256 { ch as u8 } else { b'?' })
+                    .collect(),
+            )
         })
     } else if TEXT_MIMES.contains(&mime) {
         c.text.clone()
     } else {
         None
     };
-    let _ = std::thread::Builder::new().name("clip send".into()).spawn(move || {
-        let raw = fd.as_raw_fd();
-        unsafe {
-            let fl = libc::fcntl(raw, libc::F_GETFL);
-            libc::fcntl(raw, libc::F_SETFL, fl & !libc::O_NONBLOCK);
-        }
-        let mut f = std::fs::File::from(fd);
-        if let Some(d) = data {
-            let _ = f.write_all(&d);
-        }
-    });
+    let _ = std::thread::Builder::new()
+        .name("clip send".into())
+        .spawn(move || {
+            let raw = fd.as_raw_fd();
+            unsafe {
+                let fl = libc::fcntl(raw, libc::F_GETFL);
+                libc::fcntl(raw, libc::F_SETFL, fl & !libc::O_NONBLOCK);
+            }
+            let mut f = std::fs::File::from(fd);
+            if let Some(d) = data {
+                let _ = f.write_all(&d);
+            }
+        });
 }

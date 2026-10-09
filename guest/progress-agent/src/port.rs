@@ -38,10 +38,16 @@ impl Port {
         }
         // A regular file (FX_PROGRESS_PORT test override) would read back our own lines.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstat(fd, &mut st) } == 0 && (st.st_mode & libc::S_IFMT) == libc::S_IFREG {
+        if unsafe { libc::fstat(fd, &mut st) } == 0 && (st.st_mode & libc::S_IFMT) == libc::S_IFREG
+        {
             readable = false;
         }
-        Ok(Port { fd, pending: Vec::new(), rx: Vec::new(), readable })
+        Ok(Port {
+            fd,
+            pending: Vec::new(),
+            rx: Vec::new(),
+            readable,
+        })
     }
 
     /// For ppoll(POLLIN) while the port is readable.
@@ -61,7 +67,8 @@ impl Port {
         }
         let mut buf = [0u8; 4096];
         loop {
-            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            let n =
+                unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n > 0 {
                 self.rx.extend_from_slice(&buf[..n as usize]);
                 continue;
@@ -104,7 +111,11 @@ impl Port {
     pub fn flush(&mut self) {
         while !self.pending.is_empty() {
             let n = unsafe {
-                libc::write(self.fd, self.pending.as_ptr() as *const libc::c_void, self.pending.len())
+                libc::write(
+                    self.fd,
+                    self.pending.as_ptr() as *const libc::c_void,
+                    self.pending.len(),
+                )
             };
             if n > 0 {
                 self.pending.drain(..n as usize);
@@ -133,7 +144,13 @@ impl Port {
         }
         let mut off = 0;
         while off < buf.len() {
-            let n = unsafe { libc::write(self.fd, buf[off..].as_ptr() as *const libc::c_void, buf.len() - off) };
+            let n = unsafe {
+                libc::write(
+                    self.fd,
+                    buf[off..].as_ptr() as *const libc::c_void,
+                    buf.len() - off,
+                )
+            };
             if n > 0 {
                 off += n as usize;
                 continue;
@@ -149,7 +166,11 @@ impl Port {
             if left.is_zero() {
                 break;
             }
-            let mut p = libc::pollfd { fd: self.fd, events: libc::POLLOUT, revents: 0 };
+            let mut p = libc::pollfd {
+                fd: self.fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
             unsafe { libc::poll(&mut p, 1, left.as_millis().min(1000) as libc::c_int) };
         }
         let ok = off == buf.len();

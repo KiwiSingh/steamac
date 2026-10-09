@@ -2,3 +2,17 @@
 .DS_Store
 /host/launcher/.build/
 /host/launcher/Sources/CZstd/zstd/
+
+# Rust build output
+/guest/progress-agent/target/
+
+# Local patch backups
+*.bak
+*.bak.*
+*.pre-*.bak
+.41F-*-backup-*/
+backups-41F-*/
+
+# macOS metadata
+.AppleDouble
+._*

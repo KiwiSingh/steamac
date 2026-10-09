@@ -25,7 +25,8 @@ final class BepisBridgePort {
     private var clientFd: Int32 = -1
     private var stopped = false
 
-    private let queue = DispatchQueue(label: "es.fxgam.steamac.bepis-bridge")
+    private let acceptQueue = DispatchQueue(label: "es.fxgam.steamac.bepis-bridge.accept")
+    private let guestQueue = DispatchQueue(label: "es.fxgam.steamac.bepis-bridge.guest")
     private var pendingGuest = Data()
 
     init() throws {
@@ -114,11 +115,11 @@ final class BepisBridgePort {
 
         listenerFd = fd
 
-        queue.async { [weak self] in
+        acceptQueue.async { [weak self] in
             self?.run(listener: fd)
         }
 
-        queue.async { [weak self] in
+        guestQueue.async { [weak self] in
             self?.readGuest()
         }
 

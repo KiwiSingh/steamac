@@ -36,7 +36,12 @@ pub struct Freezer {
 
 impl Freezer {
     pub fn new() -> Freezer {
-        Freezer { appid: None, frozen: Vec::new(), last_keepalive: Instant::now(), replies: Vec::new() }
+        Freezer {
+            appid: None,
+            frozen: Vec::new(),
+            last_keepalive: Instant::now(),
+            replies: Vec::new(),
+        }
     }
 
     pub fn freeze(&mut self, appid: u32) {
@@ -53,7 +58,10 @@ impl Freezer {
         let mut scopes = Vec::new();
         find_scopes(&root, &prefix, 0, &mut scopes);
         if scopes.is_empty() {
-            eprintln!("fx-progress: freeze {appid}: no {prefix}*.scope below {}", root.display());
+            eprintln!(
+                "fx-progress: freeze {appid}: no {prefix}*.scope below {}",
+                root.display()
+            );
             return;
         }
         let mut any = false;
@@ -74,7 +82,9 @@ impl Freezer {
     }
 
     pub fn thaw(&mut self, why: &str) {
-        let Some(appid) = self.appid.take() else { return };
+        let Some(appid) = self.appid.take() else {
+            return;
+        };
         for s in self.frozen.drain(..) {
             // A scope whose game exited is gone: nothing to thaw.
             if s.exists() {
@@ -118,7 +128,10 @@ impl Drop for Freezer {
 /// 2 s), else its cgroup.freeze directly. True if either took effect.
 fn set_frozen(scope: &Path, frozen: bool) -> bool {
     let verb = if frozen { "freeze" } else { "thaw" };
-    let unit = scope.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let unit = scope
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let via_systemd = std::process::Command::new("systemctl")
         .args(["--user", verb, &unit])
         .stdin(std::process::Stdio::null())
@@ -131,7 +144,9 @@ fn set_frozen(scope: &Path, frozen: bool) -> bool {
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => return Some(status.success()),
-                    Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20))
+                    }
                     _ => {
                         let _ = child.kill();
                         let _ = child.wait();
@@ -172,7 +187,9 @@ fn user_manager_cgroup() -> Option<PathBuf> {
 }
 
 fn find_scopes(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         if !e.file_type().map_or(false, |t| t.is_dir()) {
             continue;

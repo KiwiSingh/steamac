@@ -100,7 +100,7 @@ case $driver in
 moltenvk)
 	work=$root/work/build/host-moltenvk/repro
 	libdir=${1:-$root/work/out/host/lib}
-	link="-L$libdir -lMoltenVK -Wl,-rpath,$libdir"
+	link=(-L"$libdir" -lMoltenVK "-Wl,-rpath,$libdir")
 	export MVK_CONFIG_LOG_LEVEL=1
 	;;
 kosmickrisp)
@@ -108,7 +108,7 @@ kosmickrisp)
 	kk=${1:?usage: REPRO_DRIVER=kosmickrisp $0 <libvulkan_kosmickrisp.dylib>}
 	brew list --versions vulkan-loader > /dev/null 2>&1 || brew install vulkan-loader
 	loader=$(brew --prefix vulkan-loader)/lib
-	link="-L$loader -lvulkan -Wl,-rpath,$loader"
+	link=(-L"$loader" -lvulkan "-Wl,-rpath,$loader")
 	mkdir -p "$work"
 	printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
 		"$kk" > "$work/kosmickrisp_icd.json"
@@ -131,7 +131,7 @@ build() {
 	prog=$1
 	shift
 	# shellcheck disable=SC2086
-	xcrun clang -std=c11 -Wall -Werror -O1 "$@" -I"$inc" "$here/$prog.c" $link -o "$work/$prog"
+	xcrun clang -std=c11 -Wall -Werror -O1 "$@" -I"$inc" "$here/$prog.c" "${link[@]}" -o "$work/$prog"
 }
 
 src=$work/gamescope

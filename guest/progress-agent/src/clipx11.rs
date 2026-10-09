@@ -21,15 +21,18 @@ use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectError, ConnectionError, ReplyError};
 use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Property,
-    SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass, SELECTION_NOTIFY_EVENT,
+    Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, EventMask,
+    PropMode, Property, SelectionNotifyEvent, SelectionRequestEvent, Window, WindowClass,
+    SELECTION_NOTIFY_EVENT,
 };
 use x11rb::protocol::Event;
-use x11rb::wrapper::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 use x11rb::CURRENT_TIME;
 
-use crate::clipboard::{self, capped, mailbox, poll_in, Cmd, Content, Ev, Inbox, IMAGE_MAX, TAG, TEXT_MAX};
+use crate::clipboard::{
+    self, capped, mailbox, poll_in, Cmd, Content, Ev, Inbox, IMAGE_MAX, TAG, TEXT_MAX,
+};
 
 /// Largest property written in one piece; bigger data goes INCR.
 const CHUNK: usize = 256 * 1024;
@@ -159,10 +162,16 @@ fn connect(display: &str) -> Result<(RustConnection, Window, Atoms), Fail> {
         }
         e => Fail::Retry(format!("cannot connect: {e}")),
     })?;
-    let setup_root = conn.setup().roots.get(screen).map(|s| (s.root, s.root_visual));
+    let setup_root = conn
+        .setup()
+        .roots
+        .get(screen)
+        .map(|s| (s.root, s.root_visual));
     let (root, visual) = setup_root.ok_or_else(|| Fail::NotOurs("no screen".into()))?;
     let atom = |name: &str| -> Result<Atom, Fail> {
-        let r = conn.intern_atom(false, name.as_bytes()).map_err(|e| Fail::Retry(e.to_string()))?;
+        let r = conn
+            .intern_atom(false, name.as_bytes())
+            .map_err(|e| Fail::Retry(e.to_string()))?;
         Ok(r.reply().map_err(|e| Fail::Retry(e.to_string()))?.atom)
     };
     let server_id = atom("GAMESCOPE_XWAYLAND_SERVER_ID")?;
@@ -189,7 +198,10 @@ fn connect(display: &str) -> Result<(RustConnection, Window, Atoms), Fail> {
     };
     let fail = |e: ConnectionError| Fail::Retry(e.to_string());
     let reply_fail = |e: ReplyError| Fail::Retry(e.to_string());
-    conn.xfixes_query_version(5, 0).map_err(fail)?.reply().map_err(reply_fail)?;
+    conn.xfixes_query_version(5, 0)
+        .map_err(fail)?
+        .reply()
+        .map_err(reply_fail)?;
     let win = conn.generate_id().map_err(|e| Fail::Retry(e.to_string()))?;
     conn.create_window(
         0,
@@ -202,7 +214,9 @@ fn connect(display: &str) -> Result<(RustConnection, Window, Atoms), Fail> {
         0,
         WindowClass::INPUT_ONLY,
         visual,
-        &CreateWindowAux::new().override_redirect(1).event_mask(EventMask::PROPERTY_CHANGE),
+        &CreateWindowAux::new()
+            .override_redirect(1)
+            .event_mask(EventMask::PROPERTY_CHANGE),
     )
     .map_err(fail)?;
     conn.xfixes_select_selection_input(
@@ -221,7 +235,9 @@ impl Worker {
     fn serve(&mut self, inbox: &Inbox) -> Result<(), ConnectionError> {
         let xfd = self.conn.stream().as_raw_fd();
         loop {
-            let timeout = self.next_deadline().map(|d| d.saturating_duration_since(Instant::now()));
+            let timeout = self
+                .next_deadline()
+                .map(|d| d.saturating_duration_since(Instant::now()));
             let rev = poll_in(&[xfd, inbox.wake.fd()], timeout);
             if rev[0] & (libc::POLLHUP | libc::POLLERR) != 0 && rev[0] & libc::POLLIN == 0 {
                 return Err(ConnectionError::UnknownError);
@@ -241,13 +257,20 @@ impl Worker {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        self.fetch.iter().map(|f| f.deadline).chain(self.outgoing.values().map(|o| o.deadline)).min()
+        self.fetch
+            .iter()
+            .map(|f| f.deadline)
+            .chain(self.outgoing.values().map(|o| o.deadline))
+            .min()
     }
 
     fn expire(&mut self) -> Result<(), ConnectionError> {
         let now = Instant::now();
         if self.fetch.as_ref().is_some_and(|f| f.deadline <= now) {
-            eprintln!("{TAG}: {}: the clipboard owner did not answer; change not shared", self.name);
+            eprintln!(
+                "{TAG}: {}: the clipboard owner did not answer; change not shared",
+                self.name
+            );
             self.fetch = None;
             self.fetch_again()?;
         }
@@ -263,7 +286,8 @@ impl Worker {
             f.discard = true;
         }
         self.refetch = false;
-        self.conn.set_selection_owner(self.win, self.a.clipboard, CURRENT_TIME)?;
+        self.conn
+            .set_selection_owner(self.win, self.a.clipboard, CURRENT_TIME)?;
         Ok(())
     }
 
@@ -279,7 +303,9 @@ impl Worker {
                 self.latin1 = None;
             }
             Event::SelectionRequest(e) => self.request(&e)?,
-            Event::SelectionNotify(e) if e.requestor == self.win && e.selection == self.a.clipboard => {
+            Event::SelectionNotify(e)
+                if e.requestor == self.win && e.selection == self.a.clipboard =>
+            {
                 self.notified(e.target, e.property)?
             }
             Event::PropertyNotify(e) => {
@@ -312,7 +338,13 @@ impl Worker {
             discard: false,
         });
         self.conn.delete_property(self.win, self.a.prop)?;
-        self.conn.convert_selection(self.win, self.a.clipboard, self.a.targets, self.a.prop, CURRENT_TIME)?;
+        self.conn.convert_selection(
+            self.win,
+            self.a.clipboard,
+            self.a.targets,
+            self.a.prop,
+            CURRENT_TIME,
+        )?;
         Ok(())
     }
 
@@ -325,7 +357,9 @@ impl Worker {
 
     /// SelectionNotify for our request of `target`: `property` NONE = refused.
     fn notified(&mut self, target: Atom, property: Atom) -> Result<(), ConnectionError> {
-        let Some(f) = self.fetch.as_mut() else { return Ok(()) };
+        let Some(f) = self.fetch.as_mut() else {
+            return Ok(());
+        };
         let expected = match f.stage {
             Stage::Targets => self.a.targets,
             Stage::Data(t) => t,
@@ -340,35 +374,61 @@ impl Worker {
                 let targets = if property == x11rb::NONE {
                     Vec::new()
                 } else {
-                    let r = self.conn.get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, 4096)?.reply();
-                    r.ok().and_then(|r| r.value32().map(|v| v.collect::<Vec<u32>>())).unwrap_or_default()
+                    let r = self
+                        .conn
+                        .get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, 4096)?
+                        .reply();
+                    r.ok()
+                        .and_then(|r| r.value32().map(|v| v.collect::<Vec<u32>>()))
+                        .unwrap_or_default()
                 };
                 // No TARGETS support: just try UTF8_STRING.
-                let targets = if targets.is_empty() { vec![self.a.utf8] } else { targets };
+                let targets = if targets.is_empty() {
+                    vec![self.a.utf8]
+                } else {
+                    targets
+                };
                 let a = &self.a;
-                let text = [a.utf8, a.plain_utf8, a.string, a.plain].into_iter().find(|t| targets.contains(t));
-                f.queue = text.into_iter().chain(targets.contains(&a.png).then_some(a.png)).collect();
+                let text = [a.utf8, a.plain_utf8, a.string, a.plain]
+                    .into_iter()
+                    .find(|t| targets.contains(t));
+                f.queue = text
+                    .into_iter()
+                    .chain(targets.contains(&a.png).then_some(a.png))
+                    .collect();
                 self.next_target()
             }
             Stage::Data(target) => {
                 if property == x11rb::NONE {
                     return self.next_target();
                 }
-                let head = self.conn.get_property(false, self.win, self.a.prop, AtomEnum::ANY, 0, 0)?.reply();
-                let Ok(head) = head else { return self.next_target() };
+                let head = self
+                    .conn
+                    .get_property(false, self.win, self.a.prop, AtomEnum::ANY, 0, 0)?
+                    .reply();
+                let Ok(head) = head else {
+                    return self.next_target();
+                };
                 if head.type_ == self.a.incr {
                     // Deleting the property starts the transfer.
                     self.conn.delete_property(self.win, self.a.prop)?;
                     f.stage = Stage::Incr(target, Vec::new());
                     return Ok(());
                 }
-                let cap = if target == self.a.png { IMAGE_MAX } else { TEXT_MAX };
+                let cap = if target == self.a.png {
+                    IMAGE_MAX
+                } else {
+                    TEXT_MAX
+                };
                 if head.bytes_after as usize > cap {
                     self.too_large(target, head.bytes_after as usize);
                     self.conn.delete_property(self.win, self.a.prop)?;
                     return self.next_target();
                 }
-                let r = self.conn.get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, u32::MAX / 4)?.reply();
+                let r = self
+                    .conn
+                    .get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, u32::MAX / 4)?
+                    .reply();
                 if let Ok(r) = r {
                     self.store(target, r.type_, r.value);
                 }
@@ -379,16 +439,31 @@ impl Worker {
     }
 
     fn incr_chunk(&mut self) -> Result<(), ConnectionError> {
-        let Some(Fetch { stage: Stage::Incr(target, _), .. }) = self.fetch else { return Ok(()) };
-        let r = self.conn.get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, u32::MAX / 4)?.reply();
+        let Some(Fetch {
+            stage: Stage::Incr(target, _),
+            ..
+        }) = self.fetch
+        else {
+            return Ok(());
+        };
+        let r = self
+            .conn
+            .get_property(true, self.win, self.a.prop, AtomEnum::ANY, 0, u32::MAX / 4)?
+            .reply();
         let Ok(r) = r else {
             self.fetch = None;
             return self.fetch_again();
         };
-        let cap = if target == self.a.png { IMAGE_MAX } else { TEXT_MAX };
+        let cap = if target == self.a.png {
+            IMAGE_MAX
+        } else {
+            TEXT_MAX
+        };
         let f = self.fetch.as_mut().unwrap();
         f.deadline = Instant::now() + STALL;
-        let Stage::Incr(_, buf) = &mut f.stage else { return Ok(()) };
+        let Stage::Incr(_, buf) = &mut f.stage else {
+            return Ok(());
+        };
         if r.value.is_empty() {
             let data = std::mem::take(buf);
             self.store(target, r.type_, data);
@@ -405,7 +480,11 @@ impl Worker {
     }
 
     fn too_large(&self, target: Atom, n: usize) {
-        let (what, cap) = if target == self.a.png { ("image", IMAGE_MAX) } else { ("text", TEXT_MAX) };
+        let (what, cap) = if target == self.a.png {
+            ("image", IMAGE_MAX)
+        } else {
+            ("text", TEXT_MAX)
+        };
         eprintln!(
             "{TAG}: {}: copied {what} is larger than the {} limit ({}+): not shared",
             self.name,
@@ -420,14 +499,21 @@ impl Worker {
             f.png = Some(data);
         } else if kind == self.a.string {
             // ICCCM STRING is Latin-1.
-            f.text = Some(data.iter().map(|&b| b as char).collect::<String>().into_bytes());
+            f.text = Some(
+                data.iter()
+                    .map(|&b| b as char)
+                    .collect::<String>()
+                    .into_bytes(),
+            );
         } else {
             f.text = Some(String::from_utf8_lossy(&data).into_owned().into_bytes());
         }
     }
 
     fn next_target(&mut self) -> Result<(), ConnectionError> {
-        let Some(f) = self.fetch.as_mut() else { return Ok(()) };
+        let Some(f) = self.fetch.as_mut() else {
+            return Ok(());
+        };
         if f.queue.is_empty() {
             let f = self.fetch.take().unwrap();
             if !f.discard {
@@ -440,7 +526,13 @@ impl Worker {
         let target = f.queue.remove(0);
         f.stage = Stage::Data(target);
         f.deadline = Instant::now() + STALL;
-        self.conn.convert_selection(self.win, self.a.clipboard, target, self.a.prop, CURRENT_TIME)?;
+        self.conn.convert_selection(
+            self.win,
+            self.a.clipboard,
+            target,
+            self.a.prop,
+            CURRENT_TIME,
+        )?;
         Ok(())
     }
 
@@ -448,7 +540,11 @@ impl Worker {
 
     fn request(&mut self, e: &SelectionRequestEvent) -> Result<(), ConnectionError> {
         // Obsolete clients send property None: use the target as the property.
-        let property = if e.property == x11rb::NONE { e.target } else { e.property };
+        let property = if e.property == x11rb::NONE {
+            e.target
+        } else {
+            e.property
+        };
         let answered = self.answer(e, property)?;
         let notify = SelectionNotifyEvent {
             response_type: SELECTION_NOTIFY_EVENT,
@@ -459,13 +555,20 @@ impl Worker {
             target: e.target,
             property: if answered { property } else { x11rb::NONE },
         };
-        self.conn.send_event(false, e.requestor, EventMask::NO_EVENT, notify)?;
+        self.conn
+            .send_event(false, e.requestor, EventMask::NO_EVENT, notify)?;
         Ok(())
     }
 
     /// Write the requested data to the requestor's property; false = refuse.
-    fn answer(&mut self, e: &SelectionRequestEvent, property: Atom) -> Result<bool, ConnectionError> {
-        let Some(c) = self.owned.clone() else { return Ok(false) };
+    fn answer(
+        &mut self,
+        e: &SelectionRequestEvent,
+        property: Atom,
+    ) -> Result<bool, ConnectionError> {
+        let Some(c) = self.owned.clone() else {
+            return Ok(false);
+        };
         if e.selection != self.a.clipboard || e.target == self.a.multiple {
             return Ok(false);
         }
@@ -479,7 +582,13 @@ impl Worker {
             if c.png.is_some() {
                 list.push(a.png);
             }
-            self.conn.change_property32(PropMode::REPLACE, e.requestor, property, AtomEnum::ATOM, &list)?;
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                e.requestor,
+                property,
+                AtomEnum::ATOM,
+                &list,
+            )?;
             return Ok(true);
         }
         let (kind, data) = if e.target == a.png {
@@ -492,39 +601,63 @@ impl Worker {
             if e.target == a.string {
                 let l1 = self.latin1.get_or_insert_with(|| {
                     let s = String::from_utf8_lossy(t);
-                    Arc::new(s.chars().map(|ch| if (ch as u32) < 256 { ch as u8 } else { b'?' }).collect())
+                    Arc::new(
+                        s.chars()
+                            .map(|ch| if (ch as u32) < 256 { ch as u8 } else { b'?' })
+                            .collect(),
+                    )
                 });
                 (a.string, l1.clone())
             } else {
                 // TEXT is answered as UTF8_STRING (any type may answer TEXT).
-                (if e.target == a.text { a.utf8 } else { e.target }, t.clone())
+                (
+                    if e.target == a.text { a.utf8 } else { e.target },
+                    t.clone(),
+                )
             }
         } else {
             return Ok(false);
         };
         let chunk = CHUNK.min(self.conn.maximum_request_bytes().saturating_sub(1024));
         if data.len() <= chunk {
-            self.conn.change_property8(PropMode::REPLACE, e.requestor, property, kind, &data)?;
+            self.conn
+                .change_property8(PropMode::REPLACE, e.requestor, property, kind, &data)?;
         } else {
             // INCR: announce the size, then one chunk per PropertyNotify(Delete).
             self.conn.change_window_attributes(
                 e.requestor,
                 &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
             )?;
-            self.conn.change_property32(PropMode::REPLACE, e.requestor, property, self.a.incr, &[data.len() as u32])?;
-            self.outgoing
-                .insert((e.requestor, property), Outgoing { kind, data, at: 0, deadline: Instant::now() + STALL });
+            self.conn.change_property32(
+                PropMode::REPLACE,
+                e.requestor,
+                property,
+                self.a.incr,
+                &[data.len() as u32],
+            )?;
+            self.outgoing.insert(
+                (e.requestor, property),
+                Outgoing {
+                    kind,
+                    data,
+                    at: 0,
+                    deadline: Instant::now() + STALL,
+                },
+            );
         }
         Ok(true)
     }
 
     fn send_next_chunk(&mut self, window: Window, property: Atom) -> Result<(), ConnectionError> {
-        let Some(o) = self.outgoing.get_mut(&(window, property)) else { return Ok(()) };
+        let Some(o) = self.outgoing.get_mut(&(window, property)) else {
+            return Ok(());
+        };
         let chunk = CHUNK.min(self.conn.maximum_request_bytes().saturating_sub(1024));
         let end = (o.at + chunk).min(o.data.len());
         let piece = &o.data[o.at..end];
         // The last, zero-length piece ends the transfer.
-        self.conn.change_property8(PropMode::REPLACE, window, property, o.kind, piece)?;
+        self.conn
+            .change_property8(PropMode::REPLACE, window, property, o.kind, piece)?;
         if piece.is_empty() {
             self.outgoing.remove(&(window, property));
         } else {

@@ -1,0 +1,8 @@
+# Patch 41F-17 — Persistent Frog Radio
+#
+# The Bepis guest agent runs as the unprivileged steamos user.
+# Grant access exclusively to the fx.bepis virtio port.
+#
+# Do not grant world-readable or world-writable permissions.
+
+ACTION=="add|change", SUBSYSTEM=="virtio-ports", KERNEL=="vport*", ATTR{name}=="fx.bepis", OWNER="steamos", GROUP="steamos", MODE="0660"
