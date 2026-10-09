@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// New-version check: the latest GitHub release of fxgl/steamac against this launcher's
+/// New-version check: the latest GitHub release of KiwiSingh/steamac against this launcher's
 /// CFBundleShortVersionString. Runs in the VM process of the first boot (once per app launch, not
 /// per VM reboot) a few seconds after the window is up, at most every 6 h (also across launches),
 /// never in development builds (work/out/steamac-vm), and only while Settings > General "Check for
@@ -37,6 +37,7 @@ final class UpdateChecker {
     struct Release {
         let tag: String
         let version: [Int]
+        let kiwiRevision: Int?
         let name: String
         let notes: String
         let published: Date?
@@ -44,7 +45,7 @@ final class UpdateChecker {
         /// The .dmg asset.
         let dmg: URL?
 
-        var versionString: String { UpdateChecker.format(version) }
+        var versionString: String { String(tag.dropFirst(tag.lowercased().hasPrefix("v") ? 1 : 0)) }
         /// Download: the .dmg, else the release page, else the releases list.
         var downloadURL: URL { dmg ?? page ?? UpdateChecker.releasesPage }
     }
@@ -103,9 +104,44 @@ final class UpdateChecker {
 
     static func format(_ v: [Int]) -> String { v.map(String.init).joined(separator: ".") }
 
+    /// Kiwi revision is significant for builds sharing an upstream version.
+    static func kiwiRevision(_ tag: String) -> Int? {
+        guard let range = tag.range(of: "-kiwi.") else { return nil }
+        let digits = tag[range.upperBound...]
+        guard !digits.isEmpty, digits.count <= 9,
+              digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let n = Int(digits), n > 0 else { return nil }
+        return n
+    }
+
+    static func compareFork(_ a: String, _ b: String) -> ComparisonResult? {
+        guard let av = parse(a), let bv = parse(b) else { return nil }
+        let base = compare(av, bv)
+        if base != .orderedSame { return base }
+        let ar = kiwiRevision(a) ?? 0, br = kiwiRevision(b) ?? 0
+        if ar == br { return .orderedSame }
+        return ar < br ? .orderedAscending : .orderedDescending
+    }
+
+    /// Never direct production downloads to third-party release assets.
+    static func forkURL(_ raw: Any?, asset: Bool = false) -> URL? {
+        guard let raw = raw as? String, let u = URL(string: raw),
+              u.scheme == "https", u.host?.lowercased() == "github.com",
+              u.user == nil, u.password == nil, u.port == nil,
+              u.query == nil, u.fragment == nil else { return nil }
+        let prefix = "/KiwiSingh/steamac/releases/"
+        guard u.path.hasPrefix(prefix) else { return nil }
+        if asset {
+            guard u.path.contains("/download/"), u.path.lowercased().hasSuffix(".dmg") else { return nil }
+        } else {
+            guard u.path.hasPrefix(prefix + "tag/") else { return nil }
+        }
+        return u
+    }
+
     /// The newest published release of a /releases/latest object or a /releases array (drafts,
     /// prereleases and tags that are no version number ignored); nil if there is none.
-    static func newest(inJSON data: Data) throws -> Release? {
+    static func newest(inJSON data: Data, strictFork: Bool = false) throws -> Release? {
         let json = try JSONSerialization.jsonObject(with: data)
         let list: [[String: Any]]
         if let one = json as? [String: Any] { list = [one] }
@@ -118,14 +154,16 @@ final class UpdateChecker {
         }
         let releases: [Release] = list.compactMap { r in
             guard r["draft"] as? Bool != true, r["prerelease"] as? Bool != true,
-                  let tag = r["tag_name"] as? String, let version = parse(tag) else { return nil }
+                  let tag = r["tag_name"] as? String, let version = parse(tag),
+                  !strictFork || (kiwiRevision(tag) != nil && forkURL(r["html_url"]) != nil) else { return nil }
             let assets = r["assets"] as? [[String: Any]] ?? []
             let dmg = assets.first { ($0["name"] as? String)?.lowercased().hasSuffix(".dmg") == true }
-            return Release(tag: tag, version: version, name: r["name"] as? String ?? "", notes: r["body"] as? String ?? "",
+            return Release(tag: tag, version: version, kiwiRevision: kiwiRevision(tag), name: r["name"] as? String ?? "", notes: r["body"] as? String ?? "",
                            published: (r["published_at"] as? String).flatMap(iso.date(from:)),
-                           page: web(r["html_url"]), dmg: web(dmg?["browser_download_url"]))
+                           page: strictFork ? forkURL(r["html_url"]) : web(r["html_url"]),
+                           dmg: strictFork ? forkURL(dmg?["browser_download_url"], asset: true) : web(dmg?["browser_download_url"]))
         }
-        return releases.max { compare($0.version, $1.version) == .orderedAscending }
+        return releases.max { compareFork($0.tag, $1.tag) == .orderedAscending }
     }
 
     /// Settings self-test: version parsing and ordering, release selection, release notes text.
@@ -148,6 +186,23 @@ final class UpdateChecker {
         let newest = try? newest(inJSON: Data(json.utf8))
         if newest?.tag != "v1.3.10" || newest?.dmg?.absoluteString != "https://e/x.dmg" {
             failures.append("update: newest release \(newest?.tag ?? "none"), dmg \(newest?.dmg?.absoluteString ?? "none")")
+        }
+        if compareFork("v1.7.6-kiwi.2", "v1.7.6-kiwi.1") != .orderedDescending ||
+           compareFork("v1.7.7-kiwi.1", "v1.7.6-kiwi.99") != .orderedDescending ||
+           compareFork("v1.7.6-kiwi.1", "v1.7.6-kiwi.1") != .orderedSame {
+            failures.append("update: Kiwi revision ordering")
+        }
+        let forkJSON = """
+            [{"tag_name":"v1.7.6-kiwi.1","html_url":"https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.1"},
+             {"tag_name":"v1.7.6-kiwi.2","html_url":"https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.2",
+              "assets":[{"name":"FX-Steam-Launcher-1.7.6-kiwi.2.dmg",
+                         "browser_download_url":"https://evil.example/payload.dmg"}]},
+             {"tag_name":"v9.0","html_url":"https://github.com/fxgl/steamac/releases/tag/v9.0"}]
+            """
+        let forkRelease = try? UpdateChecker.newest(inJSON: Data(forkJSON.utf8), strictFork: true)
+        if forkRelease?.tag != "v1.7.6-kiwi.2" || forkRelease?.dmg != nil ||
+           forkRelease?.page?.host != "github.com" {
+            failures.append("update: fork-only release selection")
         }
         let md = "## What's new\r\n* **Faster** boot\n- see [notes](https://e)\n\n\n\nend<!-- hidden -->\n---\n```\ncode\n```\n"
         let notes = String(releaseNotesText(md).characters)
@@ -190,8 +245,8 @@ final class UpdateChecker {
             guard let self else { return }
             switch outcome {
             case .newer(let r):
-                if let s = self.defaults.string(forKey: Store.skipped).flatMap(UpdateChecker.parse),
-                   UpdateChecker.compare(s, r.version) == .orderedSame {
+                if let s = self.defaults.string(forKey: Store.skipped),
+                   UpdateChecker.compareFork(s, r.tag) == .orderedSame {
                     log("update: \(r.tag) available, skipped by the user (Skip This Version)")
                     return
                 }
@@ -295,15 +350,14 @@ final class UpdateChecker {
         }
         guard let body else { return .failed("Empty answer.") }
         let release: Release?
-        do { release = try newest(inJSON: body) } catch { return .failed("Unreadable answer from the server.") }
+        do { release = try newest(inJSON: body, strictFork: url == UpdateChecker.latestURL) } catch { return .failed("Unreadable answer from the server.") }
         if response is HTTPURLResponse, body != cached {
             defaults.set(body, forKey: Store.body)
             defaults.set(url.absoluteString, forKey: Store.url)
             if let etag { defaults.set(etag, forKey: Store.etag) } else { defaults.removeObject(forKey: Store.etag) }
         }
         guard let release else { return .upToDate(latest: nil) }
-        let mine = parse(current) ?? [0]
-        return compare(release.version, mine) == .orderedDescending ? .newer(release) : .upToDate(latest: release)
+        return compareFork(release.tag, current) == .orderedDescending ? .newer(release) : .upToDate(latest: release)
     }
 
     // MARK: panel
@@ -318,7 +372,7 @@ final class UpdateChecker {
             skip: { [weak self] r in
                 guard let self else { return }
                 log("update: skipping \(r.tag)")
-                self.defaults.set(r.versionString, forKey: Store.skipped)
+                self.defaults.set(r.tag, forKey: Store.skipped)
                 self.available = nil
                 self.panel?.window.close()
             },

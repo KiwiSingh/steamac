@@ -1,3 +1,4 @@
+import LocalAuthentication
 import AppKit
 import Combine
 import CoreAudio
@@ -854,6 +855,7 @@ private struct AdvancedTab: View {
     @EnvironmentObject var context: SettingsContext
     @State private var confirmReset = false
     @StateObject private var password = GuestPasswordModel()
+    @StateObject private var bepisSSH = BepisSSHModel()
     static let maxCPUs = ProcessInfo.processInfo.activeProcessorCount
     static let maxGiB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) - 4)
     static let host = VMSizing.Host.current
@@ -973,6 +975,24 @@ private struct AdvancedTab: View {
                     }
                 }
                 if let error = password.error { Text(error).font(.caption).foregroundStyle(.red) }
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Button(bepisSSH.busy ? "Configuring BepisBridge…" : "Enable BepisBridge") {
+                            guard let disk = nextDisk else {
+                                bepisSSH.message = "Select a SteamOS disk first."
+                                return
+                            }
+                            settings.network = true
+                            settings.sshEnabled = true
+                            password.ensure()
+                            bepisSSH.enable(diskPath: disk, port: settings.sshPort)
+                        }
+                        .disabled(bepisSSH.busy || nextDisk == nil)
+                        Text(bepisSSH.message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Sets up a per-disk SSH key for passwordless SCP. The SteamOS VM must be running; after enabling SSH, restart the VM if required. SteamOS password changes normally preserve SSH keys, but lost access may require running setup again.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle(isOn: $settings.network) {
                     Label2(title: "Network", detail: "Off: no virtio-net / gvproxy (offline guest, also no SSH).",
                            now: false, key: .network)
@@ -1153,5 +1173,129 @@ private final class GuestPasswordModel: ObservableObject {
         guard let text else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+
+// 41F-21D.40: SSH key bootstrap for the existing SCP transport.
+// LocalAuthentication gates the action; it does NOT obtain the macOS password.
+// The initial SSH login uses Steamac's disk-specific SteamOS Keychain secret.
+@MainActor private final class BepisSSHModel: ObservableObject {
+    @Published var busy = false
+    @Published var message = "Not configured"
+
+    func enable(diskPath: String, port: Int) {
+        guard !busy else { return }
+        guard let disk = GuestPassword.identity(ofDisk: diskPath) else {
+            message = "Could not identify the selected disk."
+            return
+        }
+        let auth = LAContext()
+        var authError: NSError?
+        guard auth.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
+            message = "macOS authentication unavailable: \(authError?.localizedDescription ?? "unknown error")"
+            return
+        }
+        busy = true
+        message = "Authenticating with macOS…"
+        auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Enable passwordless BepisBridge SSH access") { [weak self] allowed, error in
+            Task { @MainActor in
+                guard let self else { return }
+                guard allowed else {
+                    self.busy = false
+                    self.message = error?.localizedDescription ?? "Authentication cancelled"
+                    return
+                }
+                guard let secret = GuestPassword.password(disk: disk) else {
+                    self.busy = false
+                    self.message = "No SteamOS password in Keychain for this disk. Restart after generating one."
+                    return
+                }
+                self.message = "Provisioning SSH key…"
+                Task.detached {
+                    let result: String
+                    do {
+                        try BepisSSHBootstrap.run(disk: disk, port: port, password: secret)
+                        result = "BepisBridge Enabled · SSH key verified"
+                    } catch { result = "Setup failed: \(error.localizedDescription)" }
+                    await MainActor.run { self.busy = false; self.message = result }
+                }
+            }
+        }
+    }
+}
+
+private enum BepisSSHBootstrap {
+    private static func execute(_ tool: String, _ args: [String], env: [String: String] = [:]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = args
+        process.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = out
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            // Do not expose ssh/askpass diagnostics, which could contain credentials.
+            throw NSError(domain: "BepisSSH", code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "SSH command failed (exit \(process.terminationStatus)). Check the running VM, SSH port, and SteamOS credentials."])
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func run(disk: String, port: Int, password: String) throws {
+        guard (1024...65535).contains(port) else { throw NSError(domain: "BepisSSH", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Invalid SSH port"]) }
+        let fm = FileManager.default
+        let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                 appropriateFor: nil, create: true)
+        // The disk identity is a GPT GUID, not an arbitrary filesystem path.
+        let safeID = disk.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        guard safeID == disk, !safeID.isEmpty else { throw NSError(domain: "BepisSSH", code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Invalid disk identity"]) }
+        let directory = support.appendingPathComponent("KiwiSteamac/BepisBridge/" + safeID, isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        let key = directory.appendingPathComponent("id_ed25519")
+        let pub = directory.appendingPathComponent("id_ed25519.pub")
+        if !fm.fileExists(atPath: key.path) {
+            _ = try execute("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key.path])
+        }
+        _ = chmod(key.path, 0o600)
+        guard let publicKey = try? String(contentsOf: pub, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              publicKey.hasPrefix("ssh-ed25519 "), publicKey.count < 1024 else {
+            throw NSError(domain: "BepisSSH", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid SSH public key"])
+        }
+        let knownHosts = directory.appendingPathComponent("known_hosts")
+        let options = ["-p", String(port), "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+                       "-o", "UserKnownHostsFile=" + knownHosts.path, "-o", "IdentitiesOnly=yes",
+                       "-i", key.path]
+        // SSH_ASKPASS runs without a TTY and reads the guest password from a
+        // short-lived child environment. Never place the password in argv or on disk.
+        let askpass = directory.appendingPathComponent("askpass-" + UUID().uuidString)
+        let helper = "#!/bin/sh\nprintf '%s\\n' \"$STEAMAC_GUEST_PASSWORD\"\n"
+        try helper.write(to: askpass, atomically: true, encoding: .utf8)
+        _ = chmod(askpass.path, 0o700)
+        defer { try? fm.removeItem(at: askpass) }
+        let env = ["SSH_ASKPASS": askpass.path, "SSH_ASKPASS_REQUIRE": "force",
+                   "DISPLAY": "steamac:0", "STEAMAC_GUEST_PASSWORD": password]
+        let command = "umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qxF " +
+            "'" + publicKey.replacingOccurrences(of: "'", with: "'\\''") + "' ~/.ssh/authorized_keys || printf '%s\\n' '" +
+            publicKey + "' >> ~/.ssh/authorized_keys"
+        _ = try execute("/usr/bin/ssh", options + ["-o", "NumberOfPasswordPrompts=1",
+                         "steamos@127.0.0.1", command], env: env)
+        _ = try execute("/usr/bin/ssh", options + ["-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
+                         "steamos@127.0.0.1", "true"])
+        // Verify SCP as well as SSH; copy a harmless empty file to /tmp.
+        let probe = directory.appendingPathComponent("scp-probe-" + UUID().uuidString)
+        try Data().write(to: probe)
+        defer { try? fm.removeItem(at: probe) }
+        _ = try execute("/usr/bin/scp", ["-P", String(port), "-o", "BatchMode=yes",
+                         "-o", "PasswordAuthentication=no", "-o", "StrictHostKeyChecking=accept-new",
+                         "-o", "UserKnownHostsFile=" + knownHosts.path, "-i", key.path,
+                         probe.path, "steamos@127.0.0.1:/tmp/" + probe.lastPathComponent])
     }
 }

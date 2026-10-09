@@ -94,7 +94,15 @@ done
 # The executable: only the bundle's Frameworks on its rpath.
 while read -r rp; do
     install_name_tool -delete_rpath "$rp" "$exe" 2>/dev/null   # (re-signed below)
-done < <(otool -l "$exe" | awk '/cmd LC_RPATH/ {getline; getline; print $2}')
+done < <(otool -l "$exe" | awk '
+    /cmd LC_RPATH/ {
+        getline
+        getline
+        sub(/^[[:space:]]*path /, "")
+        sub(/ \(offset [0-9]+\).*$/, "")
+        print
+    }
+')
 install_name_tool -add_rpath @executable_path/../Frameworks "$exe" 2>/dev/null
 while read -r dep; do
     is_system "$dep" && continue
