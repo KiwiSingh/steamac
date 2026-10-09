@@ -4,7 +4,7 @@ A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on q
 
 The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.2`
+> **Latest Kiwi release:** `v1.7.6-kiwi.3`
 
 ## What's different in the Kiwi Build?
 
@@ -38,10 +38,16 @@ vX.Y.Z-kiwi.N
 For example:
 
 ```text
-v1.7.6-kiwi.2
+v1.7.6-kiwi.3
 ```
 
 The updater has been extended to recognize these tags while retaining Steamac's underlying version comparison.
+
+### BepisBridge integration
+
+Kiwi Build 3 adds **BepisBridge** setup in Steamac Settings to support integration with [BepisLoader](https://github.com/KiwiSingh/BepisLoader). The setup flow provisions per-VM SSH authentication, enabling BepisLoader to interact with a running SteamOS guest. Existing virtio bridge functionality is retained.
+
+**Validated:** Steamac launches and boots SteamOS, the BepisBridge setup control is available, and BepInEx mods work with *Digimon World: Next Order* (AppID `1530160`) through the integrated workflow. Other games and mod frameworks may require additional testing.
 
 ## Steamac 1.7.6 features
 
@@ -64,13 +70,14 @@ DualSense support in Kiwi Build 1.7.6 comes from Steamac's upstream raw-HID impl
 
 ## Tested configuration
 
-Kiwi Build 2 has been tested on a **16 GB Apple silicon Mac** with:
+Kiwi Build 3 has been tested on a **16 GB Apple silicon Mac** with:
 
 - SteamOS booting successfully
 - Automatic VM memory correctly selecting **12288 MiB**
 - DualSense passthrough
 - Built-in update checks against `KiwiSingh/steamac`
 - Recognition of `vX.Y.Z-kiwi.N` release tags
+- BepisBridge Settings control and successful BepInEx mod test with Digimon World: Next Order
 
 ## Download
 
@@ -80,7 +87,7 @@ https://github.com/KiwiSingh/steamac/releases
 
 The current release is:
 
-**Steamac 1.7.6 Kiwi Build 2 — `v1.7.6-kiwi.2`**
+**Steamac 1.7.6 Kiwi Build 3 — `v1.7.6-kiwi.3`**
 
 The release ZIP is ad-hoc signed and is **not notarized with an Apple Developer ID**.
 
