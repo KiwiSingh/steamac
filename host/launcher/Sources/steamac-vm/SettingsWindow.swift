@@ -1051,8 +1051,18 @@ private struct AdvancedTab: View {
                 }
             }
         }
-        .onAppear { password.load(disk: nextDisk) }
-        .onChange(of: settings.diskImage) { password.load(disk: nextDisk) }
+        .onAppear {
+            password.load(disk: nextDisk)
+            bepisSSH.load(diskPath: nextDisk)
+        }
+        .onChange(of: settings.diskImage) {
+            password.load(disk: nextDisk)
+            bepisSSH.load(diskPath: nextDisk)
+        }
+        .onChange(of: context.diskPath) {
+            password.load(disk: nextDisk)
+            bepisSSH.load(diskPath: nextDisk)
+        }
         .confirmationDialog("Reset all FX Steam Launcher settings to their defaults?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { settings.resetAll() }
         } message: {
@@ -1184,41 +1194,109 @@ private final class GuestPasswordModel: ObservableObject {
     @Published var busy = false
     @Published var message = "Not configured"
 
+    // The displayed disk is independent of any in-flight SSH operation.
+    // This prevents an old operation from overwriting another disk's UI.
+    private var displayedDisk: String?
+
+    func load(diskPath: String?) {
+        let identity = diskPath.flatMap {
+            GuestPassword.identity(ofDisk: $0)
+        }
+
+        displayedDisk = identity
+
+        guard let identity else {
+            message = "Not configured"
+            return
+        }
+
+        if BepisSSHBootstrap.isConfigured(disk: identity) {
+            message = "Configured · Connection not checked"
+        } else {
+            message = "Not configured"
+        }
+    }
+
     func enable(diskPath: String, port: Int) {
         guard !busy else { return }
+
         guard let disk = GuestPassword.identity(ofDisk: diskPath) else {
             message = "Could not identify the selected disk."
             return
         }
+
+        displayedDisk = disk
+
         let auth = LAContext()
         var authError: NSError?
-        guard auth.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
-            message = "macOS authentication unavailable: \(authError?.localizedDescription ?? "unknown error")"
+
+        guard auth.canEvaluatePolicy(
+            .deviceOwnerAuthentication,
+            error: &authError
+        ) else {
+            message = "macOS authentication unavailable: " +
+                (authError?.localizedDescription ?? "unknown error")
             return
         }
+
         busy = true
         message = "Authenticating with macOS…"
-        auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Enable passwordless BepisBridge SSH access") { [weak self] allowed, error in
+
+        auth.evaluatePolicy(
+            .deviceOwnerAuthentication,
+            localizedReason: "Enable passwordless BepisBridge SSH access"
+        ) { [weak self] allowed, error in
             Task { @MainActor in
                 guard let self else { return }
+
                 guard allowed else {
                     self.busy = false
-                    self.message = error?.localizedDescription ?? "Authentication cancelled"
+                    if self.displayedDisk == disk {
+                        self.message =
+                            error?.localizedDescription
+                            ?? "Authentication cancelled"
+                    }
                     return
                 }
+
                 guard let secret = GuestPassword.password(disk: disk) else {
                     self.busy = false
-                    self.message = "No SteamOS password in Keychain for this disk. Restart after generating one."
+                    if self.displayedDisk == disk {
+                        self.message =
+                            "No SteamOS password in Keychain for this disk. " +
+                            "Restart after generating one."
+                    }
                     return
                 }
-                self.message = "Provisioning SSH key…"
+
+                if self.displayedDisk == disk {
+                    self.message = "Provisioning SSH key…"
+                }
+
                 Task.detached {
                     let result: String
+
                     do {
-                        try BepisSSHBootstrap.run(disk: disk, port: port, password: secret)
+                        try BepisSSHBootstrap.run(
+                            disk: disk,
+                            port: port,
+                            password: secret
+                        )
                         result = "BepisBridge Enabled · SSH key verified"
-                    } catch { result = "Setup failed: \(error.localizedDescription)" }
-                    await MainActor.run { self.busy = false; self.message = result }
+                    } catch {
+                        result = "Setup failed: " + error.localizedDescription
+                    }
+
+                    await MainActor.run {
+                        self.busy = false
+
+                        // Never publish another disk's setup result.
+                        guard self.displayedDisk == disk else {
+                            return
+                        }
+
+                        self.message = result
+                    }
                 }
             }
         }
@@ -1226,6 +1304,58 @@ private final class GuestPasswordModel: ObservableObject {
 }
 
 private enum BepisSSHBootstrap {
+    // Read-only inspection. No authentication, provisioning, or network I/O.
+    static func isConfigured(disk: String) -> Bool {
+        let safeID = disk.filter {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-")
+        }
+
+        guard safeID == disk, !safeID.isEmpty else {
+            return false
+        }
+
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: false
+        ) else {
+            return false
+        }
+
+        let directory = support
+            .appendingPathComponent("KiwiSteamac/BepisBridge")
+            .appendingPathComponent(safeID)
+
+        let privateKey = directory.appendingPathComponent("id_ed25519")
+        let publicKey = directory.appendingPathComponent("id_ed25519.pub")
+
+        let fm = FileManager.default
+
+        // Reject symlinks and non-regular files.
+        for file in [privateKey, publicKey] {
+            guard let attributes = try? fm.attributesOfItem(
+                atPath: file.path
+            ),
+            let type = attributes[.type] as? FileAttributeType,
+            type == .typeRegular else {
+                return false
+            }
+        }
+
+        guard fm.isReadableFile(atPath: privateKey.path),
+              let text = try? String(
+                  contentsOf: publicKey,
+                  encoding: .utf8
+              ).trimmingCharacters(in: .whitespacesAndNewlines),
+              text.hasPrefix("ssh-ed25519 "),
+              text.count < 1024 else {
+            return false
+        }
+
+        return true
+    }
+
     private static func execute(_ tool: String, _ args: [String], env: [String: String] = [:]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
