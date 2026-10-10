@@ -2792,6 +2792,28 @@ fn plugin_commit(app_id: u32, encoded_stage: &str, encoded_name: &str) -> Result
 }
 
 fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool> {
+    if let Some(rest)=request.strip_prefix("asset-profile-state ") {
+        let result=(||->Result<serde_json::Value,String>{
+            let app_id=rest.parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game=discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            asset_mod::profile_state(app_id,&game.install_path)
+        })();
+        match result{Ok(state)=>send(port,&format!("asset-profile-state {}",encode_field(&state.to_string())))?,Err(e)=>send(port,&format!("error {}",encode_field(&e)))?}
+        return Ok(true);
+    }
+    if let Some(rest)=request.strip_prefix("asset-profile-publish ") {
+        let result=(||->Result<PathBuf,String>{
+            let fields:Vec<_>=rest.split_whitespace().collect();if fields.len()!=3{return Err("invalid-profile-request".into());}
+            let app_id=fields[0].parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game=discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            let common=game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
+            let root=game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
+            if root==common || !path_is_within(&root,&common){return Err("game-root-escape".into());}
+            asset_mod::profile_publish(app_id,fields[1],&validated_guest_path(fields[2])?,&root)
+        })();
+        match result{Ok(root)=>send(port,&format!("asset-profile-published {}",encode_field(&root.to_string_lossy())))?,Err(e)=>send(port,&format!("error {}",encode_field(&e)))?}
+        return Ok(true);
+    }
     if let Some(rest)=request.strip_prefix("asset-mod-disable ") {
         let result=(||->Result<(),String>{
             let app_id=rest.parse::<u32>().map_err(|_|"invalid-appid")?;
@@ -3393,7 +3415,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 assetModProfilesV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
             )?;
             continue;
         }
