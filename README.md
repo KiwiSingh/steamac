@@ -16,6 +16,10 @@ If BepisLoader still reports an unsupported guest after updating, check for a cu
 
 Packaging signs components individually and the app last; it does not use `codesign --deep`.
 
+## Combined asset profiles (development Kiwi Build 6)
+
+The next build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
+
 ## What's different in the Kiwi Build?
 
 ### More automatic VM memory
