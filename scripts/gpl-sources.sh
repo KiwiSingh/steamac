@@ -30,12 +30,12 @@ else
     rm -rf "$ST/repo/host"
 fi
 version=$(plutil -extract CFBundleShortVersionString raw -o - "$ST/Info.plist")
-[[ $version =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "invalid app version: $version" >&2; exit 1; }
+[[ $version =~ ^[0-9]+(\.[0-9]+)*(-kiwi\.[0-9]+)?$ ]] || { echo "invalid app version: $version" >&2; exit 1; }
 . "$ST/repo/scripts/config.env"
 # Kernel pins are recorded by the build script itself.
 KVER=$(awk -F= '$1 == "KVER" { print $2; exit }' "$ST/repo/guest/kernel/build.sh")
 KSHA256=$(awk -F= '$1 == "KSHA256" { print $2; exit }' "$ST/repo/guest/kernel/build.sh")
-[[ $KVER =~ ^[0-9]+(\.[0-9]+)*$ && $KSHA256 =~ ^[[:xdigit:]]{64}$ ]] || { echo 'missing kernel version or checksum' >&2; exit 1; }
+[[ $KVER =~ ^[0-9]+(\.[0-9]+)*(-kiwi\.[0-9]+)?$ && $KSHA256 =~ ^[[:xdigit:]]{64}$ ]] || { echo 'missing kernel version or checksum' >&2; exit 1; }
 
 fetch() { # URL, expected sha256 (or empty if verified via a downloaded .dsc), destination
     local url=$1 sha=$2 file=$3
