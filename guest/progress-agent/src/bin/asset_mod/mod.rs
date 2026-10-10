@@ -3,7 +3,8 @@ use std::{fs, path::{Path, PathBuf}, io::Read};
 use serde_json::Value;
 const EXE: &str = "Digimon Story Time Stranger.exe";
 const GAME_HASH: &str = "ff9de825a543bf874cfb7e73ed951256d3ce4e8702957afa3b26ca6487a81688";
-const ASI_HASH: &str = "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf";
+const ASI_HASH: &str = "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69";
+const LEGACY_ASI_HASH: &str = "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf";
 const PROXY_HASH: &str = "412d410eb6091fb483b150bea1b13f8aeb746be8c62802ea7e081fd15ea64b69";
 fn digest(path: &Path) -> Result<String, String> {
     use sha2::{Digest,Sha256};
@@ -94,7 +95,9 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     for name in ["reloaded-dropin.asi","reloaded-dropin"] {if game.join(name).exists(){return Err("conflicting-loader".into());}}
     for (name,hash) in [("winmm.dll",PROXY_HASH),("bepis-mvgl.asi",ASI_HASH)] {
         let p=game.join(name);
-        if p.symlink_metadata().is_ok(){checked_hash(&p,hash)?;}
+        if p.symlink_metadata().is_ok(){
+            if name=="bepis-mvgl.asi" && digest(&p)?==LEGACY_ASI_HASH { regular(&p)?; } else { checked_hash(&p,hash)?; }
+        }
     }
     let destination=game.join(stage.file_name().unwrap().to_str().unwrap().replacen(".bepis-asset-stage-",".bepis-asset-mod-",1));
     publish(stage,&destination)?;
@@ -102,6 +105,18 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     // publication is inert without explicit activation; retain all evidence.
     for (name,hash) in [("bepis-mvgl.asi",ASI_HASH),("winmm.dll",PROXY_HASH)] {
         let p=game.join(name);
+        if name=="bepis-mvgl.asi" && p.symlink_metadata().is_ok() && digest(&p)?==LEGACY_ASI_HASH {
+            // Exchange only the precisely pinned old loader; retain it in this snapshot.
+            let replacement=game.join(format!(".bepis-bootstrap-backup-{}",destination.file_name().unwrap().to_string_lossy()));
+            fs::hard_link(destination.join("adapter.payload"),&replacement).map_err(|_|"bootstrap-upgrade-staging-failed")?;
+            exchange(&replacement,&p)?;
+            if checked_hash(&replacement,LEGACY_ASI_HASH).is_err() {
+                exchange(&replacement,&p)?;
+                return Err("bootstrap-changed-upgrade-restored".into());
+            }
+            checked_hash(&p,hash)?;
+            continue;
+        }
         if let Err(e)=fs::hard_link(destination.join(if name=="bepis-mvgl.asi"{"adapter.payload"}else{"proxy.payload"}),&p){
             if e.kind()!=std::io::ErrorKind::AlreadyExists {return Err("bootstrap-publication-failed-retained".into());}
         }
@@ -143,7 +158,7 @@ pub fn profile_state(app_id:u32,game:&Path)->Result<Value,String>{
             let mut mods=Vec::new();
             for entry in fs::read_dir(&game).map_err(|_|"game-unreadable")?.flatten(){
                 let bundle=entry.path();let assets=bundle.join("assets");
-                if owned_assets(&game,&assets).is_err() || bundle.join("profile.json").symlink_metadata().is_ok() || validate_stage(&bundle).is_err(){continue;}
+                if owned_assets(&game,&assets).is_err() || bundle.join("profile.json").symlink_metadata().is_ok() || validate_stored_bundle(&bundle,ASI_HASH,PROXY_HASH).is_err(){continue;}
                 let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
                 let id=bundle.file_name().unwrap().to_string_lossy().trim_start_matches(".bepis-asset-mod-").to_owned();
                 let name=manifest["name"].as_str().unwrap_or(&id).chars().take(256).collect::<String>();
@@ -156,6 +171,11 @@ pub fn profile_state(app_id:u32,game:&Path)->Result<Value,String>{
         Some(root)=>{let bundle=owned_assets(&game,&root)?;let mut state=profile_json(&bundle)?;
             state["baseRoot"]=Value::String(root.to_string_lossy().into_owned());Ok(state)}
     }
+}
+fn validate_stored_bundle(bundle:&Path,asi_hash:&str,proxy_hash:&str)->Result<(),String>{
+    let actual=digest(&bundle.join("adapter.payload"))?;
+    let accepted=if asi_hash==ASI_HASH && actual==LEGACY_ASI_HASH {LEGACY_ASI_HASH} else {asi_hash};
+    validate_with_hashes(bundle,accepted,proxy_hash)
 }
 fn validate_profile(game:&Path,stage:&Path,asi_hash:&str,proxy_hash:&str)->Result<(),String>{
     let state=profile_json(stage)?;
@@ -173,7 +193,7 @@ fn validate_profile(game:&Path,stage:&Path,asi_hash:&str,proxy_hash:&str)->Resul
         if item["name"].as_str().is_none_or(|n|n.len()>1024) {return Err("invalid-mod-name".into());}
         let root=PathBuf::from(item["root"].as_str().ok_or("invalid-mod-root")?);
         let bundle=owned_assets(game,&root)?;
-        validate_with_hashes(&bundle,asi_hash,proxy_hash)?;
+        validate_stored_bundle(&bundle,asi_hash,proxy_hash)?;
         let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
         for key in manifest["files"].as_object().ok_or("missing-files")?.keys(){source_bytes+=regular(&root.join(key))?;}
         if source_bytes>256*1024*1024{return Err("profile-source-size-limit".into());}
@@ -229,6 +249,23 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
     // State and all referenced package bytes are verified before any publication.
     validate_stage(stage)?;
     validate_profile(&game,stage,ASI_HASH,PROXY_HASH)?;
+    let manifest:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+    if manifest["files"].as_object().ok_or("missing-files")?.keys().any(|k|k.to_ascii_lowercase().ends_with(".csv")) {
+        let mut child=std::process::Command::new("/usr/lib/steamac/AssetTableBuilder")
+            .arg(&game).arg(stage)
+            .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR",game.join(".bepis-table-runtime"))
+            .env("DOTNET_GCHeapHardLimit","20000000")
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(|_|"table-compiler-unavailable-update-steamac")?;
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(120);
+        while child.try_wait().map_err(|_|"table-compiler-wait-failed")?.is_none(){
+            if std::time::Instant::now()>=deadline {let _=child.kill();let _=child.wait();return Err("table-compilation-timeout".into());}
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let output=child.wait_with_output().map_err(|_|"table-compiler-output-failed")?;
+        if !output.status.success(){return Err(format!("table-compilation-failed: {}",String::from_utf8_lossy(&output.stderr).chars().take(2048).collect::<String>()));}
+        validate_stage(stage)?;
+    }
     let state=profile_json(stage)?;
     let base=state["baseRoot"].as_str().ok_or("invalid-profile-base")?.to_owned();
     let root=install(app_id,adapter,stage,&game)?;

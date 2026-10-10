@@ -15,6 +15,18 @@ fn stage(game:&Path,id:&str,bytes:Option<&[u8]>,profile:Option<&Value>)->PathBuf
 }
 fn main(){
     let game=fs::canonicalize(std::env::args().nth(1).expect("isolated game fixture directory required")).unwrap();
+    assert!(game.file_name().unwrap().to_string_lossy().starts_with("bepis-profile-"), "private fixture folder required");
+    if let Some(stage)=std::env::args().nth(2) {
+        let root=asset_mod::profile_publish(1984270,"dsts-mvgl-v1",&PathBuf::from(stage),&game).unwrap();
+        let state=asset_mod::profile_state(1984270,&game).unwrap();
+        assert_eq!(state["mods"].as_array().unwrap().len(),3);
+        assert!(root.join("app_0/pc002a.geom").exists());
+        assert!(root.join("patch/images/npc001a_b01_01.dds").exists());
+        assert!(root.join("patch/data/model_setting.mbe").is_file());
+        assert!(!root.join("patch/data/model_setting.mbe/000_model_setting.csv").exists());
+        println!("PASS: real combined package profile, MBE compilation, both costume mods retained, stable activation and pinned legacy bootstrap upgrade");
+        return;
+    }
     assert!(!game.join(".bepis-assets-active").exists(),"fixture must be fresh");
     let first=asset_mod::install(1984270,"dsts-mvgl-v1",&stage(&game,"a",Some(b"one"),None),&game).unwrap();
     let second=asset_mod::install(1984270,"dsts-mvgl-v1",&stage(&game,"b",Some(b"two"),None),&game).unwrap();

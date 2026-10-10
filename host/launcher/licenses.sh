@@ -264,6 +264,20 @@ add('Mesa', versions['MESA_COMMIT'], 'MIT', layer + ':/usr/lib and /usr/share/gu
     versions['MESA_URL'], [('license.rst', pinned_text(
         'mesa-' + versions['MESA_COMMIT'] + '-license.rst',
         'https://gitlab.freedesktop.org/mesa/mesa/-/raw/' + versions['MESA_COMMIT'] + '/docs/license.rst'))])
+# Managed ARM64 asset-table compiler shipped in the guest layer.
+for component, version, filename, url in (
+    ('MVLibraryNET', '1.2.8', 'LICENSE-MVLibraryNET', 'https://github.com/RyoTune/MVLibraryNET'),
+    ('Sep', '0.11.3', 'LICENSE-Sep', 'https://github.com/nietras/Sep'),
+    ('csFastFloat', '4.1.5', 'LICENSE-csFastFloat', 'https://github.com/CarlVerret/csFastFloat'),
+    ('K4os.Compression.LZ4', '1.3.8', 'LICENSE-K4os-LZ4', 'https://github.com/MiloszKrajewski/K4os.Compression.LZ4'),
+):
+    add(component, version, 'MIT', layer + ':/usr/lib/steamac/AssetTableBuilder', url,
+        [(filename, require(root / 'guest/asset-table-builder/vendor' / filename).read_bytes())])
+runtime = root / 'work/cache/dotnet-nuget/microsoft.netcore.app.runtime.linux-arm64/9.0.5'
+add('dotnet-runtime', '9.0.5', 'MIT', layer + ':/usr/lib/steamac/AssetTableBuilder',
+    'https://github.com/dotnet/runtime', [(f, require(runtime / f).read_bytes())
+    for f in ('LICENSE.TXT', 'THIRD-PARTY-NOTICES.TXT')])
+
 own_docs = []
 for filename in ('LICENSE', 'NOTICE'):
     path = root / filename

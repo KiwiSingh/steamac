@@ -29,8 +29,8 @@ INPUTS = {
     "mesa": MESA_INPUTS,
     "mesa-aarch64": MESA_INPUTS,
     "mesa-x86": MESA_INPUTS,
-    "layer": ("guest/layer/usr", "guest/progress-agent", "scripts/build-image.sh",
-              "scripts/steps/25-progress-agent.sh", "scripts/steps/30-layer.sh") + MESA_INPUTS,
+    "layer": ("guest/layer/usr", "guest/progress-agent", "guest/asset-table-builder", "scripts/build-image.sh",
+              "scripts/steps/25-progress-agent.sh", "scripts/steps/26-asset-tables.sh", "scripts/steps/30-layer.sh") + MESA_INPUTS,
 }
 OUTPUTS = {
     "kernel": (OUT / "Image",),

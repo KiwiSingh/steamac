@@ -3,7 +3,7 @@ on:
   push:
     branches: [codex/dsts-assets]
   pull_request:
-    paths: [guest/progress-agent/**, .github/workflows/asset-mod-tests.yml]
+    paths: [guest/progress-agent/**, guest/asset-table-builder/**, .github/workflows/asset-mod-tests.yml]
 jobs:
   test:
     strategy:
@@ -14,3 +14,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked --manifest-path guest/progress-agent/Cargo.toml --bin fx-bepis-agent
+
+  table-compiler:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.300'
+      - run: dotnet run --project guest/asset-table-builder/AssetTableBuilder.csproj -c Release -- --self-test

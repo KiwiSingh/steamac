@@ -122,3 +122,5 @@ This fork tracks the upstream project and adds Kiwi-specific changes on top. Fea
 ## License
 
 See the repository's existing license and upstream Steamac licensing information.
+
+The development profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the candidate remains unpublished pending bundle audit.
