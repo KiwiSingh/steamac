@@ -21,6 +21,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$REPO/work
 . "$REPO/scripts/config.env"
+DOTNET_IMAGE=mcr.microsoft.com/dotnet/sdk:9.0.300@sha256:c5b188baf837b0180a14f988815b9cc7a55b836dd6cbe1b6e6523cf3098faaa8
 
 # Receipts are taken on the host: containers do not need Git/Python installed.
 artifacts() { python3 "$REPO/scripts/guest-artifacts.py" "$@"; }
@@ -68,6 +69,9 @@ for step in "${steps[@]}"; do
                 -e SOURCE_DATE_EPOCH \
                 -v "$REPO:/src:ro" -v "$WORK:/work" \
                 "$RUST_IMAGE" /src/scripts/steps/25-progress-agent.sh
+            docker run --rm --platform linux/arm64 \
+                -v "$REPO:/src:ro" -v "$WORK:/work" \
+                "$DOTNET_IMAGE" /src/scripts/steps/26-asset-tables.sh
             run_in_builder /src/scripts/steps/30-layer.sh
             if [[ ${ALLOW_NO_VENUS:-} != 1 ]]; then
                 artifacts finish layer "$inputs"

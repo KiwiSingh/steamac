@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <Authors>RyoTune</Authors>
+        <Description>Type definitions for MVLibraryNET.</Description>
+        <RepositoryUrl>https://github.com/RyoTune/MVLibraryNET</RepositoryUrl>
+        <Version>1.1.1</Version>
+    </PropertyGroup>
+
+</Project>

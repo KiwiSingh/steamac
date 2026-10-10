@@ -4,17 +4,21 @@ A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on q
 
 The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.5` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.5))
+> **Latest Kiwi release:** `v1.7.6-kiwi.6` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.6))
 
-## New in Kiwi Build 5
+## New in Kiwi Build 6
 
 The bundled SteamOS guest agent now advertises `assetModInstallV1`, enabling [BepisLoader 2.1.0](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.1.0) to install validated asset mods through the existing bridge. The first adapter supports asset replacement for the pinned x64 Digimon Story Time Stranger build under ARM64 Proton; eye-texture replacement was confirmed in gameplay.
 
 Quit the VM normally before replacing the Steamac app. Restart it using this release's bundled guest layer to obtain the capability; no disk recreation is required. Close the game when installing/disabling mods. Steam may remain open. Copy BepisLoader's reported setting manually into Steam Launch Options. Unsupported builds, code payloads and unsafe paths remain blocked. Current recovery-inventory work and Build 4's BepisBridge status fix are retained.
 
-If BepisLoader still reports an unsupported guest after updating, check for a custom guest-layer path or an older `fx-bepis-agent` user service override; [release troubleshooting](docs/releases/v1.7.6-kiwi.5.md#if-bepisloader-still-reports-an-unsupported-guest) explains how to identify it.
+If BepisLoader still reports an unsupported guest after updating, check for a custom guest-layer path or an older `fx-bepis-agent` user service override; [release troubleshooting](docs/releases/v1.7.6-kiwi.6.md#if-bepisloader-still-reports-an-unsupported-guest) explains how to identify it.
 
 Packaging signs components individually and the app last; it does not use `codesign --deep`.
+
+## Combined asset profiles (Kiwi Build 6)
+
+The next build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
 
 ## What's different in the Kiwi Build?
 
@@ -48,7 +52,7 @@ vX.Y.Z-kiwi.N
 For example:
 
 ```text
-v1.7.6-kiwi.5
+v1.7.6-kiwi.6
 ```
 
 The updater has been extended to recognize these tags while retaining Steamac's underlying version comparison.
@@ -97,7 +101,7 @@ https://github.com/KiwiSingh/steamac/releases
 
 The current release is:
 
-**Steamac 1.7.6 Kiwi Build 5 — `v1.7.6-kiwi.5`**
+**Steamac 1.7.6 Kiwi Build 6 — `v1.7.6-kiwi.6`**
 
 The release ZIP is ad-hoc signed and is **not notarized with an Apple Developer ID**.
 
@@ -118,3 +122,5 @@ This fork tracks the upstream project and adds Kiwi-specific changes on top. Fea
 ## License
 
 See the repository's existing license and upstream Steamac licensing information.
+
+The profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the app bundle audit passed.

@@ -1,0 +1,4 @@
+https://github.com/RyoTune/MVLibraryNET
+0d5117e8ceb0ac73e3298bc23e7d0352bce6a1d3
+
+Local fixes: correct IntArray diff equality; require complete LZ4 decompression.

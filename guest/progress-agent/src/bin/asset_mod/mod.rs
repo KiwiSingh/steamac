@@ -3,7 +3,8 @@ use std::{fs, path::{Path, PathBuf}, io::Read};
 use serde_json::Value;
 const EXE: &str = "Digimon Story Time Stranger.exe";
 const GAME_HASH: &str = "ff9de825a543bf874cfb7e73ed951256d3ce4e8702957afa3b26ca6487a81688";
-const ASI_HASH: &str = "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf";
+const ASI_HASH: &str = "d6e2e91f7bafd4caae6e47806a0d6557af571daaca3a2d2adb203be70e78083b";
+const LEGACY_ASI_HASHES: &[&str] = &["06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf", "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69"];
 const PROXY_HASH: &str = "412d410eb6091fb483b150bea1b13f8aeb746be8c62802ea7e081fd15ea64b69";
 fn digest(path: &Path) -> Result<String, String> {
     use sha2::{Digest,Sha256};
@@ -46,7 +47,7 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
     let manifest:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_| "manifest-unreadable")?).map_err(|_| "manifest-invalid")?;
     if manifest["adapter"]!="dsts-mvgl-v1" || manifest["schema"]!=1 { return Err("unsupported-adapter".into()); }
     let files=manifest["files"].as_object().ok_or("missing-files")?;
-    if files.is_empty() || files.len()>4096 { return Err("asset-count".into()); }
+    if (files.is_empty() && !stage.join("profile.json").exists()) || files.len()>4096 { return Err("asset-count".into()); }
     let mut seen=std::collections::HashSet::new();let mut total=0;
     for (key,hash) in files {
         if !key_valid(key) || !seen.insert(key.to_ascii_lowercase()) { return Err("unsafe-or-duplicate-key".into()); }
@@ -60,7 +61,11 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
     checked_hash(&stage.join("adapter.payload"),asi_hash)?;
     checked_hash(&stage.join("proxy.payload"),proxy_hash)?;
     let mut actual=Vec::new();tree(stage,stage,&mut actual,0)?;
-    let expected:std::collections::HashSet<String>=files.keys().map(|k|format!("assets/{k}")).chain(["manifest.json","adapter.payload","proxy.payload"].map(str::to_owned)).collect();
+    let mut expected:std::collections::HashSet<String>=files.keys().map(|k|format!("assets/{k}")).chain(["manifest.json","adapter.payload","proxy.payload"].map(str::to_owned)).collect();
+    if stage.join("profile.json").symlink_metadata().is_ok() {
+        if regular(&stage.join("profile.json"))?>32768 {return Err("profile-size-limit".into());}
+        expected.insert("profile.json".into());
+    }
     if actual.into_iter().collect::<std::collections::HashSet<_>>()!=expected { return Err("unexpected-package-files".into()); }
     Ok(())
 }
@@ -90,7 +95,9 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     for name in ["reloaded-dropin.asi","reloaded-dropin"] {if game.join(name).exists(){return Err("conflicting-loader".into());}}
     for (name,hash) in [("winmm.dll",PROXY_HASH),("bepis-mvgl.asi",ASI_HASH)] {
         let p=game.join(name);
-        if p.symlink_metadata().is_ok(){checked_hash(&p,hash)?;}
+        if p.symlink_metadata().is_ok(){
+            if name=="bepis-mvgl.asi" && LEGACY_ASI_HASHES.contains(&digest(&p)?.as_str()) { regular(&p)?; } else { checked_hash(&p,hash)?; }
+        }
     }
     let destination=game.join(stage.file_name().unwrap().to_str().unwrap().replacen(".bepis-asset-stage-",".bepis-asset-mod-",1));
     publish(stage,&destination)?;
@@ -98,6 +105,19 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     // publication is inert without explicit activation; retain all evidence.
     for (name,hash) in [("bepis-mvgl.asi",ASI_HASH),("winmm.dll",PROXY_HASH)] {
         let p=game.join(name);
+        if name=="bepis-mvgl.asi" && p.symlink_metadata().is_ok() && LEGACY_ASI_HASHES.contains(&digest(&p)?.as_str()) {
+            // Exchange only a precisely pinned old loader; retain it beside this snapshot.
+            let previous_hash=digest(&p)?;
+            let replacement=game.join(format!(".bepis-bootstrap-backup-{}",destination.file_name().unwrap().to_string_lossy()));
+            fs::hard_link(destination.join("adapter.payload"),&replacement).map_err(|_|"bootstrap-upgrade-staging-failed")?;
+            exchange(&replacement,&p)?;
+            if checked_hash(&replacement,&previous_hash).is_err() {
+                exchange(&replacement,&p)?;
+                return Err("bootstrap-changed-upgrade-restored".into());
+            }
+            checked_hash(&p,hash)?;
+            continue;
+        }
         if let Err(e)=fs::hard_link(destination.join(if name=="bepis-mvgl.asi"{"adapter.payload"}else{"proxy.payload"}),&p){
             if e.kind()!=std::io::ErrorKind::AlreadyExists {return Err("bootstrap-publication-failed-retained".into());}
         }
@@ -105,6 +125,155 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     }
     Ok(destination.join("assets"))
 }
+
+const ACTIVE: &str = ".bepis-assets-active";
+fn owned_assets(game:&Path,root:&Path)->Result<PathBuf,String>{
+    let bundle=root.parent().ok_or("invalid-profile-root")?;
+    let name=bundle.file_name().and_then(|x|x.to_str()).ok_or("invalid-profile-root")?;
+    if root.file_name().and_then(|x|x.to_str())!=Some("assets") || bundle.parent()!=Some(game)
+        || !name.strip_prefix(".bepis-asset-mod-").is_some_and(|s|!s.is_empty() && s.bytes().all(|b|b.is_ascii_hexdigit() || b==b'-'))
+        || fs::canonicalize(root).map_err(|_|"profile-root-missing")?!=root {return Err("invalid-profile-root".into());}
+    Ok(bundle.to_owned())
+}
+fn active_root(game:&Path)->Result<Option<PathBuf>,String>{
+    let pointer=game.join(ACTIVE);
+    match fs::symlink_metadata(&pointer){
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
+        Err(_)=>Err("profile-pointer-unreadable".into()),
+        Ok(m) if !m.file_type().is_symlink()=>Err("profile-pointer-conflict".into()),
+        Ok(_)=>{let link=fs::read_link(pointer).map_err(|_|"profile-pointer-unreadable")?;
+            let root=if link.is_absolute(){link}else{game.join(link)};owned_assets(game,&root)?;Ok(Some(root))}
+    }
+}
+fn profile_json(bundle:&Path)->Result<Value,String>{
+    let p=bundle.join("profile.json");if regular(&p)?>32768{return Err("profile-size-limit".into());}
+    serde_json::from_slice(&fs::read(p).map_err(|_|"profile-unreadable")?).map_err(|_|"profile-invalid".into())
+}
+pub fn profile_state(app_id:u32,game:&Path)->Result<Value,String>{
+    if app_id!=1984270{return Err("unsupported-game-adapter".into());}
+    let game=fs::canonicalize(game).map_err(|_|"game-root-unavailable")?;
+    match active_root(&game)?{
+        None=>{
+            // Recover previous single-package installs and cancelled additions.
+            // Imported packages start disabled: activation always needs review.
+            let mut mods=Vec::new();
+            for entry in fs::read_dir(&game).map_err(|_|"game-unreadable")?.flatten(){
+                let bundle=entry.path();let assets=bundle.join("assets");
+                if owned_assets(&game,&assets).is_err() || bundle.join("profile.json").symlink_metadata().is_ok() || validate_stored_bundle(&bundle,ASI_HASH,PROXY_HASH).is_err(){continue;}
+                let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+                let id=bundle.file_name().unwrap().to_string_lossy().trim_start_matches(".bepis-asset-mod-").to_owned();
+                let name=manifest["name"].as_str().unwrap_or(&id).chars().take(256).collect::<String>();
+                mods.push(serde_json::json!({"id":id,"name":name,"root":assets,"enabled":false}));
+                if mods.len()>64{return Err("profile-mod-limit".into());}
+            }
+            mods.sort_by(|a,b|a["id"].as_str().cmp(&b["id"].as_str()));
+            Ok(serde_json::json!({"schema":1,"baseRoot":"","mods":mods}))
+        },
+        Some(root)=>{let bundle=owned_assets(&game,&root)?;let mut state=profile_json(&bundle)?;
+            state["baseRoot"]=Value::String(root.to_string_lossy().into_owned());Ok(state)}
+    }
+}
+fn validate_stored_bundle(bundle:&Path,asi_hash:&str,proxy_hash:&str)->Result<(),String>{
+    let actual=digest(&bundle.join("adapter.payload"))?;
+    let accepted=if asi_hash==ASI_HASH && LEGACY_ASI_HASHES.contains(&actual.as_str()) {actual.as_str()} else {asi_hash};
+    validate_with_hashes(bundle,accepted,proxy_hash)
+}
+fn validate_profile(game:&Path,stage:&Path,asi_hash:&str,proxy_hash:&str)->Result<(),String>{
+    let state=profile_json(stage)?;
+    if state["schema"]!=1{return Err("profile-schema".into());}
+    let current=active_root(game)?.map(|x|x.to_string_lossy().into_owned()).unwrap_or_default();
+    if state["baseRoot"].as_str()!=Some(current.as_str()){return Err("profile-changed-refresh-required".into());}
+    let mods=state["mods"].as_array().ok_or("invalid-profile-mods")?;
+    if mods.len()>64{return Err("profile-mod-limit".into());}
+    let mut source_bytes=0u64;
+    let mut ids=std::collections::HashSet::new();
+    let mut merged=std::collections::BTreeMap::new();
+    for item in mods{
+        let id=item["id"].as_str().ok_or("invalid-mod-id")?;
+        if id.is_empty() || !ids.insert(id) || id.len()>64 || !id.bytes().all(|b|b.is_ascii_hexdigit() || b==b'-') {return Err("invalid-mod-id".into());}
+        if item["name"].as_str().is_none_or(|n|n.len()>1024) {return Err("invalid-mod-name".into());}
+        let root=PathBuf::from(item["root"].as_str().ok_or("invalid-mod-root")?);
+        let bundle=owned_assets(game,&root)?;
+        validate_stored_bundle(&bundle,asi_hash,proxy_hash)?;
+        let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+        for key in manifest["files"].as_object().ok_or("missing-files")?.keys(){source_bytes+=regular(&root.join(key))?;}
+        if source_bytes>256*1024*1024{return Err("profile-source-size-limit".into());}
+        let enabled=item["enabled"].as_bool().ok_or("invalid-mod-enabled")?;
+        if enabled{
+            let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+            for (key,hash) in manifest["files"].as_object().ok_or("missing-files")?{merged.insert(key.to_ascii_lowercase(),(key.clone(),hash.clone()));}
+        }
+    }
+    let manifest:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+    let actual=manifest["files"].as_object().ok_or("missing-files")?;
+    if actual.len()!=merged.len() || merged.values().any(|(key,hash)|actual.get(key)!=Some(hash)){return Err("profile-merge-mismatch".into());}
+    Ok(())
+}
+
+#[cfg(target_os="linux")]
+fn exchange(a:&Path,b:&Path)->Result<(),String>{
+    use std::os::unix::ffi::OsStrExt;
+    let a=std::ffi::CString::new(a.as_os_str().as_bytes()).map_err(|_|"invalid-path")?;
+    let b=std::ffi::CString::new(b.as_os_str().as_bytes()).map_err(|_|"invalid-path")?;
+    if unsafe{libc::syscall(libc::SYS_renameat2,libc::AT_FDCWD,a.as_ptr(),libc::AT_FDCWD,b.as_ptr(),libc::RENAME_EXCHANGE)}!=0{return Err("profile-exchange-failed-retained".into());}
+    Ok(())
+}
+#[cfg(all(unix,not(target_os="linux")))]
+fn exchange(_: &Path,_:&Path)->Result<(),String>{Err("linux-required".into())}
+#[cfg(unix)]
+fn activate_pointer_checked(game:&Path,root:&Path,expected_root:Option<&str>)->Result<(),String>{
+    owned_assets(game,root)?;
+    let pointer=game.join(ACTIVE);
+    let previous_link=match fs::symlink_metadata(&pointer){
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>None,
+        Ok(m) if m.file_type().is_symlink()=>Some(fs::read_link(&pointer).map_err(|_|"profile-pointer-unreadable")?),
+        _=>return Err("profile-pointer-conflict".into())
+    };
+    let current=if let Some(link)=&previous_link{let target=if link.is_absolute(){link.clone()}else{game.join(link)};owned_assets(game,&target)?;target.to_string_lossy().into_owned()}else{String::new()};
+    if expected_root.is_some_and(|expected|expected!=current){return Err("profile-changed-refresh-required".into());}
+    let relative=root.strip_prefix(game).map_err(|_|"invalid-profile-root")?;
+    let tmp=game.join(format!(".bepis-profile-link-{}",root.parent().unwrap().file_name().unwrap().to_string_lossy()));
+    std::os::unix::fs::symlink(relative,&tmp).map_err(|_|"profile-link-create-failed")?;
+    if let Some(expected)=previous_link{
+        exchange(&tmp,&pointer)?;
+        if fs::read_link(&tmp).ok().as_ref()!=Some(&expected){
+            exchange(&tmp,&pointer)?;
+            return Err("profile-pointer-changed-retained".into());
+        }
+        // Keep the previous pointer as evidence. Never delete raced-in content.
+    }else{publish(&tmp,&pointer)?;}
+    Ok(())
+}
+#[cfg(not(unix))]fn activate_pointer_checked(_: &Path,_:&Path,_:Option<&str>)->Result<(),String>{Err("linux-required".into())}
+pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,String>{
+    let game=fs::canonicalize(game).map_err(|_|"game-root-unavailable")?;
+    // State and all referenced package bytes are verified before any publication.
+    validate_stage(stage)?;
+    validate_profile(&game,stage,ASI_HASH,PROXY_HASH)?;
+    let manifest:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+    if manifest["files"].as_object().ok_or("missing-files")?.keys().any(|k|k.rsplit_once('/').is_some_and(|(parent,file)|parent.to_ascii_lowercase().ends_with(".mbe") && file.to_ascii_lowercase().ends_with(".csv"))) {
+        let mut child=std::process::Command::new("/usr/lib/steamac/AssetTableBuilder")
+            .arg(&game).arg(stage)
+            .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR",game.join(".bepis-table-runtime"))
+            .env("DOTNET_GCHeapHardLimit","20000000")
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(|_|"table-compiler-unavailable-update-steamac")?;
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(120);
+        while child.try_wait().map_err(|_|"table-compiler-wait-failed")?.is_none(){
+            if std::time::Instant::now()>=deadline {let _=child.kill();let _=child.wait();return Err("table-compilation-timeout".into());}
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let output=child.wait_with_output().map_err(|_|"table-compiler-output-failed")?;
+        if !output.status.success(){return Err(format!("table-compilation-failed: {}",String::from_utf8_lossy(&output.stderr).chars().take(2048).collect::<String>()));}
+        validate_stage(stage)?;
+    }
+    let state=profile_json(stage)?;
+    let base=state["baseRoot"].as_str().ok_or("invalid-profile-base")?.to_owned();
+    let root=install(app_id,adapter,stage,&game)?;
+    activate_pointer_checked(&game,&root,Some(&base))?;
+    Ok(game.join(ACTIVE))
+}
+
 #[cfg(test)] mod tests {
     use super::*;
     #[test]fn rejects_unsafe_keys(){for k in ["app_0/images/../x.dds","app_0/images//x.dds","C:/app_0/images/x.dds","app_0/images/x\\y.dds"]{assert!(!key_valid(k),"{k}");}assert!(key_valid("app_0/images/eyes.dds"));assert!(key_valid("app_0/images/pc002a_b01l_01.img"));assert!(key_valid("other/texture.custom"));}
@@ -117,6 +286,57 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
         fs::write(r.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":{key:format!("{:x}",Sha256::digest(bytes))}}).to_string()).unwrap();
         validate_with_hashes(&r,&a,&p).unwrap();assert!(r.join("assets").join(key).exists());fs::remove_dir_all(r).unwrap();
     }
+
+    fn activate_pointer(game:&Path,root:&Path)->Result<(),String>{activate_pointer_checked(game,root,None)}
+    fn profile_fixture()->(PathBuf,PathBuf,String,String){
+        let (first,a,p)=fixture();let game=first.with_extension("game");fs::create_dir(&game).unwrap();
+        let one=game.join(".bepis-asset-mod-a");fs::rename(first,&one).unwrap();
+        let (second,_,_)=fixture();let two=game.join(".bepis-asset-mod-b");fs::rename(second,&two).unwrap();
+        let (stage,_,_)=fixture();let dest=game.join(".bepis-asset-stage-c");fs::rename(stage,&dest).unwrap();
+        for (bundle,bytes) in [(&one,b"one".as_slice()),(&two,b"two".as_slice()),(&dest,b"two".as_slice())]{
+            use sha2::{Digest,Sha256};
+            fs::write(bundle.join("assets/app_0/images/eyes.dds"),bytes).unwrap();
+            fs::write(bundle.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":{"app_0/images/eyes.dds":format!("{:x}",Sha256::digest(bytes))}}).to_string()).unwrap();
+        }
+        let profile=serde_json::json!({"schema":1,"baseRoot":"","mods":[
+            {"id":"a","name":"Eyes","root":one.join("assets"),"enabled":true},
+            {"id":"b","name":"Costume","root":two.join("assets"),"enabled":true}]});
+        fs::write(dest.join("profile.json"),profile.to_string()).unwrap();(game,dest,a,p)
+    }
+    #[test]fn profile_merge_verifies_order_and_all_source_bytes(){
+        let(g,s,a,p)=profile_fixture();validate_with_hashes(&s,&a,&p).unwrap();validate_profile(&g,&s,&a,&p).unwrap();
+        let mut state=profile_json(&s).unwrap();state["mods"].as_array_mut().unwrap().reverse();fs::write(s.join("profile.json"),state.to_string()).unwrap();
+        assert!(validate_profile(&g,&s,&a,&p).unwrap_err().contains("merge-mismatch"));
+        fs::write(g.join(".bepis-asset-mod-a/assets/app_0/images/eyes.dds"),b"tampered").unwrap();
+        assert!(validate_profile(&g,&s,&a,&p).unwrap_err().contains("hash-mismatch"));fs::remove_dir_all(g).unwrap();
+    }
+    #[test]fn profile_all_disabled_accepts_empty_composite(){
+        let(g,s,a,p)=profile_fixture();let mut state=profile_json(&s).unwrap();for m in state["mods"].as_array_mut().unwrap(){m["enabled"]=Value::Bool(false);}
+        fs::write(s.join("profile.json"),state.to_string()).unwrap();
+        fs::remove_file(s.join("assets/app_0/images/eyes.dds")).unwrap();
+        fs::write(s.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":{}}).to_string()).unwrap();
+        validate_with_hashes(&s,&a,&p).unwrap();validate_profile(&g,&s,&a,&p).unwrap();fs::remove_dir_all(g).unwrap();
+    }
+    #[cfg(target_os="linux")]#[test]fn stable_pointer_updates_preserve_previous_snapshots(){
+        let(g,s,_,_)=profile_fixture();let bundle=g.join(".bepis-asset-mod-c");fs::rename(s,&bundle).unwrap();
+        let root=bundle.join("assets");activate_pointer(&g,&root).unwrap();assert_eq!(active_root(&g).unwrap(),Some(root.clone()));
+        let state=profile_state(1984270,&g).unwrap();assert_eq!(state["baseRoot"],root.to_string_lossy().as_ref());
+        activate_pointer(&g,&g.join(".bepis-asset-mod-a/assets")).unwrap();assert!(root.exists());
+        assert!(activate_pointer_checked(&g,&root,Some(root.to_str().unwrap())).unwrap_err().contains("refresh-required"));
+        assert!(fs::read(g.join(ACTIVE).join("app_0/images/eyes.dds")).unwrap()==b"one");fs::remove_dir_all(g).unwrap();
+    }
+    #[cfg(target_os="linux")]#[test]fn profile_refuses_unknown_pointer_and_stale_state(){
+        let(g,s,a,p)=profile_fixture();fs::write(g.join(ACTIVE),b"unrelated").unwrap();
+        assert!(active_root(&g).unwrap_err().contains("conflict"));assert!(activate_pointer(&g,&g.join(".bepis-asset-mod-a/assets")).is_err());
+        assert_eq!(fs::read(g.join(ACTIVE)).unwrap(),b"unrelated");fs::remove_file(g.join(ACTIVE)).unwrap();
+        activate_pointer(&g,&g.join(".bepis-asset-mod-a/assets")).unwrap();
+        assert!(validate_profile(&g,&s,&a,&p).unwrap_err().contains("refresh-required"));fs::remove_dir_all(g).unwrap();
+    }
+    #[test]fn profile_refuses_outside_package_references(){
+        let(g,s,a,p)=profile_fixture();let mut state=profile_json(&s).unwrap();state["mods"][0]["root"]=Value::String("/tmp/assets".into());
+        fs::write(s.join("profile.json"),state.to_string()).unwrap();assert!(validate_profile(&g,&s,&a,&p).is_err());fs::remove_dir_all(g).unwrap();
+    }
+
     #[test]fn rejects_unsupported_adapter_before_io(){assert!(install(1,"dsts-mvgl-v1",Path::new("/missing"),Path::new("/missing")).unwrap_err().contains("unsupported"));}
     static NEXT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
     fn fixture()->(PathBuf,String,String){

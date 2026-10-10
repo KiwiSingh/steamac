@@ -30,6 +30,11 @@ else
     exit 1
 fi
 
+install -m 0755 /work/cache/asset-table-builder/AssetTableBuilder "$ST/usr/lib/steamac/AssetTableBuilder"
+mkdir -p "$ST/usr/share/licenses/asset-table-builder"
+cp /src/guest/asset-table-builder/vendor/LICENSE-* "$ST/usr/share/licenses/asset-table-builder/"
+cp /work/cache/dotnet-nuget/microsoft.netcore.app.runtime.linux-arm64/9.0.5/LICENSE.TXT /work/cache/dotnet-nuget/microsoft.netcore.app.runtime.linux-arm64/9.0.5/THIRD-PARTY-NOTICES.TXT "$ST/usr/share/licenses/asset-table-builder/"
+
 AGENT=/work/cache/progress-agent/fx-progress-agent
 [[ -x $AGENT ]] || { echo "[layer] $AGENT missing: run step 25 (scripts/build-image.sh layer does)" >&2; exit 1; }
 install -m 0755 "$AGENT" "$ST/usr/lib/steamac/fx-progress-agent"

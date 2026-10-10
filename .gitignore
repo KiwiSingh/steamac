@@ -16,3 +16,7 @@ backups-41F-*/
 # macOS metadata
 .AppleDouble
 ._*
+
+# Asset table builder intermediates
+/guest/asset-table-builder/**/bin/
+/guest/asset-table-builder/**/obj/
