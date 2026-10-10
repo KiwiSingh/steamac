@@ -1,0 +1,16 @@
+name: Asset mod bridge
+on:
+  push:
+    branches: [codex/dsts-assets]
+  pull_request:
+    paths: [guest/progress-agent/**, .github/workflows/asset-mod-tests.yml]
+jobs:
+  test:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --manifest-path guest/progress-agent/Cargo.toml --bin fx-bepis-agent
