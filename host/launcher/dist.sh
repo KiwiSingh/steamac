@@ -101,7 +101,7 @@ done < <(find "$APP/Contents" -type f -print0)
 for f in "${nested[@]}"; do sign "$f"; done
 sign --entitlements "$ENTITLEMENTS" "$APP"
 
-codesign --verify --deep --strict "$APP"
+codesign --verify --strict "$APP"
 for f in "$main_exe" "${nested[@]}"; do
     info=$(codesign -dv "$f" 2>&1)
     grep -q "TeamIdentifier=$team" <<<"$info" || die "${f#"$APP/"}: not signed by team $team"

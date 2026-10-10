@@ -1,3 +1,6 @@
+mod asset_mod;
+#[cfg(target_os = "linux")]
+mod recovery_inventory;
 mod reloadedii_metadata;
 use std::collections::BTreeMap;
 use std::env;
@@ -5,8 +8,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::os::fd::AsRawFd;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PORT: &str = "/dev/virtio-ports/fx.bepis";
 const MAX_LINE: usize = 16 * 1024;
@@ -1743,6 +1751,165 @@ fn reloadedii_setup_path(app_id: u32, encoded_path: &str) -> Result<PathBuf, Str
     Ok(canonical_setup)
 }
 
+
+// 42A-2-R1: supervised diagnostic readers.
+//
+// Both pipes are made nonblocking. Readers drain output continuously,
+// retain at most 4096 combined bytes, and obey an explicit stop flag.
+//
+// Unlike the original 42A-2 implementation, reader threads are joined
+// before the installer operation returns. Descendants holding inherited
+// pipe descriptors therefore cannot keep reader threads alive forever.
+fn capture_reloadedii_output<R>(
+    mut reader: R,
+    output: Arc<Mutex<Vec<u8>>>,
+    stop: Arc<AtomicBool>,
+) -> Result<thread::JoinHandle<()>, String>
+where
+    R: Read + AsRawFd + Send + 'static,
+{
+    let fd = reader.as_raw_fd();
+
+    let flags = unsafe {
+        libc::fcntl(fd, libc::F_GETFL)
+    };
+
+    if flags < 0 {
+        return Err(format!(
+            "failed to inspect installer diagnostic pipe: {}",
+            io::Error::last_os_error()
+        ));
+    }
+
+    let result = unsafe {
+        libc::fcntl(
+            fd,
+            libc::F_SETFL,
+            flags | libc::O_NONBLOCK,
+        )
+    };
+
+    if result < 0 {
+        return Err(format!(
+            "failed to configure installer diagnostic pipe: {}",
+            io::Error::last_os_error()
+        ));
+    }
+
+    Ok(thread::spawn(move || {
+        let mut buffer = [0u8; 1024];
+
+        loop {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+
+                Ok(count) => {
+                    let Ok(mut captured) = output.lock() else {
+                        break;
+                    };
+
+                    captured.extend_from_slice(&buffer[..count]);
+
+                    if captured.len() > 4096 {
+                        let excess = captured.len() - 4096;
+                        captured.drain(..excess);
+                    }
+                }
+
+                Err(error)
+                    if error.kind() == io::ErrorKind::Interrupted =>
+                {
+                    continue;
+                }
+
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock =>
+                {
+                    thread::sleep(Duration::from_millis(20));
+                }
+
+                Err(_) => break,
+            }
+        }
+    }))
+}
+
+fn reloadedii_diagnostic_snapshot(
+    output: &Arc<Mutex<Vec<u8>>>,
+) -> String {
+    let Ok(captured) = output.lock() else {
+        return "diagnostic capture unavailable".to_string();
+    };
+
+    if captured.is_empty() {
+        return "no installer output captured".to_string();
+    }
+
+    let text = String::from_utf8_lossy(&captured);
+    let mut result = String::new();
+
+    for character in text.chars().take(1024) {
+        match character {
+            '\n' | '\r' | '\t' => result.push(' '),
+            c if c.is_control() => result.push('?'),
+            c if c.is_ascii() => result.push(c),
+            _ => result.push('?'),
+        }
+    }
+
+    result
+}
+
+// Only supervise the immediate Proton child.
+//
+// This does not terminate Wine descendants or claim that the
+// installation has been completely cancelled.
+fn stop_reloadedii_child(
+    child: &mut std::process::Child,
+) -> String {
+    let termination = match child.kill() {
+        Ok(()) => "direct Proton child termination requested".to_string(),
+
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            "direct Proton child already exited".to_string()
+        }
+
+        Err(error) => {
+            format!("direct Proton child termination failed: {error}")
+        }
+    };
+
+    // Never block indefinitely while reaping the immediate child.
+    let reap_deadline =
+        Instant::now() + Duration::from_secs(3);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return termination,
+
+            Ok(None) if Instant::now() >= reap_deadline => {
+                return format!(
+                    "{termination}; direct child reap not confirmed"
+                );
+            }
+
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            Err(error) => {
+                return format!(
+                    "{termination}; child reap failed: {error}"
+                );
+            }
+        }
+    }
+}
+
 fn run_reloadedii_setup(app_id: u32, encoded_path: &str) -> Result<i32, String> {
     let game = discover_games()
         .into_iter()
@@ -1789,7 +1956,11 @@ fn run_reloadedii_setup(app_id: u32, encoded_path: &str) -> Result<i32, String> 
     //   <resolved-proton> run <validated-Setup-Linux.exe>
     //
     // There is no shell and no caller-controlled argument list.
-    let status = Command::new(&proton)
+    // 42A-2-R1: supervised diagnostic readers.
+    //
+    // Only the validated installer is executed, through the
+    // AppID-selected Proton runtime. No shell is involved.
+    let mut child = Command::new(&proton)
         .arg("run")
         .arg(&setup)
         .env("STEAM_COMPAT_DATA_PATH", &canonical_compatdata)
@@ -1797,9 +1968,9 @@ fn run_reloadedii_setup(app_id: u32, encoded_path: &str) -> Result<i32, String> 
         .env("SteamAppId", app_id.to_string())
         .env("SteamGameId", app_id.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             format!(
                 "failed to launch Reloaded-II setup \
@@ -1807,7 +1978,125 @@ fn run_reloadedii_setup(app_id: u32, encoded_path: &str) -> Result<i32, String> 
             )
         })?;
 
-    Ok(status.code().unwrap_or(-1))
+    let diagnostics = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut readers = Vec::new();
+
+    let mut reader_error = None;
+
+    if let Some(stdout) = child.stdout.take() {
+        match capture_reloadedii_output(
+            stdout,
+            Arc::clone(&diagnostics),
+            Arc::clone(&stop),
+        ) {
+            Ok(handle) => readers.push(handle),
+            Err(error) => reader_error = Some(error),
+        }
+    }
+
+    if reader_error.is_none() {
+        if let Some(stderr) = child.stderr.take() {
+            match capture_reloadedii_output(
+                stderr,
+                Arc::clone(&diagnostics),
+                Arc::clone(&stop),
+            ) {
+                Ok(handle) => readers.push(handle),
+                Err(error) => reader_error = Some(error),
+            }
+        }
+    }
+
+    if let Some(error) = reader_error {
+        let termination = stop_reloadedii_child(&mut child);
+
+        stop.store(true, Ordering::Release);
+
+        for reader in readers {
+            let _ = reader.join();
+        }
+
+        return Err(format!(
+            "Reloaded-II diagnostic setup failed: \
+             {error}; {termination}"
+        ));
+    }
+
+    let deadline =
+        Instant::now() + Duration::from_secs(540);
+
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                break Ok(status.code().unwrap_or(-1));
+            }
+
+            Ok(None) if Instant::now() >= deadline => {
+                let termination =
+                    stop_reloadedii_child(&mut child);
+
+                break Err(format!(
+                    "Reloaded-II setup exceeded 540 seconds \
+                     for AppID {app_id}; {termination}; \
+                     installation state is uncertain"
+                ));
+            }
+
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(200));
+            }
+
+            Err(error) => {
+                let termination =
+                    stop_reloadedii_child(&mut child);
+
+                break Err(format!(
+                    "failed to monitor Reloaded-II setup \
+                     for AppID {app_id}: {error}; \
+                     {termination}"
+                ));
+            }
+        }
+    };
+
+    // Give the readers a brief opportunity to capture final output
+    // before signalling shutdown. Never wait for pipe EOF from
+    // potentially surviving Wine descendants.
+    thread::sleep(Duration::from_millis(100));
+
+    stop.store(true, Ordering::Release);
+
+    for reader in readers {
+        let _ = reader.join();
+    }
+
+    let detail =
+        reloadedii_diagnostic_snapshot(&diagnostics);
+
+    match outcome {
+        Ok(0) => Ok(0),
+
+        Ok(code) => {
+            eprintln!(
+                "Reloaded-II setup failed for AppID {app_id} \
+                 with exit code {code}: {detail}"
+            );
+
+            Ok(code)
+        }
+
+        Err(error) => {
+            eprintln!(
+                "Reloaded-II setup supervision error: \
+                 {error}; diagnostic: {detail}"
+            );
+
+            Err(format!(
+                "{error}; diagnostic: {detail}"
+            ))
+        }
+    }
 }
 
 
@@ -2503,6 +2792,35 @@ fn plugin_commit(app_id: u32, encoded_stage: &str, encoded_name: &str) -> Result
 }
 
 fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool> {
+    if let Some(rest)=request.strip_prefix("asset-mod-disable ") {
+        let result=(||->Result<(),String>{
+            let app_id=rest.parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game=discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            let common=game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
+            let root=game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
+            if root==common || !path_is_within(&root,&common){return Err("game-root-escape".into());}
+            asset_mod::disable(app_id,&root)
+        })();
+        match result{Ok(())=>send(port,"asset-mod-disabled")?,Err(e)=>send(port,&format!("error {}",encode_field(&e)))?,}
+        return Ok(true);
+    }
+    if let Some(rest) = request.strip_prefix("asset-mod-install ") {
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        let result = (|| -> Result<PathBuf, String> {
+            if fields.len()!=3 { return Err("invalid-asset-install-request".into()); }
+            let app_id=fields[0].parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game=discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            let common=game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
+            let root=game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
+            if root==common || !path_is_within(&root,&common){return Err("game-root-escape".into());}
+            let stage=validated_guest_path(fields[2])?;
+            asset_mod::install(app_id,fields[1],&stage,&root)
+        })();
+        match result { Ok(root)=>send(port,&format!("asset-mod-installed {}",encode_field(&root.to_string_lossy())))?, Err(e)=>send(port,&format!("error {}",encode_field(&e)))? }
+        return Ok(true);
+    }
+
+
     if let Some(rest) = request.strip_prefix("plugin-commit ") {
         let parts: Vec<_> = rest.split_whitespace().collect();
         if parts.len() != 3 { send(port, "error invalid-plugin-commit")?; return Ok(true); }
@@ -3075,7 +3393,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
             )?;
             continue;
         }
@@ -3085,6 +3403,45 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
                 send(&mut port, "error invalid-ping")?;
             } else {
                 send(&mut port, &format!("pong {token}"))?;
+            }
+            continue;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(args) = request.strip_prefix("recovery-inventory ") {
+            let parts: Vec<_> = args.split_whitespace().collect();
+            let result = (|| -> Result<serde_json::Value, String> {
+                if parts.len() != 2 { return Err("invalid-inventory-request".into()); }
+                let app_id = parts[0].parse::<u32>().map_err(|_| "invalid-appid")?;
+                let game = discover_games().into_iter().find(|g| g.app_id == app_id).ok_or("unknown-appid")?;
+                let common = game.library_path.join("steamapps/common");
+                if !game.install_path.starts_with(&common) || game.install_path == common {
+                    return Err("game-root-outside-library".into());
+                }
+                if parts[1] == "userdata" {
+                    let root = steam_roots().into_iter().next().ok_or("steam-root-unavailable")?.join("userdata");
+                    return recovery_inventory::userdata(&root, app_id);
+                }
+                let root = match parts[1] {
+                    "game" => game.install_path,
+                    "prefix" => proton_prefix(app_id).ok_or("prefix-unavailable")?,
+                    "users" => proton_prefix(app_id).ok_or("prefix-unavailable")?.join("drive_c/users"),
+                    _ => return Err("invalid-scope".into()),
+                };
+                recovery_inventory::inventory(&root)
+            })();
+            match result {
+                Ok(value) => {
+                    let text = value.to_string();
+                    // Chunk JSON below per-line protocol limits; total is bounded by walker.
+                    send(&mut port, "recovery-inventory-begin")?;
+                    for chunk in text.as_bytes().chunks(2048) {
+                        let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect();
+                        send(&mut port, &format!("recovery-inventory-chunk {hex}"))?;
+                    }
+                    send(&mut port, "recovery-inventory-end")?;
+                }
+                Err(error) => send(&mut port, &format!("error recovery-inventory-{}", encode_field(&error)))?,
             }
             continue;
         }
