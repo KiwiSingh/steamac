@@ -185,7 +185,10 @@ for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resource
     codesign --force --sign - --timestamp=none "$f"
 done
 codesign --force --sign - --timestamp=none --entitlements "$HERE/steamac-vm.entitlements" "$TMP"
-codesign --verify --deep --strict "$TMP"
+for f in "$FW"/*.dylib "$TMP/Contents/Resources/gvproxy" "$TMP/Contents/Resources/desync"; do
+    codesign --verify --strict "$f"
+done
+codesign --verify --strict "$TMP"
 
 rm -rf "$APP"
 mv "$TMP" "$APP"
