@@ -24,6 +24,7 @@ static class Program
         return File.ReadAllBytes(path);
     }
     static string SheetName(string key) => Regex.Replace(Path.GetFileName(key).Split('.')[0], @"^[0-9]+_", "");
+    static bool IsTableCsv(string key) => key.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) && key.Contains('/') && key[..key.LastIndexOf('/')].EndsWith(".mbe", StringComparison.OrdinalIgnoreCase);
     static string TablePath(string key)
     {
         var at = key.LastIndexOf('/');
@@ -99,7 +100,7 @@ static class Program
                 var source = JsonNode.Parse(Read(Path.Combine(Path.GetDirectoryName(root)!, "manifest.json")))!;
                 foreach (var (key, hash) in source["files"]!.AsObject())
                 {
-                    if (!key.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!IsTableCsv(key)) continue;
                     var data = Read(PathIn(root, key));
                     if (Convert.ToHexStringLower(SHA256.HashData(data)) != hash!.GetValue<string>()) throw new InvalidDataException("CSV changed during compilation");
                     var table = TablePath(key);
@@ -107,7 +108,7 @@ static class Program
                     list.Add((key, new System.Text.UTF8Encoding(false, true).GetString(data).TrimStart('\uFEFF')));
                 }
             }
-            foreach (var key in hashes.Select(x => x.Key).Where(x => x.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)).ToArray())
+            foreach (var key in hashes.Select(x => x.Key).Where(IsTableCsv).ToArray())
             {
                 File.Delete(PathIn(assets, key)); hashes.Remove(key);
             }
