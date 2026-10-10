@@ -23,7 +23,7 @@ fn checked_hash(path: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 fn key_valid(key: &str) -> bool {
-    key.len()<1024 && key.is_ascii() && key.starts_with("app_0/images/") && key.ends_with(".dds")
+    key.len()<1024 && key.is_ascii()
         && !key.contains('\\') && !key.contains(':') && !key.bytes().any(|b| b<32 || b==127)
         && key.split('/').all(|x| !x.is_empty() && x!="." && x!="..")
 }
@@ -53,10 +53,7 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
         let p=stage.join("assets").join(key);
         if fs::canonicalize(&p).map_err(|_| "asset-missing")? != p { return Err("redirected-asset".into()); }
         let size=regular(&p)?;total+=size;
-        if size<128 || size>64*1024*1024 || total>256*1024*1024 { return Err("asset-size-limit".into()); }
-        let mut magic=[0;4];
-        fs::File::open(&p).map_err(|_|"asset-unreadable")?.read_exact(&mut magic).map_err(|_|"asset-unreadable")?;
-        if &magic!=b"DDS " {return Err("invalid-dds".into());}
+        if size==0 || size>64*1024*1024 || total>256*1024*1024 { return Err("asset-size-limit".into()); }
         let hash=hash.as_str().ok_or("invalid-hash")?;
         checked_hash(&p,hash)?;
     }
@@ -110,7 +107,16 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
 }
 #[cfg(test)] mod tests {
     use super::*;
-    #[test]fn rejects_unsafe_keys(){for k in ["app_0/images/../x.dds","app_0/images//x.dds","app_0/images/x.dll","app_0/images/X.DDS","C:/app_0/images/x.dds","app_0/images/x\\y.dds"]{assert!(!key_valid(k),"{k}");}assert!(key_valid("app_0/images/eyes.dds"));}
+    #[test]fn rejects_unsafe_keys(){for k in ["app_0/images/../x.dds","app_0/images//x.dds","C:/app_0/images/x.dds","app_0/images/x\\y.dds"]{assert!(!key_valid(k),"{k}");}assert!(key_valid("app_0/images/eyes.dds"));assert!(key_valid("app_0/images/pc002a_b01l_01.img"));assert!(key_valid("other/texture.custom"));}
+    #[test]fn accepts_raw_img_without_renaming(){
+        use sha2::{Digest,Sha256};
+        let(r,a,p)=fixture();
+        fs::remove_file(r.join("assets/app_0/images/eyes.dds")).unwrap();
+        let key="app_0/images/pc002a_b01l_01.img";let bytes=b"raw IMG payload";
+        fs::write(r.join("assets").join(key),bytes).unwrap();
+        fs::write(r.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":{key:format!("{:x}",Sha256::digest(bytes))}}).to_string()).unwrap();
+        validate_with_hashes(&r,&a,&p).unwrap();assert!(r.join("assets").join(key).exists());fs::remove_dir_all(r).unwrap();
+    }
     #[test]fn rejects_unsupported_adapter_before_io(){assert!(install(1,"dsts-mvgl-v1",Path::new("/missing"),Path::new("/missing")).unwrap_err().contains("unsupported"));}
     static NEXT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
     fn fixture()->(PathBuf,String,String){
@@ -125,7 +131,7 @@ pub fn install(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,S
     }
     #[test]fn valid_snapshot_and_tamper_rejection(){
         let (r,a,p)=fixture();validate_with_hashes(&r,&a,&p).unwrap();
-        fs::write(r.join("assets/app_0/images/eyes.dds"),vec![0;128]).unwrap();assert!(validate_with_hashes(&r,&a,&p).is_err());fs::remove_dir_all(r).unwrap();
+        fs::write(r.join("assets/app_0/images/eyes.dds"),Vec::<u8>::new()).unwrap();assert!(validate_with_hashes(&r,&a,&p).is_err());fs::remove_dir_all(r).unwrap();
     }
     #[test]fn rejects_unexpected_executable(){let(r,a,p)=fixture();fs::write(r.join("evil.dll"),b"MZ").unwrap();assert!(validate_with_hashes(&r,&a,&p).unwrap_err().contains("unexpected"));fs::remove_dir_all(r).unwrap();}
     #[test]fn rejects_bootstrap_hash_mismatch(){let(r,a,p)=fixture();fs::write(r.join("proxy.payload"),b"other").unwrap();assert!(validate_with_hashes(&r,&a,&p).unwrap_err().contains("hash-mismatch"));fs::remove_dir_all(r).unwrap();}
