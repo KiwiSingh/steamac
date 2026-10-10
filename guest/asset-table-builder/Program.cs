@@ -86,8 +86,14 @@ static class Program
     {
         try
         {
-            if (args.SequenceEqual(new[] { "--self-test" })) { SelfTest(); return 0; }
+            if (args.SequenceEqual(new[] { "--self-test" })) { SelfTest(); AudioBanks.SelfTest(); return 0; }
+            if(args.Length==5 && args[0]=="--audio-fixture") {
+                var tracks=Directory.GetFiles(args[2],"*.hca").Order().Select(x=>(File.ReadAllBytes(x),0.3f)).ToArray();
+                File.WriteAllBytes(args[4],AudioBanks.Build(File.ReadAllBytes(args[1]),args[3],tracks));
+                Console.WriteLine("PASS: real music bank composition");return 0;
+            }
             if (args.Length != 2) throw new InvalidDataException("Expected game and checked staging paths");
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
             var game = args[0]; var stage = args[1]; var assets = Path.Combine(stage, "assets");
             var profile = JsonNode.Parse(Read(Path.Combine(stage, "profile.json")))!;
             var manifest = JsonNode.Parse(Read(Path.Combine(stage, "manifest.json")))!;
@@ -141,8 +147,9 @@ static class Program
                 using (var file = new FileStream(destination, FileMode.CreateNew)) file.Write(bytes);
                 hashes[table] = Convert.ToHexStringLower(SHA256.HashData(bytes));
             }
+            var musicBanks=AudioBanks.Compile(game,assets,hashes,Read,PathIn);
             File.WriteAllText(Path.Combine(stage, "manifest.json"), manifest.ToJsonString());
-            Console.WriteLine($"Compiled {edits.Count} MBE tables"); return 0;
+            Console.WriteLine($"Compiled {edits.Count} MBE tables and {musicBanks} music banks"); return 0;
         }
         catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
     }

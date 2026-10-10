@@ -30,6 +30,9 @@
       },
       "mvlibrarynet.definitions": {
         "type": "Project"
+      },
+      "sonicaudiolib": {
+        "type": "Project"
       }
     },
     "net9.0/linux-arm64": {}

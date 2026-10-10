@@ -266,6 +266,7 @@ add('Mesa', versions['MESA_COMMIT'], 'MIT', layer + ':/usr/lib and /usr/share/gu
         'https://gitlab.freedesktop.org/mesa/mesa/-/raw/' + versions['MESA_COMMIT'] + '/docs/license.rst'))])
 # Managed ARM64 asset-table compiler shipped in the guest layer.
 for component, version, filename, url in (
+    ('SonicAudioLib', '178b025d7e17f5b781c678f738772871e0f1d30a', 'LICENSE-SonicAudioLib', 'https://github.com/blueskythlikesclouds/SonicAudioTools'),
     ('MVLibraryNET', '1.2.8', 'LICENSE-MVLibraryNET', 'https://github.com/RyoTune/MVLibraryNET'),
     ('Sep', '0.11.3', 'LICENSE-Sep', 'https://github.com/nietras/Sep'),
     ('csFastFloat', '4.1.5', 'LICENSE-csFastFloat', 'https://github.com/CarlVerret/csFastFloat'),
