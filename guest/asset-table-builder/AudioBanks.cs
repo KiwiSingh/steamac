@@ -19,7 +19,9 @@ static class AudioBanks
     {
         if (b.Length < 32 || !b.AsSpan(0,4).SequenceEqual("@UTF"u8) || U32(b,4) > b.Length - 8 || U32(b,28) > 100000)
             throw new InvalidDataException("Invalid UTF audio table");
-        var t = new CriTable(); t.Load(b); return t;
+        // DSTS rejects otherwise equivalent banks serialized with the library's
+        // default byte alignment. Root and rebuilt child tables need ADX2 layout.
+        var t = new CriTable { WriterSettings=CriTableWriterSettings.Adx2Settings }; t.Load(b); return t;
     }
     static CriTable Child(CriTable t, string name) => Table((byte[])t.Rows[0][name]);
     static uint Number(CriRow r, string key) => Convert.ToUInt32(r[key], CultureInfo.InvariantCulture);
@@ -98,7 +100,7 @@ static class AudioBanks
     }
     static CriTable FixtureTable(string name,params (string key,object value)[] fields)
     {
-        var t=new CriTable{TableName=name};foreach(var (key,value) in fields)t.Fields.Add(key,value.GetType());
+        var t=new CriTable{TableName=name,WriterSettings=CriTableWriterSettings.Adx2Settings};foreach(var (key,value) in fields)t.Fields.Add(key,value.GetType());
         var row=t.NewRow();foreach(var (key,value) in fields)row[key]=value;t.Rows.Add(row);return t;
     }
     public static void SelfTest()
@@ -113,6 +115,8 @@ static class AudioBanks
         var acb=FixtureTable("Header",("Name","test"),("CueTable",cue.Save()),("CueNameTable",names.Save()),("WaveformTable",wave.Save()),("SynthTable",syn.Save()),("SequenceTable",seq.Save()),("TrackTable",track.Save()),("TrackEventTable",evt.Save()),("SynthCommandTable",Array.Empty<byte>()),("AwbFile",Array.Empty<byte>()),("WaveformExtensionDataTable",Array.Empty<byte>()));
         byte[] hca=new byte[96];"HCA\0"u8.CopyTo(hca);hca[4]=2;hca[7]=64;"fmt\0"u8.CopyTo(hca.AsSpan(8));hca[12]=2;hca[14]=0xbb;hca[15]=0x80;hca[19]=1;"comp"u8.CopyTo(hca.AsSpan(24));hca[29]=32;"ciph"u8.CopyTo(hca.AsSpan(40));"pad\0"u8.CopyTo(hca.AsSpan(46));
         var bytes=Build(acb.Save(),"test",new[]{(hca,0.3f),(hca,0.5f)});var result=Table(bytes);
+        foreach(var tableBytes in new[]{bytes}.Concat(new[]{"CueTable","WaveformTable","SynthTable","SequenceTable","TrackTable","TrackEventTable","SynthCommandTable"}.Select(k=>(byte[])result.Rows[0][k])))
+            if((U32(tableBytes,16)+8)%32!=0 || tableBytes.Length%32!=0)throw new InvalidDataException("ADX2 table alignment failed");
         if(Number(Child(result,"SequenceTable").Rows[0],"Type")!=3 || Number(Child(result,"WaveformTable").Rows[1],"MemoryAwbId")!=1)throw new InvalidDataException("Random music composition failed");
         var settings=(byte[])Child(result,"SynthCommandTable").Rows[0]["Command"];
         if(((byte[])Child(result,"SequenceTable").Rows[0]["TrackValues"]).Length!=4 || settings[4]!=30)throw new InvalidDataException("Music volume failed");
@@ -188,7 +192,7 @@ static class AudioBanks
             throw new InvalidDataException("Unsupported complex or streamed music bank");
         var waveTemplate=wave.Rows[0];var synthTemplate=synth.Rows[0];var trackTemplate=track.Rows[0];var eventTemplate=events.Rows[0];
         wave.Rows.Clear();synth.Rows.Clear();track.Rows.Clear();events.Rows.Clear();
-        var commands=new CriTable {TableName="SynthCommand"};commands.Fields.Add("Command",typeof(byte[]));
+        var commands=new CriTable {TableName="SynthCommand",WriterSettings=CriTableWriterSettings.Adx2Settings};commands.Fields.Add("Command",typeof(byte[]));
         var tracks=new List<Hca>();using var indices=new MemoryStream();
         for(int i=0;i<inputs.Count;i++)
         {
@@ -211,5 +215,29 @@ static class AudioBanks
         var result=acb.Save();if(result.Length>Limit)throw new InvalidDataException("Compiled music bank exceeds limit");
         var round=Table(result);if(Child(round,"WaveformTable").Rows.Count!=tracks.Count || Number(Child(round,"SequenceTable").Rows[0],"NumTracks")!=tracks.Count)throw new InvalidDataException("Audio bank round trip failed");
         return result;
+    }
+    public static void DiagnosticFixtures(byte[] original, byte[] track, string directory)
+    {
+        // Private test fixtures: no randomness, volume commands or cue changes.
+        // Never invoked by checked profile compilation.
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory,"original.acb"),original);
+        var unaligned=Table(original);unaligned.WriterSettings=new CriTableWriterSettings();var roundtrip=unaligned.Save();
+        File.WriteAllBytes(Path.Combine(directory,"roundtrip.acb"),roundtrip);
+        var aligned=Table(original);aligned.WriterSettings=CriTableWriterSettings.Adx2Settings;
+        File.WriteAllBytes(Path.Combine(directory,"roundtrip-aligned.acb"),aligned.Save());
+        var acb=Table(original);var wave=Child(acb,"WaveformTable");
+        if(wave.Rows.Count!=1 || Number(wave.Rows[0],"Streaming")!=0 || Number(wave.Rows[0],"MemoryAwbId")!=0)
+            throw new InvalidDataException("Single-track diagnostic requires one embedded waveform");
+        var hca=ParseHca(track);var row=wave.Rows[0];
+        Set(row,"NumChannels",hca.Channels);Set(row,"SamplingRate",hca.Rate);Set(row,"NumSamples",hca.Samples);
+        // Use a nonlooping fixture first to exclude the loop-extension format.
+        Set(row,"LoopFlag",0);Set(row,"ExtensionData",ushort.MaxValue);
+        acb.Rows[0]["WaveformTable"]=wave.Save();
+        acb.Rows[0]["WaveformExtensionDataTable"]=Array.Empty<byte>();
+        acb.Rows[0]["AwbFile"]=Awb(new[]{hca});
+        var single=acb.Save();if(single.Length>Limit)throw new InvalidDataException("Diagnostic bank exceeds limit");
+        File.WriteAllBytes(Path.Combine(directory,"single.acb"),single);
+        Console.WriteLine("Prepared unchanged, serialization-only and single-track/no-volume/no-randomness fixtures");
     }
 }

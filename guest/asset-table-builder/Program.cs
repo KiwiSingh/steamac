@@ -87,6 +87,10 @@ static class Program
         try
         {
             if (args.SequenceEqual(new[] { "--self-test" })) { SelfTest(); AudioBanks.SelfTest(); return 0; }
+            if(args.Length==4 && args[0]=="--audio-diagnostic-fixtures") {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                AudioBanks.DiagnosticFixtures(File.ReadAllBytes(args[1]),File.ReadAllBytes(args[2]),args[3]);return 0;
+            }
             if(args.Length==5 && args[0]=="--audio-fixture") {
                 var tracks=Directory.GetFiles(args[2],"*.hca").Order().Select(x=>(File.ReadAllBytes(x),0.3f)).ToArray();
                 File.WriteAllBytes(args[4],AudioBanks.Build(File.ReadAllBytes(args[1]),args[3],tracks));

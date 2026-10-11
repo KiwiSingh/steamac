@@ -18,6 +18,8 @@ Packaging signs components individually and the app last; it does not use `codes
 
 ## Combined asset profiles (Kiwi Build 6)
 
+Upcoming Kiwi Build 7 adds `assetAudioBanksV1` for BepisLoader 2.3.0: data-only HCA/YAML packages compile into randomized, embedded CRI music banks with the required ADX2 alignment. Classic Looming Threat playback, volume and looping were confirmed in-game. Existing launch options remain valid. See [music profiles, volume overrides and validation](docs/audio-mods.md). Fresh bundle audit is still required before publishing this build.
+
 This build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
 
 ## What's different in the Kiwi Build?
