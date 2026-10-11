@@ -1,4 +1,5 @@
 mod asset_mod;
+mod reshade;
 #[cfg(target_os = "linux")]
 mod recovery_inventory;
 mod reloadedii_metadata;
@@ -2792,6 +2793,41 @@ fn plugin_commit(app_id: u32, encoded_stage: &str, encoded_name: &str) -> Result
 }
 
 fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool> {
+    if let Some(rest) = request.strip_prefix("reshade-target ").or_else(|| request.strip_prefix("reshade-state ")) {
+        let result = (|| -> Result<String,String> {
+            let fields: Vec<_> = rest.split_whitespace().collect();
+            if fields.len() != 2 { return Err("invalid-reshade-target".into()); }
+            let app_id = fields[0].parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game = discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            let common = game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
+            let root = game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
+            if root == common || !path_is_within(&root,&common) { return Err("game-root-escape".into()); }
+            let executable = validated_guest_path(fields[1])?;
+            if request.starts_with("reshade-state ") {
+                let state = if reshade::installed(app_id,&root,&executable)? {"installed"} else {"absent"};
+                Ok(format!("reshade-state {state}"))
+            } else {
+                let (path,hash) = reshade::preflight(&root,&executable)?;
+                Ok(format!("reshade-target {} {}",encode_field(&path.to_string_lossy()),hash))
+            }
+        })();
+        match result { Ok(response) => send(port,&response)?, Err(e) => send(port,&format!("error {}",encode_field(&e)))? }
+        return Ok(true);
+    }
+    if let Some(rest) = request.strip_prefix("reshade-install ") {
+        let result = (|| -> Result<(),String> {
+            let fields: Vec<_> = rest.split_whitespace().collect();
+            if fields.len() != 2 { return Err("invalid-reshade-install".into()); }
+            let app_id = fields[0].parse::<u32>().map_err(|_|"invalid-appid")?;
+            let game = discover_games().into_iter().find(|g|g.app_id==app_id).ok_or("unknown-appid")?;
+            let common = game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
+            let root = game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
+            if root == common || !path_is_within(&root,&common) { return Err("game-root-escape".into()); }
+            reshade::install(app_id,&validated_guest_path(fields[1])?,&root)
+        })();
+        match result { Ok(()) => send(port,"reshade-installed")?, Err(e) => send(port,&format!("error {}",encode_field(&e)))? }
+        return Ok(true);
+    }
     if let Some(rest)=request.strip_prefix("asset-profile-state ") {
         let result=(||->Result<serde_json::Value,String>{
             let app_id=rest.parse::<u32>().map_err(|_|"invalid-appid")?;
@@ -3415,7 +3451,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 reShadeInstallV1 assetModInstallV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
             )?;
             continue;
         }
