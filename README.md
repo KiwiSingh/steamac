@@ -4,7 +4,9 @@ A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on q
 
 The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.7` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.7))
+> **Latest Kiwi release:** `v1.7.6-kiwi.8` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.8))
+
+Kiwi Build 8 pairs with [BepisLoader 2.3.1](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.3.1) for automatic ReShade setup, ZIP/RAR/7z imports, 1 GiB mod/profile limits and 128 MiB files. Guest-side composition and verified compiled-output reuse speed up Apply without transferring existing payloads through the Mac. The app-bundle audit passed. See [release notes and upgrade steps](docs/releases/v1.7.6-kiwi.8.md).
 
 ## New in Kiwi Build 6
 
@@ -103,7 +105,7 @@ https://github.com/KiwiSingh/steamac/releases
 
 The current release is:
 
-**Steamac 1.7.6 Kiwi Build 6 — `v1.7.6-kiwi.6`**
+**Steamac 1.7.6 Kiwi Build 8 — `v1.7.6-kiwi.8`**
 
 The release ZIP is ad-hoc signed and is **not notarized with an Apple Developer ID**.
 
@@ -139,7 +141,7 @@ BepisLoader's **Set up ReShade…** and **Install ReShade mod…** button uses t
 
 The guest validates the executable, staged file hashes and architecture, rejects redirected paths and existing unrelated DLL/configuration conflicts, and refuses installation while the game is running. `.bepis-reshade.json` records installed hashes. Managed, unedited files can be updated with their previous bytes retained in the staging transaction journal. Edited files are preserved and stop the update unless the user explicitly opts to back up and replace ReShade.ini with a valid existing runtime; a failed publication rolls back its own changes. Existing asset profiles, `winmm.dll`, Steam launch settings and Proton-prefix files are not changed.
 
-Validation: 69 ARM64 guest tests passed, including running-game rejection, conflicts, tampering, rollback and persisted state. The real Digimon ReShade package plus native compiler installed 86 files into an isolated SteamOS fixture; a preset-only update retained a backup and left the asset loader/profile unchanged. This installer still needs an app-bundle audit before release; the earlier manual installation's successful gameplay check is separate.
+Validation: 72 ARM64 guest tests passed, including running-game rejection, conflicts, tampering, rollback and persisted state. The real Digimon ReShade package plus native compiler installed 86 files into an isolated SteamOS fixture; a preset-only update retained a backup and left the asset loader/profile unchanged. The app-bundle audit passed; the earlier manual installation's successful gameplay check is separate.
 
 ### Faster profile application
 
