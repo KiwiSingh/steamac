@@ -24,6 +24,27 @@ Kiwi Build 7 adds `assetAudioBanksV1` for BepisLoader 2.3.0: data-only HCA/YAML 
 
 This build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
 
+The profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the app bundle audit passed.
+
+### Larger mod profiles (development)
+
+The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages are capped at 1 GiB, individual files at 128 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
+
+Skip Opening Logos and Water Recolor use the existing loose-asset / MBE CSV paths. A seven-mod ARM64 fixture combining both with the existing costume, DigiRide and music packages compiled 84 tables and 17 music banks; checked publication produced 2,166 files / 352,712,628 bytes, retaining the previous profile. All existing music banks and ReShade loader/configuration files were unchanged. The opening-logo skip, Water Recolor and existing costume, DigiRide and music mods were confirmed working together in live ARM64 Proton gameplay. The native snapshot limit is also 1 GiB; the corrected adapter passed isolated Proton snapshot and hook tests.
+
+### Checked ReShade installation
+
+BepisLoader's **Set up ReShade…** and **Install ReShade mod…** button uses the bundled guest's `reShadeInstallV1` capability. This game-agnostic path currently supports Windows x64 Direct3D/DXGI packages. It installs beside the selected executable, including games with nested executable directories. BepisLoader imports folders or ZIP/RAR/7z archives and obtains a missing pinned official x64 ReShade runtime and the tested Microsoft shader compiler on demand. Standalone setup creates an empty preset; mod packages supply effects.
+
+The guest validates the executable, staged file hashes and architecture, rejects redirected paths and existing unrelated DLL/configuration conflicts, and refuses installation while the game is running. `.bepis-reshade.json` records installed hashes. Managed, unedited files can be updated with their previous bytes retained in the staging transaction journal. Edited files are preserved and stop the update unless the user explicitly opts to back up and replace ReShade.ini with a valid existing runtime; a failed publication rolls back its own changes. Existing asset profiles, `winmm.dll`, Steam launch settings and Proton-prefix files are not changed.
+
+Validation: 72 ARM64 guest tests passed, including running-game rejection, conflicts, tampering, rollback and persisted state. The real Digimon ReShade package plus native compiler installed 86 files into an isolated SteamOS fixture; a preset-only update retained a backup and left the asset loader/profile unchanged. The app-bundle audit passed; the earlier manual installation's successful gameplay check is separate.
+
+### Faster profile application
+
+With a matching Steamac guest advertising `assetProfileReuseV1`, Apply sends profile metadata and pinned loader payloads instead of downloading and re-uploading stored mod files. Steamac composes the snapshot locally, using copy-on-write copies where available and ordinary independent copies otherwise. Table/music outputs are reused from the previous active snapshot when the compiler, original game bytes and ordered inputs match; cached bytes are checked against both the receipt and published manifest. Unchanged profiles retain the active snapshot. Verification still reads the source bytes, so large profiles can take time even without network transfers. Older guests retain the checked full-transfer flow.
+
+
 ## What's different in the Kiwi Build?
 
 ### More automatic VM memory
@@ -126,23 +147,3 @@ This fork tracks the upstream project and adds Kiwi-specific changes on top. Fea
 ## License
 
 See the repository's existing license and upstream Steamac licensing information.
-
-The profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the app bundle audit passed.
-
-### Larger mod profiles (development)
-
-The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages are capped at 1 GiB, individual files at 128 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
-
-Skip Opening Logos and Water Recolor use the existing loose-asset / MBE CSV paths. A seven-mod ARM64 fixture combining both with the existing costume, DigiRide and music packages compiled 84 tables and 17 music banks; checked publication produced 2,166 files / 352,712,628 bytes, retaining the previous profile. All existing music banks and ReShade loader/configuration files were unchanged. The opening-logo skip, Water Recolor and existing costume, DigiRide and music mods were confirmed working together in live ARM64 Proton gameplay. The native snapshot limit is also 1 GiB; the corrected adapter passed isolated Proton snapshot and hook tests.
-
-### Checked ReShade installation
-
-BepisLoader's **Set up ReShade…** and **Install ReShade mod…** button uses the bundled guest's `reShadeInstallV1` capability. This game-agnostic path currently supports Windows x64 Direct3D/DXGI packages. It installs beside the selected executable, including games with nested executable directories. BepisLoader imports folders or ZIP/RAR/7z archives and obtains a missing pinned official x64 ReShade runtime and the tested Microsoft shader compiler on demand. Standalone setup creates an empty preset; mod packages supply effects.
-
-The guest validates the executable, staged file hashes and architecture, rejects redirected paths and existing unrelated DLL/configuration conflicts, and refuses installation while the game is running. `.bepis-reshade.json` records installed hashes. Managed, unedited files can be updated with their previous bytes retained in the staging transaction journal. Edited files are preserved and stop the update unless the user explicitly opts to back up and replace ReShade.ini with a valid existing runtime; a failed publication rolls back its own changes. Existing asset profiles, `winmm.dll`, Steam launch settings and Proton-prefix files are not changed.
-
-Validation: 72 ARM64 guest tests passed, including running-game rejection, conflicts, tampering, rollback and persisted state. The real Digimon ReShade package plus native compiler installed 86 files into an isolated SteamOS fixture; a preset-only update retained a backup and left the asset loader/profile unchanged. The app-bundle audit passed; the earlier manual installation's successful gameplay check is separate.
-
-### Faster profile application
-
-With a matching Steamac guest advertising `assetProfileReuseV1`, Apply sends profile metadata and pinned loader payloads instead of downloading and re-uploading stored mod files. Steamac composes the snapshot locally, using copy-on-write copies where available and ordinary independent copies otherwise. Table/music outputs are reused from the previous active snapshot when the compiler, original game bytes and ordered inputs match; cached bytes are checked against both the receipt and published manifest. Unchanged profiles retain the active snapshot. Verification still reads the source bytes, so large profiles can take time even without network transfers. Older guests retain the checked full-transfer flow.
