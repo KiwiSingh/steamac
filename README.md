@@ -4,7 +4,7 @@ A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on q
 
 The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.6` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.6))
+> **Latest Kiwi release:** `v1.7.6-kiwi.7` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.7))
 
 ## New in Kiwi Build 6
 
@@ -18,7 +18,7 @@ Packaging signs components individually and the app last; it does not use `codes
 
 ## Combined asset profiles (Kiwi Build 6)
 
-Upcoming Kiwi Build 7 adds `assetAudioBanksV1` for BepisLoader 2.3.0: data-only HCA/YAML packages compile into randomized, embedded CRI music banks with the required ADX2 alignment. Classic Looming Threat playback, volume and looping were confirmed in-game. Existing launch options remain valid. See [music profiles, volume overrides and validation](docs/audio-mods.md). Fresh bundle audit is still required before publishing this build.
+Kiwi Build 7 adds `assetAudioBanksV1` for BepisLoader 2.3.0: data-only HCA/YAML packages compile into randomized, embedded CRI music banks with the required ADX2 alignment. Classic Looming Threat playback, volume and looping were confirmed in-game. Existing launch options remain valid. See [music profiles, volume overrides and validation](docs/audio-mods.md). The app-bundle audit passed.
 
 This build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
 
