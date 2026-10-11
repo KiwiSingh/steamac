@@ -9,7 +9,7 @@ using SonicAudioLib.CriMw;
 // serialization; does not contain or require Ryo/Reloaded runtime code.
 static class AudioBanks
 {
-    const int Limit = 64 * 1024 * 1024;
+    const int Limit = 128 * 1024 * 1024;
     public const string Prefix = "Ryo/Digimon Story Time Stranger/bgm/";
     public static bool IsInput(string key) => key.StartsWith(Prefix, StringComparison.Ordinal);
     static ushort U16(byte[] b, int p) => BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(p, 2));
@@ -172,7 +172,8 @@ static class AudioBanks
                 }
                 tracks.Add((bytes,volume));
             }
-            var compiled=Build(original,group.cue,tracks);var destination=pathIn(assets,target);Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            var recipe=CompiledReuse.Recipe(new[]{"audio",group.bank,group.cue,Convert.ToHexStringLower(SHA256.HashData(original))}.Concat(tracks.SelectMany(t=>new[]{Convert.ToHexStringLower(SHA256.HashData(t.bytes)),BitConverter.SingleToInt32Bits(t.volume).ToString(CultureInfo.InvariantCulture)})));
+            var compiled=CompiledReuse.Output(target,recipe,()=>Build(original,group.cue,tracks));var destination=pathIn(assets,target);Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             using(var file=new FileStream(destination,FileMode.CreateNew))file.Write(compiled);
             hashes[target]=Convert.ToHexStringLower(SHA256.HashData(compiled));
         }

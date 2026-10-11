@@ -8,7 +8,7 @@ using MVLibraryNET.MVGL;
 // are read-only. Publication remains the Rust bridge's checked atomic operation.
 static class Program
 {
-    const int Limit = 64 * 1024 * 1024;
+    const int Limit = 128 * 1024 * 1024;
     static string PathIn(string root, string key)
     {
         if (key.Contains('\\') || key.Contains(':') || key.Split('/').Any(x => x is "" or "." or ".."))
@@ -86,7 +86,7 @@ static class Program
     {
         try
         {
-            if (args.SequenceEqual(new[] { "--self-test" })) { SelfTest(); AudioBanks.SelfTest(); return 0; }
+            if (args.SequenceEqual(new[] { "--self-test" })) { SelfTest(); AudioBanks.SelfTest(); CompiledReuse.SelfTest(); return 0; }
             if(args.Length==4 && args[0]=="--audio-diagnostic-fixtures") {
                 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
                 AudioBanks.DiagnosticFixtures(File.ReadAllBytes(args[1]),File.ReadAllBytes(args[2]),args[3]);return 0;
@@ -102,6 +102,7 @@ static class Program
             var profile = JsonNode.Parse(Read(Path.Combine(stage, "profile.json")))!;
             var manifest = JsonNode.Parse(Read(Path.Combine(stage, "manifest.json")))!;
             var hashes = manifest["files"]!.AsObject();
+            CompiledReuse.Initialize(game, stage, profile);
             var edits = new Dictionary<string, List<(string key, string text)>>(StringComparer.OrdinalIgnoreCase);
             foreach (var mod in profile["mods"]!.AsArray())
             {
@@ -129,6 +130,8 @@ static class Program
                 if (hashes.Any(x => x.Key.Equals(table, StringComparison.OrdinalIgnoreCase)))
                     throw new InvalidDataException("Whole MBE replacement and CSV edits target the same table: " + table);
                 var originalBytes = Original(game, table);
+                var recipe = CompiledReuse.Recipe(new[] { "mbe", table, Convert.ToHexStringLower(SHA256.HashData(originalBytes)) }.Concat(list.SelectMany(x => new[] { x.key, x.text })));
+                var bytes = CompiledReuse.Output(table, recipe, () => {
                 var original = Parse(originalBytes); var current = Parse(originalBytes);
                 foreach (var (key, text) in list.Where(x => !x.key.EndsWith(".ap.csv", StringComparison.OrdinalIgnoreCase)))
                 {
@@ -143,15 +146,18 @@ static class Program
                 }
                 using var output = new MemoryStream(); current.Write(output);
                 if (output.Length > Limit) throw new InvalidDataException("Compiled MBE exceeds limit");
-                var bytes = output.ToArray();
-                var checkedMbe = Parse(bytes);
+                var built = output.ToArray();
+                var checkedMbe = Parse(built);
                 if (current.Sheets.Count != checkedMbe.Sheets.Count || current.Sheets.Any(x => !checkedMbe.Sheets.TryGetValue(x.Key, out var sheet) || x.Value.ToCsv() != sheet.ToCsv()))
                     throw new InvalidDataException("Compiled table round trip changed cells");
+                return built;
+                });
                 var destination = PathIn(assets, table); Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 using (var file = new FileStream(destination, FileMode.CreateNew)) file.Write(bytes);
                 hashes[table] = Convert.ToHexStringLower(SHA256.HashData(bytes));
             }
             var musicBanks=AudioBanks.Compile(game,assets,hashes,Read,PathIn);
+            CompiledReuse.Save(stage);
             File.WriteAllText(Path.Combine(stage, "manifest.json"), manifest.ToJsonString());
             Console.WriteLine($"Compiled {edits.Count} MBE tables and {musicBanks} music banks"); return 0;
         }
