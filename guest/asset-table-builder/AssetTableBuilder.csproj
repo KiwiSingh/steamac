@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="AudioBanks.cs" />
     <ProjectReference Include="vendor/MVLibraryNET/MVLibraryNET.csproj" />
+    <ProjectReference Include="vendor/SonicAudioLib/SonicAudioLib.csproj" />
   </ItemGroup>
 </Project>

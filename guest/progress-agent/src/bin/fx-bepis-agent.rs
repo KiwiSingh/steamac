@@ -3415,7 +3415,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 assetModProfilesV1 assetMbeTablesV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 assetModInstallV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
             )?;
             continue;
         }

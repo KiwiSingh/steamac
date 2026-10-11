@@ -3,8 +3,8 @@ use std::{fs, path::{Path, PathBuf}, io::Read};
 use serde_json::Value;
 const EXE: &str = "Digimon Story Time Stranger.exe";
 const GAME_HASH: &str = "ff9de825a543bf874cfb7e73ed951256d3ce4e8702957afa3b26ca6487a81688";
-const ASI_HASH: &str = "d6e2e91f7bafd4caae6e47806a0d6557af571daaca3a2d2adb203be70e78083b";
-const LEGACY_ASI_HASHES: &[&str] = &["06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf", "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69"];
+const ASI_HASH: &str = "ada24eed6afad06bc4a1682928a6cae1405814615b421afcb0216cb58dfffdd0";
+const LEGACY_ASI_HASHES: &[&str] = &["d6e2e91f7bafd4caae6e47806a0d6557af571daaca3a2d2adb203be70e78083b", "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf", "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69"];
 const PROXY_HASH: &str = "412d410eb6091fb483b150bea1b13f8aeb746be8c62802ea7e081fd15ea64b69";
 fn digest(path: &Path) -> Result<String, String> {
     use sha2::{Digest,Sha256};
@@ -251,7 +251,7 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
     validate_stage(stage)?;
     validate_profile(&game,stage,ASI_HASH,PROXY_HASH)?;
     let manifest:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
-    if manifest["files"].as_object().ok_or("missing-files")?.keys().any(|k|k.rsplit_once('/').is_some_and(|(parent,file)|parent.to_ascii_lowercase().ends_with(".mbe") && file.to_ascii_lowercase().ends_with(".csv"))) {
+    if manifest["files"].as_object().ok_or("missing-files")?.keys().any(|k|k.starts_with("Ryo/Digimon Story Time Stranger/bgm/") || k.rsplit_once('/').is_some_and(|(parent,file)|parent.to_ascii_lowercase().ends_with(".mbe") && file.to_ascii_lowercase().ends_with(".csv"))) {
         let mut child=std::process::Command::new("/usr/lib/steamac/AssetTableBuilder")
             .arg(&game).arg(stage)
             .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR",game.join(".bepis-table-runtime"))

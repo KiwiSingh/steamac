@@ -1,0 +1,5 @@
+Source: https://github.com/blueskythlikesclouds/SonicAudioTools
+Commit: 178b025d7e17f5b781c678f738772871e0f1d30a
+Subset: CRI UTF tables and their IO/base dependencies; no audio codecs or GUI.
+Local changes: SDK project targeting net9.0; only required IO files compiled.
+Local API change: expose CriRowCollection.Clear for bank composition.
