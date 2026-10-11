@@ -8,7 +8,7 @@ using MVLibraryNET.MVGL;
 // are read-only. Publication remains the Rust bridge's checked atomic operation.
 static class Program
 {
-    const int Limit = 64 * 1024 * 1024;
+    const int Limit = 128 * 1024 * 1024;
     static string PathIn(string root, string key)
     {
         if (key.Contains('\\') || key.Contains(':') || key.Split('/').Any(x => x is "" or "." or ".."))

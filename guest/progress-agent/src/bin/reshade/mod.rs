@@ -35,7 +35,7 @@ fn pe(path: &Path, dll: bool) -> Result<(), String> {
     if &h[..4] != b"PE\0\0" || h[4..6] != [0x64,0x86] || h[24..26] != [0x0b,0x02] || (dll && h[22] & 0x20 == 0) { return Err("reshade:x64-pe-required".into()); } Ok(())
 }
 fn runtime(path: &Path) -> Result<(), String> {
-    regular(path, 64 * 1024 * 1024)?; pe(path,true)?;
+    regular(path, 128 * 1024 * 1024)?; pe(path,true)?;
     if !fs::read(path).map_err(err)?.windows(7).any(|s| s == b"ReShade") { return Err("reshade:dxgi-is-not-reshade".into()); } Ok(())
 }
 pub fn target(game: &Path, executable: &Path) -> Result<(PathBuf,String),String> {
@@ -103,7 +103,7 @@ fn parent_checked(root: &Path, key: &str, create: bool) -> Result<(),String> {
             if at.symlink_metadata().is_err() && !create { return Ok(()); }
             let m = fs::symlink_metadata(&at).map_err(err)?;
             if !m.is_dir() || m.file_type().is_symlink() || at.canonicalize().map_err(err)? != at { return Err("reshade:redirected-directory".into()); }
-        } else if at.symlink_metadata().is_ok() { regular(&at,64*1024*1024)?; }
+        } else if at.symlink_metadata().is_ok() { regular(&at,128*1024*1024)?; }
     } Ok(())
 }
 fn exclusive_copy(source: &Path, destination: &Path) -> Result<(),String> {
@@ -144,8 +144,8 @@ fn install_checked(app_id: u32, stage: &Path, game: &Path, compiler_hash: &str, 
     for (key, hash) in declared {
         let hash = hash.as_str().ok_or("reshade:invalid-hash")?;
         if !allowed(key) || !hash_valid(hash) || !seen.insert(key.to_lowercase()) { return Err("reshade:unsafe-or-duplicate-path".into()); }
-        let source = stage.join("files").join(key); total += regular(&source,64*1024*1024)?;
-        if total > 256*1024*1024 || digest(&source)? != hash { return Err("reshade:size-or-hash-mismatch".into()); }
+        let source = stage.join("files").join(key); total += regular(&source,128*1024*1024)?;
+        if total > 1024*1024*1024 || digest(&source)? != hash { return Err("reshade:size-or-hash-mismatch".into()); }
         if key == "dxgi.dll" { runtime(&source)?; }
         if key == "d3dcompiler_47.dll" && hash != compiler_hash { return Err("reshade:compiler-hash-mismatch".into()); }
         if key.ends_with(".addon64") || key == "d3dcompiler_47.dll" { pe(&source,true)?; }

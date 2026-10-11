@@ -3,8 +3,8 @@ use std::{fs, path::{Path, PathBuf}, io::Read};
 use serde_json::Value;
 const EXE: &str = "Digimon Story Time Stranger.exe";
 const GAME_HASH: &str = "ff9de825a543bf874cfb7e73ed951256d3ce4e8702957afa3b26ca6487a81688";
-const ASI_HASH: &str = "2b4e7714ba8b1758c6298783dd304865c1ed51d89679061c48a8076b591775b6";
-const LEGACY_ASI_HASHES: &[&str] = &["ada24eed6afad06bc4a1682928a6cae1405814615b421afcb0216cb58dfffdd0", "d6e2e91f7bafd4caae6e47806a0d6557af571daaca3a2d2adb203be70e78083b", "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf", "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69"];
+const ASI_HASH: &str = "134051c0ecb7821e4375eb2c65a977b360fd1746e36fcba8c7da3220ebe558e1";
+const LEGACY_ASI_HASHES: &[&str] = &["2b4e7714ba8b1758c6298783dd304865c1ed51d89679061c48a8076b591775b6", "ada24eed6afad06bc4a1682928a6cae1405814615b421afcb0216cb58dfffdd0", "d6e2e91f7bafd4caae6e47806a0d6557af571daaca3a2d2adb203be70e78083b", "06c996ce4b0072aea2b21eda90e1991265a7b3728f069f7d6a1090774060bcaf", "19ee1863d4275395b115bc297d42b33a55134f6eb7e59cf15ddd8b18cdd71c69"];
 const PROXY_HASH: &str = "412d410eb6091fb483b150bea1b13f8aeb746be8c62802ea7e081fd15ea64b69";
 fn digest(path: &Path) -> Result<String, String> {
     use sha2::{Digest,Sha256};
@@ -48,14 +48,14 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
     if manifest["adapter"]!="dsts-mvgl-v1" || manifest["schema"]!=1 { return Err("unsupported-adapter".into()); }
     let files=manifest["files"].as_object().ok_or("missing-files")?;
     if (files.is_empty() && !stage.join("profile.json").exists()) || files.len()>4096 { return Err("asset-count".into()); }
-    let snapshot_limit=if stage.join("profile.json").exists(){1024*1024*1024}else{256*1024*1024};
+    let snapshot_limit=1024*1024*1024;
     let mut seen=std::collections::HashSet::new();let mut total=0;
     for (key,hash) in files {
         if !key_valid(key) || !seen.insert(key.to_ascii_lowercase()) { return Err("unsafe-or-duplicate-key".into()); }
         let p=stage.join("assets").join(key);
         if fs::canonicalize(&p).map_err(|_| "asset-missing")? != p { return Err("redirected-asset".into()); }
         let size=regular(&p)?;total+=size;
-        if size==0 || size>64*1024*1024 || total>snapshot_limit { return Err("asset-size-limit".into()); }
+        if size==0 || size>128*1024*1024 || total>snapshot_limit { return Err("asset-size-limit".into()); }
         let hash=hash.as_str().ok_or("invalid-hash")?;
         checked_hash(&p,hash)?;
     }
@@ -288,19 +288,19 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
         validate_with_hashes(&r,&a,&p).unwrap();assert!(r.join("assets").join(key).exists());fs::remove_dir_all(r).unwrap();
     }
 
-    #[test]fn combined_snapshot_accepts_one_gib_but_single_packages_stay_bounded(){
+    #[test]fn single_and_combined_snapshots_accept_one_gib_and_128_mib_files(){
         let(r,a,p)=fixture();
         fs::remove_file(r.join("assets/app_0/images/eyes.dds")).unwrap();
         let first=r.join("assets/chunk00.bin");
-        fs::File::create(&first).unwrap().set_len(64*1024*1024).unwrap();
+        fs::File::create(&first).unwrap().set_len(128*1024*1024).unwrap();
         let hash=digest(&first).unwrap();let mut files=serde_json::Map::new();
-        for i in 0..16 {
+        for i in 0..8 {
             let key=format!("chunk{i:02}.bin");
             if i>0 {fs::hard_link(&first,r.join("assets").join(&key)).unwrap();}
             files.insert(key,Value::String(hash.clone()));
         }
         fs::write(r.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":files}).to_string()).unwrap();
-        assert_eq!(validate_with_hashes(&r,&a,&p).unwrap_err(),"asset-size-limit");
+        validate_with_hashes(&r,&a,&p).unwrap();
         fs::write(r.join("profile.json"),b"{}").unwrap();
         validate_with_hashes(&r,&a,&p).unwrap();
         fs::write(r.join("assets/zzoverflow.bin"),b"x").unwrap();

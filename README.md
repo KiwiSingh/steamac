@@ -129,7 +129,7 @@ The profile implementation also supports MBE table CSV edits (including append C
 
 ### Larger mod profiles (development)
 
-The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages remain capped at 256 MiB, individual files at 64 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
+The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages are capped at 1 GiB, individual files at 128 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
 
 Skip Opening Logos and Water Recolor use the existing loose-asset / MBE CSV paths. A seven-mod ARM64 fixture combining both with the existing costume, DigiRide and music packages compiled 84 tables and 17 music banks; checked publication produced 2,166 files / 352,712,628 bytes, retaining the previous profile. All existing music banks and ReShade loader/configuration files were unchanged. The opening-logo skip, Water Recolor and existing costume, DigiRide and music mods were confirmed working together in live ARM64 Proton gameplay. The native snapshot limit is also 1 GiB; the corrected adapter passed isolated Proton snapshot and hook tests.
 

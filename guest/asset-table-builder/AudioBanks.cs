@@ -9,7 +9,7 @@ using SonicAudioLib.CriMw;
 // serialization; does not contain or require Ryo/Reloaded runtime code.
 static class AudioBanks
 {
-    const int Limit = 64 * 1024 * 1024;
+    const int Limit = 128 * 1024 * 1024;
     public const string Prefix = "Ryo/Digimon Story Time Stranger/bgm/";
     public static bool IsInput(string key) => key.StartsWith(Prefix, StringComparison.Ordinal);
     static ushort U16(byte[] b, int p) => BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(p, 2));

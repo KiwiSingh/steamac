@@ -2776,7 +2776,7 @@ fn plugin_commit(app_id: u32, encoded_stage: &str, encoded_name: &str) -> Result
     }
     let stage_meta = fs::symlink_metadata(&stage).map_err(|_| "stage-missing")?;
     if !stage_meta.is_file() || stage_meta.file_type().is_symlink()
-        || stage_meta.len() == 0 || stage_meta.len() > 64 * 1024 * 1024 {
+        || stage_meta.len() == 0 || stage_meta.len() > 128 * 1024 * 1024 {
         return Err("stage-unsafe".into());
     }
     let destination = plugins.join(name);
