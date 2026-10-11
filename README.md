@@ -126,3 +126,9 @@ This fork tracks the upstream project and adds Kiwi-specific changes on top. Fea
 See the repository's existing license and upstream Steamac licensing information.
 
 The profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the app bundle audit passed.
+
+### Larger mod profiles (development)
+
+The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages remain capped at 256 MiB, individual files at 64 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
+
+Skip Opening Logos and Water Recolor use the existing loose-asset / MBE CSV paths. A seven-mod ARM64 fixture combining both with the existing costume, DigiRide and music packages compiled 84 tables and 17 music banks; checked publication produced 2,166 files / 352,712,628 bytes, retaining the previous profile. All existing music banks and ReShade loader/configuration files were unchanged. Gameplay checks are pending.

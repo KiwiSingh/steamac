@@ -48,13 +48,14 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
     if manifest["adapter"]!="dsts-mvgl-v1" || manifest["schema"]!=1 { return Err("unsupported-adapter".into()); }
     let files=manifest["files"].as_object().ok_or("missing-files")?;
     if (files.is_empty() && !stage.join("profile.json").exists()) || files.len()>4096 { return Err("asset-count".into()); }
+    let snapshot_limit=if stage.join("profile.json").exists(){1024*1024*1024}else{256*1024*1024};
     let mut seen=std::collections::HashSet::new();let mut total=0;
     for (key,hash) in files {
         if !key_valid(key) || !seen.insert(key.to_ascii_lowercase()) { return Err("unsafe-or-duplicate-key".into()); }
         let p=stage.join("assets").join(key);
         if fs::canonicalize(&p).map_err(|_| "asset-missing")? != p { return Err("redirected-asset".into()); }
         let size=regular(&p)?;total+=size;
-        if size==0 || size>64*1024*1024 || total>256*1024*1024 { return Err("asset-size-limit".into()); }
+        if size==0 || size>64*1024*1024 || total>snapshot_limit { return Err("asset-size-limit".into()); }
         let hash=hash.as_str().ok_or("invalid-hash")?;
         checked_hash(&p,hash)?;
     }
@@ -197,7 +198,7 @@ fn validate_profile(game:&Path,stage:&Path,asi_hash:&str,proxy_hash:&str)->Resul
         validate_stored_bundle(&bundle,asi_hash,proxy_hash)?;
         let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
         for key in manifest["files"].as_object().ok_or("missing-files")?.keys(){source_bytes+=regular(&root.join(key))?;}
-        if source_bytes>256*1024*1024{return Err("profile-source-size-limit".into());}
+        if source_bytes>1024*1024*1024{return Err("profile-source-size-limit".into());}
         let enabled=item["enabled"].as_bool().ok_or("invalid-mod-enabled")?;
         if enabled{
             let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
@@ -285,6 +286,29 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
         fs::write(r.join("assets").join(key),bytes).unwrap();
         fs::write(r.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":{key:format!("{:x}",Sha256::digest(bytes))}}).to_string()).unwrap();
         validate_with_hashes(&r,&a,&p).unwrap();assert!(r.join("assets").join(key).exists());fs::remove_dir_all(r).unwrap();
+    }
+
+    #[test]fn combined_snapshot_accepts_one_gib_but_single_packages_stay_bounded(){
+        let(r,a,p)=fixture();
+        fs::remove_file(r.join("assets/app_0/images/eyes.dds")).unwrap();
+        let first=r.join("assets/chunk00.bin");
+        fs::File::create(&first).unwrap().set_len(64*1024*1024).unwrap();
+        let hash=digest(&first).unwrap();let mut files=serde_json::Map::new();
+        for i in 0..16 {
+            let key=format!("chunk{i:02}.bin");
+            if i>0 {fs::hard_link(&first,r.join("assets").join(&key)).unwrap();}
+            files.insert(key,Value::String(hash.clone()));
+        }
+        fs::write(r.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","files":files}).to_string()).unwrap();
+        assert_eq!(validate_with_hashes(&r,&a,&p).unwrap_err(),"asset-size-limit");
+        fs::write(r.join("profile.json"),b"{}").unwrap();
+        validate_with_hashes(&r,&a,&p).unwrap();
+        fs::write(r.join("assets/zzoverflow.bin"),b"x").unwrap();
+        let mut manifest:Value=serde_json::from_slice(&fs::read(r.join("manifest.json")).unwrap()).unwrap();
+        manifest["files"]["zzoverflow.bin"]=Value::String(digest(&r.join("assets/zzoverflow.bin")).unwrap());
+        fs::write(r.join("manifest.json"),manifest.to_string()).unwrap();
+        assert_eq!(validate_with_hashes(&r,&a,&p).unwrap_err(),"asset-size-limit");
+        fs::remove_dir_all(r).unwrap();
     }
 
     fn activate_pointer(game:&Path,root:&Path)->Result<(),String>{activate_pointer_checked(game,root,None)}
