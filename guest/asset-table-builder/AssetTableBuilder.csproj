@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="AudioBanks.cs" />
+    <Compile Include="CompiledReuse.cs" />
     <ProjectReference Include="vendor/MVLibraryNET/MVLibraryNET.csproj" />
     <ProjectReference Include="vendor/SonicAudioLib/SonicAudioLib.csproj" />
   </ItemGroup>

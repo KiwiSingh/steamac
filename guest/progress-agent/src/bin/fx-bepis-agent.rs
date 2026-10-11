@@ -2840,7 +2840,7 @@ fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool
         match result{Ok(state)=>send(port,&format!("asset-profile-state {}",encode_field(&state.to_string())))?,Err(e)=>send(port,&format!("error {}",encode_field(&e)))?}
         return Ok(true);
     }
-    if let Some(rest)=request.strip_prefix("asset-profile-publish ") {
+    if let Some(rest)=request.strip_prefix("asset-profile-publish ").or_else(||request.strip_prefix("asset-profile-compose ")) {
         let result=(||->Result<PathBuf,String>{
             let fields:Vec<_>=rest.split_whitespace().collect();if fields.len()!=3{return Err("invalid-profile-request".into());}
             let app_id=fields[0].parse::<u32>().map_err(|_|"invalid-appid")?;
@@ -2848,7 +2848,7 @@ fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool
             let common=game.library_path.join("steamapps/common").canonicalize().map_err(|_|"common-unavailable")?;
             let root=game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
             if root==common || !path_is_within(&root,&common){return Err("game-root-escape".into());}
-            asset_mod::profile_publish(app_id,fields[1],&validated_guest_path(fields[2])?,&root)
+            if request.starts_with("asset-profile-compose "){asset_mod::profile_compose(app_id,fields[1],&validated_guest_path(fields[2])?,&root)}else{asset_mod::profile_publish(app_id,fields[1],&validated_guest_path(fields[2])?,&root)}
         })();
         match result{Ok(root)=>send(port,&format!("asset-profile-published {}",encode_field(&root.to_string_lossy())))?,Err(e)=>send(port,&format!("error {}",encode_field(&e)))?}
         return Ok(true);
@@ -3454,7 +3454,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 reShadeInstallV1 assetModInstallV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 reShadeInstallV1 assetModInstallV1 assetProfileReuseV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
             )?;
             continue;
         }

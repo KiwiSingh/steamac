@@ -63,6 +63,10 @@ fn validate_with_hashes(stage: &Path, asi_hash:&str,proxy_hash:&str) -> Result<(
     checked_hash(&stage.join("proxy.payload"),proxy_hash)?;
     let mut actual=Vec::new();tree(stage,stage,&mut actual,0)?;
     let mut expected:std::collections::HashSet<String>=files.keys().map(|k|format!("assets/{k}")).chain(["manifest.json","adapter.payload","proxy.payload"].map(str::to_owned)).collect();
+    if stage.join("compiled.json").symlink_metadata().is_ok() {
+        if regular(&stage.join("compiled.json"))?>1024*1024 {return Err("compiled-receipt-limit".into());}
+        expected.insert("compiled.json".into());
+    }
     if stage.join("profile.json").symlink_metadata().is_ok() {
         if regular(&stage.join("profile.json"))?>32768 {return Err("profile-size-limit".into());}
         expected.insert("profile.json".into());
@@ -246,8 +250,79 @@ fn activate_pointer_checked(game:&Path,root:&Path,expected_root:Option<&str>)->R
     Ok(())
 }
 #[cfg(not(unix))]fn activate_pointer_checked(_: &Path,_:&Path,_:Option<&str>)->Result<(),String>{Err("linux-required".into())}
+// Copy into a private snapshot; never hard-link mutable source assets.
+fn snapshot_copy(source:&Path,dest:&Path)->Result<(),String>{
+    use std::io::Write;
+    let mut input=fs::File::open(source).map_err(|_|"snapshot-open-failed")?;
+    let mut output=fs::OpenOptions::new().write(true).create_new(true).open(dest).map_err(|_|"snapshot-create-failed")?;
+    #[cfg(target_os="linux")] {
+        use std::os::fd::AsRawFd;
+        if unsafe{libc::ioctl(output.as_raw_fd(),0x40049409 as _,input.as_raw_fd())}==0{return Ok(());}
+    }
+    std::io::copy(&mut input,&mut output).map_err(|_|"snapshot-copy-failed")?;
+    output.flush().map_err(|_|"snapshot-copy-failed")?;Ok(())
+}
+fn compiled_receipt(bundle:&Path)->Result<Option<Value>,String>{
+    let path=bundle.join("compiled.json");
+    if path.symlink_metadata().is_err(){return Ok(None);}
+    if regular(&path)?>1024*1024{return Err("compiled-receipt-limit".into());}
+    Ok(Some(serde_json::from_slice(&fs::read(path).map_err(|_|"compiled-receipt-unreadable")?).map_err(|_|"compiled-receipt-invalid")?))
+}
+fn unchanged_profile(game:&Path,stage:&Path,state:&Value,asi_hash:&str,proxy_hash:&str)->Result<bool,String>{
+    if let Some(current)=active_root(game)? {
+        let bundle=owned_assets(game,&current)?;
+        if profile_json(&bundle)?["mods"]==state["mods"] {
+            validate_stored_bundle(&bundle,asi_hash,proxy_hash)?;
+            let old:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+            let new:Value=serde_json::from_slice(&fs::read(stage.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+            if old["files"]==new["files"] && compiled_receipt(&bundle)?==compiled_receipt(stage)? && checked_hash(&game.join("bepis-mvgl.asi"),asi_hash).is_ok() && checked_hash(&game.join("winmm.dll"),proxy_hash).is_ok() {
+                // Retain verified staging as evidence; never delete raced-in user files.
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+fn compose_sources(game:&Path,stage:&Path,asi_hash:&str,proxy_hash:&str)->Result<bool,String>{
+    if stage.parent()!=Some(game) || stage.canonicalize().map_err(|_|"stage-missing")?!=stage
+        || !stage.file_name().and_then(|s|s.to_str()).is_some_and(|s|s.strip_prefix(".bepis-asset-stage-").is_some_and(|id|id.len()==36 && id.bytes().all(|b|b.is_ascii_hexdigit() || b==b'-'))) {return Err("stage-outside-game".into());}
+    let mut actual=Vec::new();tree(stage,stage,&mut actual,0)?;
+    if actual.into_iter().collect::<std::collections::HashSet<_>>()!=["profile.json","adapter.payload","proxy.payload"].map(str::to_owned).into_iter().collect(){return Err("unexpected-compose-files".into());}
+    checked_hash(&stage.join("adapter.payload"),asi_hash)?;checked_hash(&stage.join("proxy.payload"),proxy_hash)?;
+    let state=profile_json(stage)?;
+    if state["schema"]!=1 || state["mods"].as_array().is_none_or(|mods|mods.len()>64){return Err("invalid-profile-mods".into());}
+    let mut winners=std::collections::BTreeMap::new();
+    for item in state["mods"].as_array().ok_or("invalid-profile-mods")?{
+        let root=PathBuf::from(item["root"].as_str().ok_or("invalid-mod-root")?);let bundle=owned_assets(game,&root)?;
+        validate_stored_bundle(&bundle,asi_hash,proxy_hash)?;
+        let manifest:Value=serde_json::from_slice(&fs::read(bundle.join("manifest.json")).map_err(|_|"manifest-unreadable")?).map_err(|_|"manifest-invalid")?;
+        if item["enabled"].as_bool().ok_or("invalid-mod-enabled")? {for (key,hash) in manifest["files"].as_object().ok_or("missing-files")?{winners.insert(key.to_ascii_lowercase(),(key.clone(),hash.clone(),root.join(key)));}}
+    }
+    // Validate metadata and limits before copying any source data.
+    let files:serde_json::Map<String,Value>=winners.values().map(|(key,hash,_)|(key.clone(),hash.clone())).collect();
+    fs::write(stage.join("manifest.json"),serde_json::json!({"schema":1,"adapter":"dsts-mvgl-v1","name":"Active asset mods","files":files}).to_string()).map_err(|_|"manifest-write-failed")?;
+    validate_profile(game,stage,asi_hash,proxy_hash)?;
+    if unchanged_profile(game,stage,&state,asi_hash,proxy_hash)? {return Ok(true);}
+    fs::create_dir(stage.join("assets")).map_err(|_|"snapshot-create-failed")?;
+    for (key,_,source) in winners.values(){let target=stage.join("assets").join(key);fs::create_dir_all(target.parent().unwrap()).map_err(|_|"snapshot-create-failed")?;snapshot_copy(source,&target)?;}
+    validate_with_hashes(stage,asi_hash,proxy_hash)?;Ok(false)
+}
+pub fn profile_compose(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,String>{
+    if app_id!=1984270 || adapter!="dsts-mvgl-v1"{return Err("unsupported-game-adapter".into());}
+    let game=game.canonicalize().map_err(|_|"game-root-unavailable")?;
+    checked_hash(&game.join(EXE),GAME_HASH)?;
+    for entry in fs::read_dir("/proc").map_err(|_|"process-inspection-unavailable")?.flatten(){if fs::read(entry.path().join("cmdline")).is_ok_and(|c|c.split(|b|*b==0).any(|x|x.ends_with(EXE.as_bytes()))){return Err("game-running".into());}}
+    for entry in fs::read_dir(&game).map_err(|_|"game-unreadable")?.flatten(){let name=entry.file_name().to_string_lossy().to_lowercase();if (name.ends_with(".asi") && name!="bepis-mvgl.asi") || name=="reloaded-dropin"{return Err("conflicting-loader".into());}}
+    if compose_sources(&game,stage,ASI_HASH,PROXY_HASH)? {return Ok(game.join(ACTIVE));}
+    profile_publish(app_id,adapter,stage,&game)
+}
 pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<PathBuf,String>{
+    if app_id!=1984270 || adapter!="dsts-mvgl-v1"{return Err("unsupported-game-adapter".into());}
     let game=fs::canonicalize(game).map_err(|_|"game-root-unavailable")?;
+    if stage.parent()!=Some(game.as_path()) || stage.canonicalize().map_err(|_|"stage-missing")?!=stage || !stage.file_name().and_then(|s|s.to_str()).is_some_and(|s|s.strip_prefix(".bepis-asset-stage-").is_some_and(|id|id.len()==36 && id.bytes().all(|b|b.is_ascii_hexdigit() || b==b'-'))) {return Err("stage-outside-game".into());}
+    checked_hash(&game.join(EXE),GAME_HASH)?;
+    for entry in fs::read_dir("/proc").map_err(|_|"process-inspection-unavailable")?.flatten(){if fs::read(entry.path().join("cmdline")).is_ok_and(|c|c.split(|b|*b==0).any(|x|x.ends_with(EXE.as_bytes()))){return Err("game-running".into());}}
+    for entry in fs::read_dir(&game).map_err(|_|"game-unreadable")?.flatten(){let name=entry.file_name().to_string_lossy().to_lowercase();if (name.ends_with(".asi") && name!="bepis-mvgl.asi") || name=="reloaded-dropin"{return Err("conflicting-loader".into());}}
     // State and all referenced package bytes are verified before any publication.
     validate_stage(stage)?;
     validate_profile(&game,stage,ASI_HASH,PROXY_HASH)?;
@@ -257,7 +332,7 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
             .arg(&game).arg(stage)
             .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR",game.join(".bepis-table-runtime"))
             .env("DOTNET_GCHeapHardLimit","20000000")
-            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
             .spawn().map_err(|_|"table-compiler-unavailable-update-steamac")?;
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(120);
         while child.try_wait().map_err(|_|"table-compiler-wait-failed")?.is_none(){
@@ -270,6 +345,7 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
     }
     let state=profile_json(stage)?;
     let base=state["baseRoot"].as_str().ok_or("invalid-profile-base")?.to_owned();
+    if unchanged_profile(&game,stage,&state,ASI_HASH,PROXY_HASH)? {return Ok(game.join(ACTIVE));}
     let root=install(app_id,adapter,stage,&game)?;
     activate_pointer_checked(&game,&root,Some(&base))?;
     Ok(game.join(ACTIVE))
@@ -326,6 +402,34 @@ pub fn profile_publish(app_id:u32,adapter:&str,stage:&Path,game:&Path)->Result<P
             {"id":"a","name":"Eyes","root":one.join("assets"),"enabled":true},
             {"id":"b","name":"Costume","root":two.join("assets"),"enabled":true}]});
         fs::write(dest.join("profile.json"),profile.to_string()).unwrap();(game,dest,a,p)
+    }
+    #[test]fn compose_reuses_sources_without_aliasing_and_respects_priority(){
+        let(g,old,a,p)=profile_fixture();let s=g.join(".bepis-asset-stage-00000000-0000-0000-0000-000000000001");fs::create_dir(&s).unwrap();
+        for name in ["profile.json","adapter.payload","proxy.payload"]{fs::copy(old.join(name),s.join(name)).unwrap();}
+        compose_sources(&g,&s,&a,&p).unwrap();
+        assert_eq!(fs::read(s.join("assets/app_0/images/eyes.dds")).unwrap(),b"two");
+        fs::write(s.join("assets/app_0/images/eyes.dds"),b"edit").unwrap();
+        assert_eq!(fs::read(g.join(".bepis-asset-mod-b/assets/app_0/images/eyes.dds")).unwrap(),b"two");fs::remove_dir_all(g).unwrap();
+    }
+    #[cfg(target_os="linux")]#[test]fn unchanged_profile_skips_snapshot_but_changes_and_tampering_do_not(){
+        let(g,s,a,p)=profile_fixture();let current=g.join(".bepis-asset-mod-c");fs::create_dir(&current).unwrap();
+        for name in ["profile.json","manifest.json","adapter.payload","proxy.payload"]{fs::copy(s.join(name),current.join(name)).unwrap();}
+        fs::create_dir_all(current.join("assets/app_0/images")).unwrap();fs::copy(s.join("assets/app_0/images/eyes.dds"),current.join("assets/app_0/images/eyes.dds")).unwrap();
+        fs::copy(s.join("adapter.payload"),g.join("bepis-mvgl.asi")).unwrap();fs::copy(s.join("proxy.payload"),g.join("winmm.dll")).unwrap();
+        activate_pointer(&g,&current.join("assets")).unwrap();
+        let state=profile_json(&s).unwrap();assert!(unchanged_profile(&g,&s,&state,&a,&p).unwrap());
+        fs::write(s.join("compiled.json"),b"{}").unwrap();assert!(!unchanged_profile(&g,&s,&state,&a,&p).unwrap());fs::remove_file(s.join("compiled.json")).unwrap();
+        let mut changed=state.clone();changed["mods"].as_array_mut().unwrap().reverse();assert!(!unchanged_profile(&g,&s,&changed,&a,&p).unwrap());
+        fs::write(current.join("assets/app_0/images/eyes.dds"),b"changed").unwrap();assert!(unchanged_profile(&g,&s,&state,&a,&p).is_err());fs::remove_dir_all(g).unwrap();
+    }
+    #[test]fn compose_rejects_tampered_source_and_stale_base(){
+        for tamper in [false,true]{
+            let(g,old,a,p)=profile_fixture();let s=g.join(".bepis-asset-stage-00000000-0000-0000-0000-000000000002");fs::create_dir(&s).unwrap();
+            for name in ["profile.json","adapter.payload","proxy.payload"]{fs::copy(old.join(name),s.join(name)).unwrap();}
+            if tamper{fs::write(g.join(".bepis-asset-mod-b/assets/app_0/images/eyes.dds"),b"changed").unwrap();}
+            else{let mut state=profile_json(&s).unwrap();state["baseRoot"]=Value::String("stale".into());fs::write(s.join("profile.json"),state.to_string()).unwrap();}
+            assert!(compose_sources(&g,&s,&a,&p).is_err());assert!(!s.join("assets").exists());fs::remove_dir_all(g).unwrap();
+        }
     }
     #[test]fn profile_merge_verifies_order_and_all_source_bytes(){
         let(g,s,a,p)=profile_fixture();validate_with_hashes(&s,&a,&p).unwrap();validate_profile(&g,&s,&a,&p).unwrap();
