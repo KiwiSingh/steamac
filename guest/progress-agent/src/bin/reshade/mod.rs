@@ -44,6 +44,15 @@ pub fn target(game: &Path, executable: &Path) -> Result<(PathBuf,String),String>
         || !executable.extension().is_some_and(|s| s.eq_ignore_ascii_case("exe")) { return Err("reshade:executable-outside-game".into()); }
     pe(executable,false)?; Ok((executable.parent().ok_or("reshade:executable-parent")?.to_owned(),digest(executable)?))
 }
+pub fn existing_runtime(game: &Path, executable: &Path) -> Result<Option<String>,String> {
+    let (directory,_) = target(game,executable)?;
+    let path = directory.join("dxgi.dll");
+    match path.symlink_metadata() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(err(e)),
+        Ok(_) => { runtime(&path)?; Ok(Some(digest(&path)?)) }
+    }
+}
 pub fn preflight(game: &Path, executable: &Path) -> Result<(PathBuf,String),String> {
     let result = target(game,executable)?; stopped(executable)?; Ok(result)
 }
@@ -165,7 +174,13 @@ fn install_checked(app_id: u32, stage: &Path, game: &Path, compiler_hash: &str, 
         let old = if destination.symlink_metadata().is_ok() { Some(digest(&destination)?) } else { None };
         if old.as_deref() == Some(hash) { continue; }
         if let Some(ref old_hash) = old {
-            if owned.get(key) != Some(old_hash) { return Err(format!("reshade:unmanaged-or-edited-file:{key}")); }
+            if owned.get(key) != Some(old_hash) {
+                if key == "ReShade.ini" && manifest["replaceExistingSettings"] == true {
+                    // Explicit configuration-only replacement. Require an actual existing
+                    // ReShade runtime and retain the exact previous settings in the journal.
+                    runtime(&directory.join("dxgi.dll"))?;
+                } else { return Err(format!("reshade:unmanaged-or-edited-file:{key}")); }
+            }
         }
         changes.push((key.clone(),hash.clone(),old));
     }
@@ -325,10 +340,34 @@ mod tests {
         let unique=f.root.join(format!("running-{}.exe",f.root.file_name().unwrap().to_string_lossy()));
         fs::rename(f.root.join("fixture-game.exe"),&unique).unwrap();
         let mut manifest=read_json(&s.join("manifest.json")).unwrap();manifest["executable"]=json!(unique);fs::write(s.join("manifest.json"),manifest.to_string()).unwrap();
-        let mut child=std::process::Command::new("/bin/sh").args(["-c","sleep 10",unique.to_str().unwrap()]).spawn().unwrap();
+        let mut child=std::process::Command::new("/bin/sh").args(["-c","read value; :",unique.to_str().unwrap()]).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        // spawn can return before the child publishes its final argv under the
+        // container runtime. Wait for observable process evidence before testing it.
+        let cmdline=PathBuf::from(format!("/proc/{}/cmdline",child.id()));
+        let mut visible=false;
+        for _ in 0..100 {
+            if fs::read(&cmdline).unwrap_or_default().split(|b|*b==0).any(|arg|arg.ends_with(unique.file_name().unwrap().as_encoded_bytes())) { visible=true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !visible { let actual=fs::read(&cmdline);let _=child.kill();let _=child.wait();panic!("test process argv not visible: {actual:?}"); }
         assert!(preflight(&f.root,&unique).unwrap_err().contains("game-running"));
         assert!(install_test(&f,&s).unwrap_err().contains("game-running"));
         let _=child.kill();let _=child.wait();assert!(!f.root.join("ReShade.ini").exists());intact(&f);
+    }
+
+    #[test] fn explicit_settings_replacement_keeps_backup_and_requires_reshade() {
+        let f=fixture();let s=stage(&f,1,b"Techniques=A",true);
+        fs::write(f.root.join("ReShade.ini"),b"original user settings").unwrap();
+        let mut m=read_json(&s.join("manifest.json")).unwrap();m["replaceExistingSettings"]=json!(true);fs::write(s.join("manifest.json"),m.to_string()).unwrap();
+        assert!(install_test(&f,&s).is_err());assert_eq!(fs::read(f.root.join("ReShade.ini")).unwrap(),b"original user settings");
+        fs::write(f.root.join("dxgi.dll"),binary(true)).unwrap();install_test(&f,&s).unwrap();
+        assert!(fs::read_dir(s.join("transaction")).unwrap().any(|e|fs::read(e.unwrap().path()).ok().as_deref()==Some(b"original user settings")));
+        intact(&f);
+    }
+    #[test] fn runtime_discovery_preserves_existing_and_rejects_foreign_proxy() {
+        let f=fixture();let exe=f.root.join("fixture-game.exe");assert!(existing_runtime(&f.root,&exe).unwrap().is_none());
+        fs::write(f.root.join("dxgi.dll"),b"foreign proxy").unwrap();assert!(existing_runtime(&f.root,&exe).is_err());
+        fs::write(f.root.join("dxgi.dll"),binary(true)).unwrap();assert!(existing_runtime(&f.root,&exe).unwrap().is_some());
     }
 
 }

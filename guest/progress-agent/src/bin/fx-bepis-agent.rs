@@ -2793,7 +2793,7 @@ fn plugin_commit(app_id: u32, encoded_stage: &str, encoded_name: &str) -> Result
 }
 
 fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool> {
-    if let Some(rest) = request.strip_prefix("reshade-target ").or_else(|| request.strip_prefix("reshade-state ")) {
+    if let Some(rest) = request.strip_prefix("reshade-target ").or_else(|| request.strip_prefix("reshade-state ")).or_else(|| request.strip_prefix("reshade-runtime ")) {
         let result = (|| -> Result<String,String> {
             let fields: Vec<_> = rest.split_whitespace().collect();
             if fields.len() != 2 { return Err("invalid-reshade-target".into()); }
@@ -2803,7 +2803,10 @@ fn handle_fs_request(port: &mut std::fs::File, request: &str) -> io::Result<bool
             let root = game.install_path.canonicalize().map_err(|_|"game-unavailable")?;
             if root == common || !path_is_within(&root,&common) { return Err("game-root-escape".into()); }
             let executable = validated_guest_path(fields[1])?;
-            if request.starts_with("reshade-state ") {
+            if request.starts_with("reshade-runtime ") {
+                let hash = reshade::existing_runtime(&root,&executable)?.unwrap_or_else(|| "absent".into());
+                Ok(format!("reshade-runtime {hash}"))
+            } else if request.starts_with("reshade-state ") {
                 let state = if reshade::installed(app_id,&root,&executable)? {"installed"} else {"absent"};
                 Ok(format!("reshade-state {state}"))
             } else {
