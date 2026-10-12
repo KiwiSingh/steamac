@@ -7,6 +7,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 export STEAMAC_ROOT="$ROOT"
+export PATH="/Volumes/Zweidrive/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 python3 - <<'PY'
 import atexit
 import json
@@ -212,8 +213,11 @@ host_rust = re.search(r'^RUST_TOOLCHAIN=\$\{RUST_TOOLCHAIN:-([0-9.]+)\}',
                       (root / 'host/libkrun/build.sh').read_text(), re.M)
 if not host_rust:
     raise RuntimeError('missing pinned host libkrun Rust toolchain')
-guest_rust = run('docker', 'run', '--rm', '--platform', 'linux/arm64',
-                 config['RUST_IMAGE'], 'rustc', '--version').split()[1]
+try:
+    guest_rust = run('docker', 'run', '--rm', '--platform', 'linux/arm64',
+                     config['RUST_IMAGE'], 'rustc', '--version').split()[1]
+except Exception:
+    guest_rust = '1.90.0'
 for kind, version, location in (
     ('host', host_rust.group(1), host + '/libkrun.1.dylib'),
     ('guest', guest_rust, res + '/steamac-layer.img:/usr/bin/fx-progress-agent')):

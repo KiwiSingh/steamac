@@ -21,7 +21,7 @@ final class LauncherSettings: ObservableObject {
     enum Key: String, CaseIterable {
         // General
         case showOverlay, showStallIndicator, openFullscreen, perfStats, sendCrashReports, muteInBackground, pauseInBackground,
-             closeAction, checkForUpdates, followMacTime, shareClipboard, shareConcealedClipboard
+             closeAction, checkForUpdates, followMacTime, shareClipboard, shareConcealedClipboard, discordRPC
         // Display
         case dpiSource, fixedDPI, fixedWidthMM, fixedHeightMM, refreshRate, followWindowSize, windowWidth, windowHeight,
              windowSizePreset, retinaResolution, metalHUD, superResolution
@@ -248,6 +248,8 @@ final class LauncherSettings: ObservableObject {
     /// with the second switch. Both apply now.
     @Published var shareClipboard = true { didSet { save(.shareClipboard, shareClipboard) } }
     @Published var shareConcealedClipboard = false { didSet { save(.shareConcealedClipboard, shareConcealedClipboard) } }
+    /// Discord Rich Presence on macOS (DiscordRPCBridge); applies now.
+    @Published var discordRPC = true { didSet { save(.discordRPC, discordRPC); DiscordRPCBridge.shared.settingsChanged() } }
     @Published var closeAction = CloseAction.shutDown { didSet { save(.closeAction, closeAction.rawValue) } }
     /// New-version check when the app starts (UpdateChecker; never in development builds); applies now.
     @Published var checkForUpdates = true { didSet { save(.checkForUpdates, checkForUpdates) } }
@@ -346,6 +348,7 @@ final class LauncherSettings: ObservableObject {
         bool(.pauseInBackground, &pauseInBackground)
         bool(.shareClipboard, &shareClipboard)
         bool(.shareConcealedClipboard, &shareConcealedClipboard)
+        bool(.discordRPC, &discordRPC)
         if let s = d.string(forKey: Key.closeAction.rawValue).flatMap(CloseAction.init(rawValue:)) { closeAction = s }
         bool(.checkForUpdates, &checkForUpdates)
         bool(.followMacTime, &followMacTime)
@@ -424,6 +427,7 @@ final class LauncherSettings: ObservableObject {
         case .pauseInBackground: guard let b else { return false }; pauseInBackground = b
         case .shareClipboard: guard let b else { return false }; shareClipboard = b
         case .shareConcealedClipboard: guard let b else { return false }; shareConcealedClipboard = b
+        case .discordRPC: guard let b else { return false }; discordRPC = b
         case .closeAction: guard let v = CloseAction(rawValue: text) else { return false }; closeAction = v
         case .checkForUpdates: guard let b else { return false }; checkForUpdates = b
         case .followMacTime: guard let b else { return false }; followMacTime = b

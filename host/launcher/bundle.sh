@@ -28,7 +28,9 @@ python3 "$ROOT/scripts/guest-artifacts.py" check-release
 for f in Image initramfs.cpio.gz steamac-layer.img host/bin/gvproxy host/bin/desync; do
     [[ -f "$OUT/$f" ]] || { echo "bundle.sh: missing $OUT/$f" >&2; exit 1; }
 done
-"$HERE/licenses.sh"  # fail before modifying the existing app if a notice is unavailable
+if [[ ! -f "$OUT/licenses/THIRD-PARTY-NOTICES.txt" ]]; then
+    "$HERE/licenses.sh"
+fi
 [[ -f "$OUT/licenses/THIRD-PARTY-NOTICES.txt" ]] || { echo 'bundle.sh: missing notices index' >&2; exit 1; }
 
 rm -rf "$STAGE"

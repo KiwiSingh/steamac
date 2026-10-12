@@ -295,9 +295,21 @@ do {
         FileManager.default.createFile(atPath: Supervisor.rebootMarker(dir), contents: Data(frame.utf8))
         log("guest is rebooting: the VM will be restarted")
     }
-    progress.onGameName = { id, name in settings.setGameName(name, for: id) }
+    progress.onGameName = { id, name in
+        settings.setGameName(name, for: id)
+        DiscordRPCBridge.shared.gameNameResolved(appId: id, name: name)
+    }
     // `appid` tag of crash/error reports (the window and GamePause chain their handlers after this).
-    progress.onFocus = { CrashReporting.focusedGame($0) }
+    progress.onFocus = { focus in
+        CrashReporting.focusedGame(focus)
+        switch focus {
+        case .game(let appId):
+            let knownName = settings.gameName(appId)
+            DiscordRPCBridge.shared.gameFocused(appId: appId, name: knownName)
+        default:
+            DiscordRPCBridge.shared.nonGameFocused()
+        }
+    }
     progress.onProvision = { ok, reason in Provision.finished(ok: ok, reason: reason, payload: options.provisionPayload) }
     if let p = options.provisionPayload { log("provision: first boot of this disk: payload \(p) attached read-only, \(Provision.cmdlineFlag)") }
     progress.onConfig = { ok, reason in Provision.configFinished(ok: ok, reason: reason, payload: options.configPayload) }
@@ -502,7 +514,8 @@ do {
     }
     console.start()
     vm.start()
-    withExtendedLifetime((presenter, gamepad, progressPort, supervisorWatch, perfSubscription, gamePause, suspender, clipboard)) {
+    DiscordRPCBridge.shared.start()
+    withExtendedLifetime((presenter, gamepad, progressPort, supervisorWatch, perfSubscription, gamePause, suspender, clipboard, DiscordRPCBridge.shared)) {
         app.run()
     }
 } catch {

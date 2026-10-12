@@ -305,6 +305,11 @@ private struct GeneralTab: View {
                            now: true)
                 }
                 .disabled(!settings.shareClipboard)
+                Toggle(isOn: $settings.discordRPC) {
+                    Label2(title: "Discord Rich Presence",
+                           detail: "Show the currently active SteamOS game status on macOS Discord clients (Official Discord, Vesktop, etc.).",
+                           now: true)
+                }
             }
             Section {
                 Toggle(isOn: $settings.muteInBackground) {
@@ -856,6 +861,7 @@ private struct AdvancedTab: View {
     @State private var confirmReset = false
     @StateObject private var password = GuestPasswordModel()
     @StateObject private var bepisSSH = BepisSSHModel()
+    @StateObject private var geProton = GEProtonModel()
     static let maxCPUs = ProcessInfo.processInfo.activeProcessorCount
     static let maxGiB = max(4, Int(ProcessInfo.processInfo.physicalMemory >> 30) - 4)
     static let host = VMSizing.Host.current
@@ -991,6 +997,24 @@ private struct AdvancedTab: View {
                         Text(bepisSSH.message).font(.caption).foregroundStyle(.secondary)
                     }
                     Text("Sets up a per-disk SSH key for passwordless SCP. The SteamOS VM must be running; after enabling SSH, restart the VM if required. SteamOS password changes normally preserve SSH keys, but lost access may require running setup again.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Button(geProton.busy ? "Installing GE-Proton…" : "Install GE-Proton") {
+                            guard let disk = nextDisk else {
+                                geProton.message = "Select a SteamOS disk first."
+                                return
+                            }
+                            settings.network = true
+                            settings.sshEnabled = true
+                            password.ensure()
+                            geProton.install(diskPath: disk, port: settings.sshPort)
+                        }
+                        .disabled(geProton.busy || nextDisk == nil)
+                        Text(geProton.message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Downloads the latest GE-Proton release and extracts it directly into Steam's compatibilitytools.d directory inside SteamOS. The VM must be running.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle(isOn: $settings.network) {
@@ -1303,6 +1327,64 @@ private final class GuestPasswordModel: ObservableObject {
     }
 }
 
+@MainActor private final class GEProtonModel: ObservableObject {
+    @Published var busy = false
+    @Published var message = "One-click install into ~/.local/share/Steam/compatibilitytools.d"
+
+    func install(diskPath: String, port: Int) {
+        guard !busy else { return }
+        guard let disk = GuestPassword.identity(ofDisk: diskPath) else {
+            message = "Could not identify the selected disk."
+            return
+        }
+
+        let auth = LAContext()
+        var authError: NSError?
+        guard auth.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
+            message = "macOS authentication unavailable: " + (authError?.localizedDescription ?? "unknown error")
+            return
+        }
+
+        busy = true
+        message = "Authenticating with macOS…"
+
+        auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Install GE-Proton into SteamOS") { [weak self] allowed, error in
+            Task { @MainActor in
+                guard let self else { return }
+                guard allowed else {
+                    self.busy = false
+                    self.message = error?.localizedDescription ?? "Authentication cancelled"
+                    return
+                }
+
+                guard let secret = GuestPassword.password(disk: disk) else {
+                    self.busy = false
+                    self.message = "No SteamOS password in Keychain for this disk. Generate or apply one first."
+                    return
+                }
+
+                self.message = "Preparing installation…"
+                Task.detached {
+                    do {
+                        let result = try await GEProtonInstaller.install(disk: disk, port: port, password: secret) { progressMsg in
+                            Task { @MainActor in self.message = progressMsg }
+                        }
+                        await MainActor.run {
+                            self.busy = false
+                            self.message = result
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.busy = false
+                            self.message = "Installation failed: \(error.localizedDescription)"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private enum BepisSSHBootstrap {
     // Read-only inspection. No authentication, provisioning, or network I/O.
     static func isConfigured(disk: String) -> Bool {
@@ -1427,5 +1509,114 @@ private enum BepisSSHBootstrap {
                          "-o", "PasswordAuthentication=no", "-o", "StrictHostKeyChecking=accept-new",
                          "-o", "UserKnownHostsFile=" + knownHosts.path, "-i", key.path,
                          probe.path, "steamos@127.0.0.1:/tmp/" + probe.lastPathComponent])
+    }
+}
+
+private enum GEProtonInstaller {
+    struct ReleaseAsset {
+        let name: String
+        let downloadURL: String
+    }
+
+    struct ReleaseInfo {
+        let tag: String
+        let asset: ReleaseAsset
+    }
+
+    static func fetchLatestRelease() async throws -> ReleaseInfo {
+        let apiURL = URL(string: "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest")!
+        var request = URLRequest(url: apiURL)
+        request.setValue("steamac-launcher", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(domain: "GEProton", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to query GitHub for latest GE-Proton release."])
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tag = json["tag_name"] as? String,
+              let assets = json["assets"] as? [[String: Any]] else {
+            throw NSError(domain: "GEProton", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid release metadata from GitHub."])
+        }
+
+        var chosenAsset: ReleaseAsset?
+        // Prioritize aarch64 native build, fall back to x86_64 or general tarball
+        for candidate in ["aarch64", "x86_64", ""] {
+            for asset in assets {
+                guard let name = asset["name"] as? String,
+                      let url = asset["browser_download_url"] as? String,
+                      name.hasSuffix(".tar.gz") else { continue }
+                if candidate.isEmpty || name.contains(candidate) {
+                    chosenAsset = ReleaseAsset(name: name, downloadURL: url)
+                    break
+                }
+            }
+            if chosenAsset != nil { break }
+        }
+
+        guard let asset = chosenAsset else {
+            throw NSError(domain: "GEProton", code: 3, userInfo: [NSLocalizedDescriptionKey: "No compatible tarball found in GE-Proton release \(tag)."])
+        }
+
+        return ReleaseInfo(tag: tag, asset: asset)
+    }
+
+    static func install(disk: String, port: Int, password: String, progress: @escaping @Sendable (String) -> Void) async throws -> String {
+        // First ensure SSH access is established
+        progress("Configuring SSH access…")
+        try BepisSSHBootstrap.run(disk: disk, port: port, password: password)
+
+        let safeID = disk.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let directory = support.appendingPathComponent("KiwiSteamac/BepisBridge/" + safeID, isDirectory: true)
+        let key = directory.appendingPathComponent("id_ed25519")
+        let knownHosts = directory.appendingPathComponent("known_hosts")
+
+        let options = ["-p", String(port), "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+                       "-o", "UserKnownHostsFile=" + knownHosts.path, "-o", "IdentitiesOnly=yes",
+                       "-i", key.path, "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no"]
+
+        progress("Checking latest GE-Proton release…")
+        let release = try await fetchLatestRelease()
+
+        progress("Downloading and installing \(release.tag) inside SteamOS…")
+        let installCommand = """
+        set -eu
+        mkdir -p ~/.local/share/Steam/compatibilitytools.d
+        cd ~/.local/share/Steam/compatibilitytools.d
+        if [ -d "\(release.tag)" ] || [ -d "\(release.tag)-aarch64" ] || [ -d "\(release.tag)-x86_64" ]; then
+            echo "ALREADY_INSTALLED"
+            exit 0
+        fi
+        echo "Downloading \(release.asset.downloadURL)..."
+        curl -sSL -f "\(release.asset.downloadURL)" -o "\(release.asset.name)"
+        echo "Extracting \(release.asset.name)..."
+        tar -xzf "\(release.asset.name)"
+        rm -f "\(release.asset.name)"
+        echo "DONE"
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = options + ["steamos@127.0.0.1", installCommand]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let output = String(decoding: outputData, as: UTF8.self)
+            throw NSError(domain: "GEProton", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "GE-Proton installation failed (exit \(process.terminationStatus)): \(output)"])
+        }
+
+        let output = String(decoding: outputData, as: UTF8.self)
+        if output.contains("ALREADY_INSTALLED") {
+            return "\(release.tag) is already installed in SteamOS."
+        }
+        return "Successfully installed \(release.tag) into ~/.local/share/Steam/compatibilitytools.d/! Restart Steam in the VM to select it."
     }
 }

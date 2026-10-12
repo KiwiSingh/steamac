@@ -975,6 +975,60 @@ fn deactivate_bepinex(app_id: u32) -> Result<usize, String> {
     Ok(changed)
 }
 
+fn set_custom_launch_options(app_id: u32, options: &str) -> Result<usize, String> {
+    if !known_steam_app(app_id) {
+        return Err(format!("unknown Steam app ID {app_id}"));
+    }
+
+    let configs = localconfig_files()?;
+    let mut changed = 0usize;
+
+    for (_account, config) in configs {
+        let text = fs::read_to_string(&config)
+            .map_err(|error| format!("could not read {}: {error}", config.display()))?;
+
+        let app_id_string = app_id.to_string();
+
+        let Some(_) = find_vdf_section(
+            &text,
+            &["Software", "Valve", "Steam", "apps", &app_id_string],
+        )?
+        else {
+            continue;
+        };
+
+        let opt_value = if options.trim().is_empty() {
+            None
+        } else {
+            Some(options)
+        };
+
+        let (updated, _) = set_launch_options(&text, app_id, opt_value)?;
+
+        atomic_write(&config, &updated)?;
+        changed += 1;
+    }
+
+    Ok(changed)
+}
+
+fn launch_steam_game(app_id: u32) -> Result<(), String> {
+    if !known_steam_app(app_id) {
+        return Err(format!("unknown Steam app ID {app_id}"));
+    }
+
+    let steam_url = format!("steam://run/{app_id}");
+    Command::new("steam")
+        .arg(&steam_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to launch Steam game {app_id}: {error}"))?;
+
+    Ok(())
+}
+
 // 41F-21B.8: Pure, read-only BepInEx marker classifier. Game lookup and
 // Steam-library containment checks remain in bepinex_inventory below.
 // Never follow marker symlinks; unknown/partial must fail closed.
@@ -3454,7 +3508,7 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
         if request == "hello" {
             send(
                 &mut port,
-                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 reShadeInstallV1 assetModInstallV1 assetProfileReuseV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1",
+                "hello 1 KiwiSingh/steamac guestFileAccess pluginCommitV1 reShadeInstallV1 assetModInstallV1 assetProfileReuseV1 assetModProfilesV1 assetMbeTablesV1 assetAudioBanksV1 recoveryInventoryV1 steamLibraryDiscovery protonPrefixResolution protonRuntimeResolution protonEnvironmentInspection reloadedIIPathDiscovery reloadedIISetupExecution reloadedIIModDiscovery reloadedIIModInventoryV1 reloadedIIModMetadataV1 bepInExInstallationInventoryV1 modLaunchReservationV1 protonRuntimeAttestationV1 gameLaunchV1 launchOptionsInjectionV1",
             )?;
             continue;
         }
@@ -3557,6 +3611,62 @@ fn serve(mut port: std::fs::File) -> io::Result<()> {
                     }
                 },
 
+                Err(_) => {
+                    send(&mut port, "error invalid Steam app ID")?;
+                }
+            }
+
+            continue;
+        }
+
+        if let Some(rest) = request.strip_prefix("launch-options-set ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.is_empty() {
+                send(&mut port, "error invalid-launch-options-request")?;
+                continue;
+            }
+
+            match parts[0].parse::<u32>() {
+                Ok(app_id) => {
+                    let decoded_options = if parts.len() > 1 {
+                        match decode_field(parts[1]) {
+                            Some(val) => val,
+                            None => {
+                                send(&mut port, "error invalid-encoded-options")?;
+                                continue;
+                            }
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    match set_custom_launch_options(app_id, &decoded_options) {
+                        Ok(changed) => {
+                            send(&mut port, &format!("launch-options-set {app_id} {changed}"))?;
+                        }
+                        Err(error) => {
+                            send(&mut port, &format!("error {error}"))?;
+                        }
+                    }
+                }
+                Err(_) => {
+                    send(&mut port, "error invalid Steam app ID")?;
+                }
+            }
+
+            continue;
+        }
+
+        if let Some(raw_app_id) = request.strip_prefix("game-launch ") {
+            match raw_app_id.trim().parse::<u32>() {
+                Ok(app_id) => match launch_steam_game(app_id) {
+                    Ok(()) => {
+                        send(&mut port, &format!("game-launched {app_id}"))?;
+                    }
+                    Err(error) => {
+                        send(&mut port, &format!("error {error}"))?;
+                    }
+                },
                 Err(_) => {
                     send(&mut port, "error invalid Steam app ID")?;
                 }

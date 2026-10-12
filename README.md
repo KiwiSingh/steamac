@@ -4,9 +4,15 @@ A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on q
 
 The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.8` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.8))
+> **Latest Kiwi release:** `v1.7.6-kiwi.9` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.9))
 
-Kiwi Build 8 pairs with [BepisLoader 2.3.1](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.3.1) for automatic ReShade setup, ZIP/RAR/7z imports, 1 GiB mod/profile limits and 128 MiB files. Guest-side composition and verified compiled-output reuse speed up Apply without transferring existing payloads through the Mac. The app-bundle audit passed. See [release notes and upgrade steps](docs/releases/v1.7.6-kiwi.8.md).
+Kiwi Build 9 pairs with [BepisLoader 2.3.4](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.3.4) and introduces Discord Rich Presence support for games running in SteamOS with persistent IPC connection management, correct game application metadata, and fast GE-Proton compatibility runtime management directly from the settings interface.
+
+## New in Kiwi Build 9
+
+- **Discord Rich Presence for Steam Games**: Automatically updates your Discord status with currently focused SteamOS games, game art, and active play session timestamps through native macOS Discord IPC (compatible with official Discord and Vesktop/arRPC).
+- **GE-Proton Runtime Downloader**: Manage and install the latest GE-Proton builds directly into SteamOS compatibility tools from the settings window.
+- **BepisBridge Enhancements**: Improved bridge reliability and compatibility integration with BepisLoader.
 
 ## New in Kiwi Build 6
 
@@ -126,7 +132,7 @@ https://github.com/KiwiSingh/steamac/releases
 
 The current release is:
 
-**Steamac 1.7.6 Kiwi Build 8 — `v1.7.6-kiwi.8`**
+**Steamac 1.7.6 Kiwi Build 9 — `v1.7.6-kiwi.9`**
 
 The release ZIP is ad-hoc signed and is **not notarized with an Apple Developer ID**.
 
