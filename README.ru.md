@@ -1,6 +1,6 @@
 # Steamac — Сборка Kiwi
 
-[English](README.md) · **Русский** · [简体中文](README.zh.md)
+[English](README.md) · **Русский** · [简体中文](README.zh.md) · [हिंदी](README.hi.md)
 
 Персональный форк [fxgl/steamac](https://github.com/fxgl/steamac), ориентированный на повышение удобства использования и качества работы игр SteamOS на компьютерах Mac с процессорами Apple Silicon.
 

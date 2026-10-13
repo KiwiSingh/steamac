@@ -1,6 +1,6 @@
 # Steamac — Kiwi Build
 
-**English** · [Русский](README.ru.md) · [简体中文](README.zh.md)
+**English** · [Русский](README.ru.md) · [简体中文](README.zh.md) · [हिंदी](README.hi.md)
 
 A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on quality-of-life improvements for running SteamOS games on Apple silicon Macs.
 
