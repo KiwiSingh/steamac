@@ -1,55 +1,51 @@
 # Steamac — Kiwi Build
 
+**English** · [Русский](README.ru.md) · [简体中文](README.zh.md)
+
 A personal fork of [fxgl/steamac](https://github.com/fxgl/steamac), focused on quality-of-life improvements for running SteamOS games on Apple silicon Macs.
 
-The current release is based on **Steamac 1.7.6** and retains the upstream project's native DualSense passthrough, MetalFX support, Retina resolution support, and other improvements.
+The current release is based on **Steamac 1.9** and brings all upstream improvements from releases 1.8, 1.8.1, 1.8.2, and 1.9 alongside Kiwi enhancements (75% automatic RAM allocation, BepisBridge, Discord Rich Presence, GE-Proton installer, and ReShade/Asset Mod management).
 
-> **Latest Kiwi release:** `v1.7.6-kiwi.9` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.7.6-kiwi.9))
+> **Latest Kiwi release:** `v1.9-kiwi.1` ([download](https://github.com/KiwiSingh/steamac/releases/tag/v1.9-kiwi.1))
 
-Kiwi Build 9 pairs with [BepisLoader 2.3.4](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.3.4) and introduces Discord Rich Presence support for games running in SteamOS with persistent IPC connection management, correct game application metadata, and fast GE-Proton compatibility runtime management directly from the settings interface.
+Kiwi Build 1.9 pairs with [BepisLoader 2.3.4+](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.3.4) for mod management and SteamOS integration.
 
-## New in Kiwi Build 9
+## New in Kiwi Build 1.9 (`v1.9-kiwi.1`)
 
-- **Discord Rich Presence for Steam Games**: Automatically updates your Discord status with currently focused SteamOS games, game art, and active play session timestamps through native macOS Discord IPC (compatible with official Discord and Vesktop/arRPC).
-- **GE-Proton Runtime Downloader**: Manage and install the latest GE-Proton builds directly into SteamOS compatibility tools from the settings window.
-- **BepisBridge Enhancements**: Improved bridge reliability and compatibility integration with BepisLoader.
+### Upstream 1.8 – 1.9 Features Integrated
+- **DirectX 12 Feature Level 12_0 on KosmicKrisp (macOS 26+)**:
+  - Implements real tiled resources (D3D12 tiled resources tier 2) on Metal 4 placement sparse resources: sparse binding of images and buffers, shader residency queries (`CheckAccessFullyMapped`), unbound tiles reading zero, and sampler min/max reduction.
+  - Enables DirectX 12 games that strictly require feature level 12_0 (such as *Resident Evil 2*) to launch and access enhanced rendering paths.
+- **Multichannel Audio up to 12 Channels**:
+  - Automatically reads speaker layouts configured in macOS Audio MIDI Setup at VM boot (supporting 5.1, 7.1, 5.1.2, and 7.1.4 with height speakers).
+  - Routes PCM channels directly to physical hardware speakers with automatic downmixing when physical channels are missing.
+- **Instant Output Switching**:
+  - Audio follows default output changes (such as connecting AirPods or selecting a device in macOS Control Center) immediately without lag.
+- **Multiplayer Controller Support**:
+  - Additional connected gamepads beyond the primary controller automatically map to guest player slots 2–4.
+- **MoltenVK & DXVK Compatibility Fixes**:
+  - *Counter-Strike 2*: Empty/null descriptor sets bound via `vkCmdBindDescriptorSets` no longer crash the VM.
+  - *Left 4 Dead 2 & DXVK*: Fragment shaders writing unsigned values to signed-integer render targets now compile correctly without shader errors.
+- **KosmicKrisp Stability & Diagnostics**:
+  - *Dota 2 & CS2*: Query pool exhaustion resolved by chunking occlusion results and sharing timestamp counter heaps.
+  - *M3+ GPU Startup Fix*: Render pass target textures are registered in Metal 4 residency sets, resolving startup GPU timeouts.
+  - Detailed diagnostic reporting naming the exact GPU workload and driver failure reason on timeouts.
+- **Clearer Network & Certificate Errors**:
+  - VPN, proxy, and TLS issues provide actionable diagnostic messages rather than raw system error codes.
+  - Valve development-signed builds (e.g., `rc` branch) are identified clearly with fallback suggestions.
+- **Metal Compiler Cache Fallback**:
+  - Automatically redirects to launcher cache if app compiler cache directories are read-only.
+- **UI Localization**:
+  - Launcher windows, menus, settings, and progress notifications now support Russian and Simplified Chinese based on system language preferences.
 
-## New in Kiwi Build 6
+### Maintained Kiwi Enhancements
+- **75% Automatic VM Memory Allocation**: Retains generous host memory sizing (up to 75% of physical RAM, 4–16 GiB) while reserving adequate memory for macOS and unified GPU workloads.
+- **BepisBridge Integration**: Seamless integration with BepisLoader for mod installation, ReShade injection, and game library inspection.
+- **Discord Rich Presence**: Native macOS Discord IPC status updates with active game art and playtime tracking.
+- **GE-Proton Runtime Downloader**: One-click GE-Proton installation into SteamOS compatibility tools directly from Settings.
+- **Combined Asset Mod Profiles & ReShade**: Full support for checked asset replacement, MBE CSV tables, ADX2 audio banks, and DXGI ReShade runtime injection.
 
-The bundled SteamOS guest agent adds `assetModProfilesV1` and `assetMbeTablesV1` alongside `assetModInstallV1`, enabling [BepisLoader 2.2.0](https://github.com/KiwiSingh/BepisLoader/releases/tag/v2.2.0) to install combined asset profiles and MBE table edits through the existing bridge. The first adapter supports asset replacement for the pinned x64 Digimon Story Time Stranger build under ARM64 Proton; eye-texture replacement was confirmed in gameplay.
-
-Quit the VM normally before replacing the Steamac app. Restart it using this release's bundled guest layer to obtain the capability; no disk recreation is required. Close the game when installing/disabling mods. Steam may remain open. Copy BepisLoader's reported setting manually into Steam Launch Options. Unsupported builds, code payloads and unsafe paths remain blocked. Current recovery-inventory work and Build 4's BepisBridge status fix are retained.
-
-If BepisLoader still reports an unsupported guest after updating, check for a custom guest-layer path or an older `fx-bepis-agent` user service override; [release troubleshooting](docs/releases/v1.7.6-kiwi.5.md#if-bepisloader-still-reports-an-unsupported-guest) explains how to identify it.
-
-Packaging signs components individually and the app last; it does not use `codesign --deep`.
-
-## Combined asset profiles (Kiwi Build 6)
-
-Kiwi Build 7 adds `assetAudioBanksV1` for BepisLoader 2.3.0: data-only HCA/YAML packages compile into randomized, embedded CRI music banks with the required ADX2 alignment. Classic Looming Threat playback, volume and looping were confirmed in-game. Existing launch options remain valid. See [music profiles, volume overrides and validation](docs/audio-mods.md). The app-bundle audit passed.
-
-This build adds `assetModProfilesV1` for BepisLoader 2.2.0: persistent multi-mod profiles, checked merged snapshots and a stable asset-folder path. Users choose enabled mods and conflict priority in BepisLoader; Steam Launch Options are set once. The guest verifies package hashes and resolved conflict winners, rejects stale updates, and switches only its owned pointer atomically. Previous packages and snapshots are retained.
-
-The profile implementation also supports MBE table CSV edits (including append CSV files used by DigiRide). The guest builds complete replacement tables from the original MVGL archives; edits to distinct cells coexist, and later enabled mods win competing edits. Whole-table replacements combined with CSV edits to that same table are rejected for review. The managed stable root is resolved before native loading. See `docs/releases/v1.7.6-kiwi.6.md`; the app bundle audit passed.
-
-### Larger mod profiles (development)
-
-The checked asset publication path supports combined profiles up to 1 GiB of source assets and compiled output. Single packages are capped at 1 GiB, individual files at 128 MiB, and profiles at 64 mods / 4,096 replacements. Existing published builds retain their earlier 256 MiB profile limit until this guest update is bundled and released.
-
-Skip Opening Logos and Water Recolor use the existing loose-asset / MBE CSV paths. A seven-mod ARM64 fixture combining both with the existing costume, DigiRide and music packages compiled 84 tables and 17 music banks; checked publication produced 2,166 files / 352,712,628 bytes, retaining the previous profile. All existing music banks and ReShade loader/configuration files were unchanged. The opening-logo skip, Water Recolor and existing costume, DigiRide and music mods were confirmed working together in live ARM64 Proton gameplay. The native snapshot limit is also 1 GiB; the corrected adapter passed isolated Proton snapshot and hook tests.
-
-### Checked ReShade installation
-
-BepisLoader's **Set up ReShade…** and **Install ReShade mod…** button uses the bundled guest's `reShadeInstallV1` capability. This game-agnostic path currently supports Windows x64 Direct3D/DXGI packages. It installs beside the selected executable, including games with nested executable directories. BepisLoader imports folders or ZIP/RAR/7z archives and obtains a missing pinned official x64 ReShade runtime and the tested Microsoft shader compiler on demand. Standalone setup creates an empty preset; mod packages supply effects.
-
-The guest validates the executable, staged file hashes and architecture, rejects redirected paths and existing unrelated DLL/configuration conflicts, and refuses installation while the game is running. `.bepis-reshade.json` records installed hashes. Managed, unedited files can be updated with their previous bytes retained in the staging transaction journal. Edited files are preserved and stop the update unless the user explicitly opts to back up and replace ReShade.ini with a valid existing runtime; a failed publication rolls back its own changes. Existing asset profiles, `winmm.dll`, Steam launch settings and Proton-prefix files are not changed.
-
-Validation: 72 ARM64 guest tests passed, including running-game rejection, conflicts, tampering, rollback and persisted state. The real Digimon ReShade package plus native compiler installed 86 files into an isolated SteamOS fixture; a preset-only update retained a backup and left the asset loader/profile unchanged. The app-bundle audit passed; the earlier manual installation's successful gameplay check is separate.
-
-### Faster profile application
-
-With a matching Steamac guest advertising `assetProfileReuseV1`, Apply sends profile metadata and pinned loader payloads instead of downloading and re-uploading stored mod files. Steamac composes the snapshot locally, using copy-on-write copies where available and ordinary independent copies otherwise. Table/music outputs are reused from the previous active snapshot when the compiler, original game bytes and ordered inputs match; cached bytes are checked against both the receipt and published manifest. Unchanged profiles retain the active snapshot. Verification still reads the source bytes, so large profiles can take time even without network transfers. Older guests retain the checked full-transfer flow.
-
+---
 
 ## What's different in the Kiwi Build?
 
@@ -66,63 +62,17 @@ Typical automatic allocations:
 | 18 GB | ~14 GiB |
 | 24 GB+ | 16 GiB |
 
-This gives memory-hungry games more room inside SteamOS while still reserving memory for macOS and shared GPU resources.
-
-You can still override the automatic value manually.
+This gives memory-hungry games more room inside SteamOS while still reserving memory for macOS and shared GPU resources. You can still override the automatic value manually in Settings.
 
 ### Kiwi Build updater
 
-The built-in update checker follows releases from this fork rather than the upstream repository.
-
-Kiwi release tags use the format:
-
-```text
-vX.Y.Z-kiwi.N
-```
-
-For example:
-
-```text
-v1.7.6-kiwi.6
-```
-
-The updater has been extended to recognize these tags while retaining Steamac's underlying version comparison.
+The built-in update checker follows releases from this fork (`KiwiSingh/steamac`) rather than upstream. Release tags use the `vX.Y.Z-kiwi.N` format (e.g. `v1.9-kiwi.1`).
 
 ### BepisBridge integration
 
-Kiwi Build 3 adds **BepisBridge** setup in Steamac Settings to support integration with [BepisLoader](https://github.com/KiwiSingh/BepisLoader). The setup flow provisions per-VM SSH authentication, enabling BepisLoader to interact with a running SteamOS guest. Existing virtio bridge functionality is retained.
+Kiwi Build includes **BepisBridge** setup in Settings to support integration with [BepisLoader](https://github.com/KiwiSingh/BepisLoader). The setup provisions per-VM SSH authentication and virtio communication, enabling BepisLoader to interact directly with the running SteamOS guest.
 
-**Validated:** Steamac launches and boots SteamOS, the BepisBridge setup control is available, and BepInEx mods work with *Digimon World: Next Order* (AppID `1530160`) through the integrated workflow. Other games and mod frameworks may require additional testing.
-
-## Steamac 1.7.6 features
-
-The Kiwi Build includes the upstream Steamac 1.7.6 improvements, including:
-
-- **DualSense / DualSense Edge raw HID passthrough**
-  - Touchpad
-  - Gyroscope
-  - Mute button
-  - Player and mute LEDs
-  - Lightbar control
-  - Rumble
-  - Adaptive triggers
-- **MetalFX super resolution**
-- **Optional Retina resolution**
-- Increased VM file-descriptor limits to prevent GPU failures caused by descriptor exhaustion
-- Existing Steamac external-storage, Desktop Mode, controller, and SteamOS integration features
-
-DualSense support in Kiwi Build 1.7.6 comes from Steamac's upstream raw-HID implementation rather than the older experimental controller implementation previously maintained in this fork.
-
-## Tested configuration
-
-Kiwi Build 3 has been tested on a **16 GB Apple silicon Mac** with:
-
-- SteamOS booting successfully
-- Automatic VM memory correctly selecting **12288 MiB**
-- DualSense passthrough
-- Built-in update checks against `KiwiSingh/steamac`
-- Recognition of `vX.Y.Z-kiwi.N` release tags
-- BepisBridge Settings control and successful BepInEx mod test with Digimon World: Next Order
+---
 
 ## Download
 
@@ -132,7 +82,7 @@ https://github.com/KiwiSingh/steamac/releases
 
 The current release is:
 
-**Steamac 1.7.6 Kiwi Build 9 — `v1.7.6-kiwi.9`**
+**Steamac 1.9 Kiwi Build 1 — `v1.9-kiwi.1`**
 
 The release ZIP is ad-hoc signed and is **not notarized with an Apple Developer ID**.
 
@@ -148,7 +98,7 @@ Steamac is developed by **fxgl**:
 
 https://github.com/fxgl/steamac
 
-This fork tracks the upstream project and adds Kiwi-specific changes on top. Features that are subsequently implemented or superseded upstream are intended to defer to the upstream implementation rather than maintain unnecessary parallel code.
+This fork tracks the upstream project and adds Kiwi-specific changes on top. Features that are subsequently implemented or superseded upstream defer to the upstream implementation rather than maintain unnecessary parallel code.
 
 ## License
 

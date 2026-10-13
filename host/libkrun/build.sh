@@ -150,8 +150,12 @@ PYFIX
 		cargo test -q --features gpu --lib -- virtio::gpu
 	rm -f "$test_lib_link"
 	# Speaker detection/config consistency, PCM permutations, height routing and downmix.
-	RUSTFLAGS="-L native=$out/lib -C link-args=-Wl,-rpath,$out/lib" \
+	test_lib_link="/tmp/steamac-libkrun-test-lib-$$"
+	rm -f "$test_lib_link"
+	ln -s "$out/lib" "$test_lib_link"
+	RUSTFLAGS="-L native=$test_lib_link -C link-args=-Wl,-rpath,$test_lib_link" \
 		cargo test -q --features snd --test macos_audio
+	rm -f "$test_lib_link"
 )
 
 # --- install (temp file + rename for every output)
