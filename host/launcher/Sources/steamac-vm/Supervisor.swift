@@ -107,7 +107,7 @@ enum Supervisor {
             if let busy = o.disks.first(where: { !$0.readOnly && DiskLock.inUse($0.path) }) {
                 let error = DiskLock.InUse(path: busy.path)
                 log("error: \(error)")
-                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS is already running", "\(error)") }
+                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS is already running", error.localizedDescription) }
                 cleanup()
                 exit(1)
             }
@@ -115,7 +115,7 @@ enum Supervisor {
                 try DiskGrower.applyPending(runDir: dir, disks: o.disks)
             } catch {
                 log("grow-disk: \(error)")
-                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS disk could not be grown", "\(error)") }
+                MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("SteamOS disk could not be grown", error.localizedDescription) }
                 cleanup()
                 exit(1)
             }
@@ -220,7 +220,7 @@ enum Supervisor {
             return VMExit(status: 1)
         }
         childPid = pid
-        var exit = VMExit(status: 1)
+        var exit = VMExit(status: 1, pid: pid)
         // NOTE_EXIT fires when the process becomes a zombie; its data carries NOTE_EXIT_DETAIL
         // bits (NOTE_EXIT_MEMORY = jetsam, the kernel's jetsam cause in the high bits). Not
         // registered if it already exited (ESRCH).

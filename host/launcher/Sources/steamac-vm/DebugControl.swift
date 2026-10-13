@@ -39,9 +39,10 @@ import Foundation
 ///                         retry, close, dsn, dump)
 ///   update …              new-version check (UpdateChecker.control: check, startup, press
 ///                         download|skip|later|ok|releases, dump PATH, state)
-///   pad on|off|test|state  GamepadBridge.control: a guest pad without a controller (as
-///                         --input-selftest) / follow the controller again; press A + push the left
-///                         stick; log the guest pad and the guest's last rumble
+///   pad on|off|test [N] | state  GamepadBridge.control: a guest pad for player N (1 if not
+///                         given) without a controller (as --input-selftest) / follow the
+///                         controller again; press A + push the left stick; log the guest pads
+///                         and the guest's last rumble
 enum DebugControl {
     nonisolated(unsafe) private static var settingsWindow: SettingsWindowController?
     nonisolated(unsafe) private static var gamepad: GamepadBridge?
@@ -175,7 +176,7 @@ enum DebugControl {
         case "settings":
             guard let sw = settingsWindow else { break }
             if args.first == "close" { sw.window.close(); break }
-            let tab = SettingsWindowController.Tab.allCases.first { $0.title.lowercased() == (args.first ?? "general") }
+            let tab = SettingsWindowController.Tab.allCases.first { $0.name == (args.first ?? "general") }
             sw.show(tab: tab ?? .general)
         case "settings-dump":
             guard let sw = settingsWindow, let rep = sw.snapshot(),
@@ -196,7 +197,7 @@ enum DebugControl {
             if args.first == "close" { lifecycle.suspender?.statusMenu?.cancelTracking() }
             else if args.first == "item" {
                 let title = args.dropFirst().joined(separator: " ")
-                guard let menu = lifecycle.suspender?.statusMenu, let i = menu.items.firstIndex(where: { $0.title == title }) else {
+                guard let menu = lifecycle.suspender?.statusMenu, let i = menu.items.firstIndex(where: { $0.identifier?.rawValue == title }) else {
                     log("control: no menu-bar item entry \"\(title)\""); break
                 }
                 menu.performActionForItem(at: i)

@@ -10,13 +10,15 @@ enum VMSizing {
     struct Host: Equatable {
         /// Physical RAM, bytes (hw.memsize).
         var memBytes: UInt64
-        /// Performance cores (hw.perflevel0.physicalcpu; nil when the sysctl is missing).
+        /// Cores that are not efficiency cores (every hw.perflevelN except the "Efficiency"
+        /// level: newer chips can have more than one fast level, STEAMAC-2K); nil when the
+        /// perflevel sysctls are missing.
         var perfCores: Int?
         /// All cores (activeProcessorCount).
         var cores: Int
 
         static let current = Host(memBytes: ProcessInfo.processInfo.physicalMemory,
-                                  perfCores: sysctlInt("hw.perflevel0.physicalcpu"),
+                                  perfCores: fastCoreCount(),
                                   cores: ProcessInfo.processInfo.activeProcessorCount)
 
         var memGiB: Int { Int((memBytes + (1 << 29)) >> 30) }
@@ -30,9 +32,21 @@ enum VMSizing {
     }
 
     static let minAutoMemMiB = 4096, maxAutoMemMiB = 16384
-    static let minAutoCPUs = 2, maxAutoCPUs = 8
-    /// Custom memory above this share of the Mac's RAM gets a warning in Settings.
-    static let memWarnShare = 0.6
+    /// Fewer than 4 vCPUs leave Steam's UI loading for minutes (STEAMAC-2K: 2 vCPUs on a 12-core Mac).
+    static let minAutoCPUs = 4, maxAutoCPUs = 8
+    /// macOS, the launcher, driver-internal allocations and other apps need room besides
+    /// guest RAM and Vulkan heaps. Keep at least 3 GiB, or a quarter of a larger Mac.
+    static func hostReserveMiB(_ host: Host) -> Int {
+        max(3072, Int(host.memBytes >> 22))
+    }
+
+    /// Shared by both host Vulkan drivers and the guest's VRAM reporting layer. This is
+    /// an advertised working-set budget, not an allocation cap: Venus allocations are
+    /// asynchronous, so rejecting them here would kill the guest context, not return OOM.
+    static func gpuBudgetMiB(memMiB: Int, host: Host = .current) -> Int {
+        let remaining = Int(host.memBytes >> 20) - memMiB - hostReserveMiB(host)
+        return min(16384, max(256, remaining / 256 * 256))
+    }
 
     /// Three quarters of the Mac's RAM, rounded to whole GiB, 4...16 GiB:
     /// 8 GB Mac → 6 GiB, 16 → 12, 24 and up → 16. This gives games enough guest
@@ -52,30 +66,32 @@ enum VMSizing {
     /// Steam, Proton and FEX gain little, while the host's own frame-path threads (virglrenderer
     /// rings, MoltenVK pipeline compiles, the renderer) need cores too.
     static func autoCPUs(_ host: Host) -> Int {
-        min(maxAutoCPUs, max(minAutoCPUs, host.fastCores))
+        min(maxAutoCPUs, max(2, min(minAutoCPUs, host.cores), host.fastCores))
     }
 
     /// Settings > Advanced: why a custom memory size is risky on this Mac, or nil.
     static func memWarning(memMiB: Int, host: Host) -> String? {
-        guard Double(memMiB) > Double(host.memBytes >> 20) * memWarnShare else { return nil }
-        return "More than 60% of this Mac's \(host.memGiB) GB. The Mac's GPU memory comes from the same RAM: "
-            + "with too little left, games can lose their GPU device (out of memory) and macOS starts swapping."
+        let gpu = gpuBudgetMiB(memMiB: memMiB, host: host)
+        let reserve = hostReserveMiB(host)
+        guard memMiB + gpu + reserve > Int(host.memBytes >> 20) || gpu < 2048 else { return nil }
+        return String(localized: "\(memMiB) MiB VM RAM + \(gpu) MiB GPU budget + \(reserve) MiB reserved for macOS on this \(host.memGiB) GB Mac. Too little GPU memory remains: lower VM memory or graphics settings to avoid swapping, out-of-memory errors or the VM being killed.")
     }
 
     /// Settings > Advanced: why a custom vCPU count is risky on this Mac, or nil.
     static func cpuWarning(cpus: Int, host: Host) -> String? {
         guard let p = host.perfCores, cpus > p else { return nil }
-        return "More than this Mac's \(p) performance cores. The extra vCPUs run on efficiency cores, "
-            + "which slows the guest down and leaves fewer cores for the Mac's GPU work."
+        return String(localized: "More than this Mac's \(p) performance cores. The extra vCPUs run on efficiency cores, which slows the guest down and leaves fewer cores for the Mac's GPU work.")
     }
 
     /// Boot log: the size and where it came from.
-    static func describe(cpus: Int, cpusSource: Source, memMiB: Int, memSource: Source, host: Host = .current) -> String {
+    static func describe(cpus: Int, cpusSource: Source, memMiB: Int, memSource: Source,
+                         gpuMiB: Int? = nil, host: Host = .current) -> String {
         let cores = host.perfCores.map { "\($0) performance cores of \(host.cores)" } ?? "\(host.cores) cores"
         let cpuWhy = cpusSource == .auto ? "automatic: \(cores), \(minAutoCPUs)-\(maxAutoCPUs)" : cpusSource.rawValue
         let memWhy = memSource == .auto
             ? "automatic: 75% of \(host.memGiB) GB RAM, \(minAutoMemMiB / 1024)-\(maxAutoMemMiB / 1024) GB" : memSource.rawValue
-        return "\(cpus) vCPUs (\(cpuWhy)), \(memMiB) MiB memory (\(memWhy))"
+        return "\(cpus) vCPUs (\(cpuWhy)), \(memMiB) MiB memory (\(memWhy)), "
+            + "\(gpuMiB ?? gpuBudgetMiB(memMiB: memMiB, host: host)) MiB GPU budget, \(hostReserveMiB(host)) MiB host reserve"
     }
 
     /// Settings self-test: the formulas on simulated Macs, and the warnings.
@@ -88,9 +104,10 @@ enum VMSizing {
         for (gb, want) in mem where autoMemMiB(host(gb, 4, 8)) != want {
             failures.append("sizing: \(gb) GB → \(autoMemMiB(host(gb, 4, 8))) MiB, want \(want)")
         }
-        // (P, all cores, want): M1 4+4, M4 4+6, M2 Pro 6+4, M1 Pro 8+2, M3 Max 12+4 (14-core: 10+4), 1 P, no perflevel sysctl.
-        let cpus: [(Int?, Int, Int)] = [(4, 8, 4), (4, 10, 4), (6, 10, 6), (8, 10, 8), (12, 16, 8), (10, 14, 8), (1, 4, 2),
-                                        (nil, 8, 8), (nil, 1, 2)]
+        // (P, all cores, want): M1 4+4, M4 4+6, M2 Pro 6+4, M1 Pro 8+2, M3 Max 12+4 (14-core: 10+4), 1 P,
+        // 2 fast of 12 (STEAMAC-2K), 2 cores, no perflevel sysctl.
+        let cpus: [(Int?, Int, Int)] = [(4, 8, 4), (4, 10, 4), (6, 10, 6), (8, 10, 8), (12, 16, 8), (10, 14, 8), (1, 4, 4),
+                                        (2, 12, 4), (1, 2, 2), (nil, 8, 8), (nil, 1, 2)]
         for (p, n, want) in cpus where autoCPUs(host(16, p, n)) != want {
             failures.append("sizing: \(p.map(String.init) ?? "-")P/\(n) cores → \(autoCPUs(host(16, p, n))) vCPUs, want \(want)")
         }
@@ -98,6 +115,12 @@ enum VMSizing {
         if memWarning(memMiB: 4096, host: air) != nil { failures.append("sizing: 4 GB on an 8 GB Mac warned") }
         if memWarning(memMiB: 5120, host: air) == nil { failures.append("sizing: 5 GB on an 8 GB Mac not warned") }
         if memWarning(memMiB: 16384, host: host(36, 10, 14)) != nil { failures.append("sizing: 16 GB on a 36 GB Mac warned") }
+        let budgets: [(UInt64, Int, Int)] = [(8, 4096, 1024), (16, 8192, 4096), (16, 9216, 3072),
+                                            (16, 12288, 256), (32, 16384, 8192), (64, 16384, 16384),
+                                            (8, 16384, 256)]
+        for (gb, vm, want) in budgets where gpuBudgetMiB(memMiB: vm, host: host(gb, 4, 8)) != want {
+            failures.append("sizing: GPU budget \(gb) GB / \(vm) MiB VM, want \(want)")
+        }
         if cpuWarning(cpus: 4, host: air) != nil { failures.append("sizing: 4 vCPUs on 4 P-cores warned") }
         if cpuWarning(cpus: 8, host: air) == nil { failures.append("sizing: 8 vCPUs on 4 P-cores not warned") }
         let here = Host.current
@@ -111,5 +134,27 @@ enum VMSizing {
         var value: Int32 = 0
         var size = MemoryLayout<Int32>.size
         return sysctlbyname(name, &value, &size, nil, 0) == 0 && value > 0 ? Int(value) : nil
+    }
+
+    /// Sum of the non-efficiency performance levels. Without level names, every level but the
+    /// last (the slowest) counts.
+    private static func fastCoreCount() -> Int? {
+        guard let levels = sysctlInt("hw.nperflevels"), levels > 0 else { return nil }
+        var fast = 0
+        for i in 0..<levels {
+            guard let cores = sysctlInt("hw.perflevel\(i).physicalcpu") else { return nil }
+            let name = sysctlString("hw.perflevel\(i).name")
+            let efficiency = name.map { $0 == "Efficiency" } ?? (levels > 1 && i == levels - 1)
+            if !efficiency { fast += cores }
+        }
+        return fast > 0 ? fast : nil
+    }
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buf, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buf)
     }
 }

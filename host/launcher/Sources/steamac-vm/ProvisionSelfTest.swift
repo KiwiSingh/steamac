@@ -29,7 +29,7 @@ enum ProvisionSelfTest {
         check(DiskCreator.percent(in: "Attempt 1: Assembling   32.27% 1m2s") == 32.27, "desync progress parse")
         check(DiskCreator.percent(in: "Attempt 1: Validating ") == nil, "desync non-progress line")
 
-        check(DiskCreator.branches == ["stable", "rc"], "only production-signed SteamOS branches offered")
+        check(DiskCreator.branches == ["stable", "rc"], "stable and rc branches offered")
         for branch in DiskCreator.branches {
             attempt("branch \(branch)") {
                 check(try Options.parse(["steamac-vm", "--create-disk", "/tmp/steamac-branch.img", "--branch", branch]).createBranch == branch,
@@ -41,6 +41,106 @@ enum ProvisionSelfTest {
             do { _ = try Options.parse(["steamac-vm", "--create-disk", "/tmp/steamac-branch.img", "--branch", branch]) }
             catch { rejected = true }
             check(rejected, "CLI rejects branch \(branch)")
+        }
+
+        // NSError descriptions include pointer addresses and URLSession task UUIDs. Neither
+        // belongs in a title/fingerprint; keep the full diagnostic as scrubbed event details.
+        let tlsA = NSError(domain: NSURLErrorDomain, code: NSURLErrorSecureConnectionFailed,
+                           userInfo: [NSLocalizedDescriptionKey: "TLS failed, task <\(UUID().uuidString)>",
+                                      NSUnderlyingErrorKey: NSError(domain: "kCFErrorDomainCFNetwork", code: -1200,
+                                                                    userInfo: ["_kCFStreamErrorCodeKey": -9816])])
+        let tlsB = NSError(domain: NSURLErrorDomain, code: NSURLErrorSecureConnectionFailed,
+                           userInfo: [NSLocalizedDescriptionKey: "TLS failed, task <\(UUID().uuidString)>"])
+        let reportA = CrashReporting.diskCreationReport(tlsA), reportB = CrashReporting.diskCreationReport(tlsB)
+        check(reportA?.key == "NSURLErrorDomain -1200" && reportA?.key == reportB?.key
+              && reportA?.message == reportB?.message, "TLS reports group by domain/code, not task UUID")
+        check(reportA?.extra["error_detail"] == "\(tlsA)", "report retains original technical detail")
+        let tlsMessage = NetworkFailure.message(tlsA, server: .valve)
+        check(tlsMessage.contains("Valve's servers securely") && tlsMessage.contains("VPN, proxy, or network filter"),
+              "disk TLS message explains possible network interference")
+        check(NetworkFailure.message(tlsA, server: .updates).contains("update server (GitHub) securely"),
+              "update TLS message identifies the correct server")
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        check(NetworkFailure.message(offline, server: .valve).contains("Check your internet connection"),
+              "offline download message")
+        for reason in ["not enough free space", "FAT32/MS-DOS volume", "read-only volume", "already exists"] {
+            check(CrashReporting.diskCreationReport(DiskCreationFilesystem.Rejection(reason)) == nil,
+                  "expected location rejection is log-only: \(reason)")
+        }
+        check(CrashReporting.diskCreationReport(DiskCreator.Cancelled()) == nil, "cancelled disk creation is log-only")
+        let publication = CrashReporting.diskCreationReport(OptionError("rename /Volumes/disk: Operation not supported"))
+        let signature = CrashReporting.diskCreationReport(OptionError("bundle signature: certificate chain not trusted"))
+        check(publication != nil && signature != nil && publication?.key != signature?.key,
+              "unexpected filesystem and signature failures remain distinct reports")
+        let development = RaucBundle.trustFailure(signer: "steamos-dev-images", detail: "untrusted")
+        check(development is RaucBundle.DevelopmentSignature && CrashReporting.diskCreationReport(development) == nil,
+              "development trust rejection is log-only")
+        for signer in ["frame-images", "", "steamos-dev-images-other"] {
+            check(CrashReporting.diskCreationReport(RaucBundle.trustFailure(signer: signer, detail: "steamos-dev-images")) != nil,
+                  "other trust failures stay reportable: \(signer)")
+        }
+        attempt("concurrent disk creation") {
+            let dir = NSTemporaryDirectory() + "steamac-lock-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let first = try DiskCreator.acquireCreationLock(cacheRoot: dir)
+            defer { close(first) }
+            do {
+                let second = try DiskCreator.acquireCreationLock(cacheRoot: dir)
+                close(second)
+                check(false, "second disk creation must be rejected")
+            } catch {
+                check("\(error)".contains("wait for it to finish or cancel it"), "concurrent creation explains how to proceed")
+                check(CrashReporting.diskCreationReport(error) == nil, "concurrent creation guard is log-only")
+            }
+            do {
+                let fd = try DiskCreator.acquireCreationLock(cacheRoot: dir + "/missing")
+                close(fd)
+                check(false, "missing cache must fail")
+            } catch {
+                check(CrashReporting.diskCreationReport(error) != nil, "unexpected lock filesystem error stays reportable")
+            }
+        }
+
+        // Optional real development-signed Valve bundle; never accepted or reported.
+        if let path = ProcessInfo.processInfo.environment["STEAMAC_PROVISION_TEST_DEV_BUNDLE"] {
+            attempt("development bundle") {
+                guard let caPath = DiskCreator.caPath else { throw OptionError("Valve CA not found") }
+                var bundle = try RaucBundle(contentsOf: path)
+                do {
+                    try bundle.verify(ca: RaucBundle.loadCA(caPath))
+                    check(false, "development-signed bundle must not verify")
+                } catch {
+                    check(CrashReporting.diskCreationReport(error) == nil, "Valve development signer is log-only")
+                    check("\(error)".contains("Valve's development key") && "\(error)".contains("choose stable or try again later"),
+                          "development signer message explains how to proceed")
+                }
+            }
+        }
+
+        // Optional live TLS rejection using the exact metadata fetch path; no SDK setup or
+        // capture occurs in this self-test. Point at a local server with an untrusted cert.
+        if let value = ProcessInfo.processInfo.environment["STEAMAC_PROVISION_TEST_TLS_URL"] {
+            if let url = URL(string: value), url.scheme == "https" {
+                do {
+                    _ = try DiskCreator().fetch(url)
+                    check(false, "forced TLS failure unexpectedly succeeded")
+                } catch {
+                    let e = error as NSError
+                    check(e.domain == NSURLErrorDomain && (-1206 ... -1200).contains(e.code),
+                          "live downloader rejects untrusted TLS")
+                    log("selftest-provision: TLS details: \(error)")
+                    log("selftest-provision: TLS message: \(NetworkFailure.message(error, server: .valve))")
+                    if let failure = CrashReporting.diskCreationReport(error) {
+                        log("selftest-provision: TLS title: \(failure.message)")
+                        log("selftest-provision: TLS fingerprint: [\(CrashReporting.Kind.diskCreationFailed.rawValue), \(failure.key)] (not sent)")
+                    } else {
+                        check(false, "TLS failure must produce a report descriptor")
+                    }
+                }
+            } else {
+                check(false, "STEAMAC_PROVISION_TEST_TLS_URL must be an HTTPS URL")
+            }
         }
 
         attempt("disk publication") {
@@ -62,7 +162,9 @@ enum ProvisionSelfTest {
             try replacement.write(to: URL(fileURLWithPath: partial))
             var rejected = false
             do { try DiskCreationFilesystem.publish(partial: partial, destination: final) }
-            catch { rejected = true }
+            catch {
+                rejected = error is DiskCreationFilesystem.Rejection && CrashReporting.diskCreationReport(error) == nil
+            }
             let preserved = try Data(contentsOf: URL(fileURLWithPath: final))
             check(rejected && preserved == original, "existing disk never replaced")
             // Filesystems such as exFAT cannot create symlinks.
@@ -70,11 +172,27 @@ enum ProvisionSelfTest {
             if symlink(dir + "/missing", link) == 0 {
                 rejected = false
                 do { try DiskCreationFilesystem.publish(partial: partial, destination: link) }
-                catch { rejected = true }
+                catch {
+                    rejected = error is DiskCreationFilesystem.Rejection && CrashReporting.diskCreationReport(error) == nil
+                }
                 var info = stat()
                 check(rejected && lstat(link, &info) == 0 && info.st_mode & S_IFMT == S_IFLNK,
                       "dangling destination symlink never replaced")
             }
+        }
+
+        attempt("disk folder without write permission") {
+            let fm = FileManager.default
+            let dir = NSTemporaryDirectory() + "steamac-readonly-\(UUID().uuidString)"
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { chmod(dir, 0o755); try? fm.removeItem(atPath: dir) }
+            try DiskCreationFilesystem.requireWritable(directory: dir)
+            check((try? fm.contentsOfDirectory(atPath: dir))?.isEmpty == true, "write probe leaves nothing behind")
+            chmod(dir, 0o555)
+            var rejected = false
+            do { try DiskCreationFilesystem.requireWritable(directory: dir) }
+            catch { rejected = error is DiskCreationFilesystem.Rejection && CrashReporting.diskCreationReport(error) == nil }
+            check(rejected, "unwritable folder rejected before download, log-only (STEAMAC-2H)")
         }
 
         // GPT: writer -> reader round trip on a sparse temp file.

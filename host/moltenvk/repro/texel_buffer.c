@@ -17,6 +17,14 @@
  *    element 6 copied from it with VkCopyDescriptorSet.
  * 3. tb_push.comp: push descriptor set, R32_UINT view at 8; the 256-byte output buffer is written (small buffers with
  *    robustBufferAccess2 were replaced by a temporary copy that lost the writes).
+ * 4. tb_rgb32.comp (KosmicKrisp, and drivers with uniform texel buffer features for R32G32B32 formats): vkd3d-proton
+ *    views structured buffers of 12-byte strides as R32G32B32_UINT texel buffers without checking format features
+ *    (Venus forwards them); KosmicKrisp dereferenced the missing Metal format in vkCreateBufferView and the VM crashed
+ *    (STEAMAC-2Z, The Witcher 3). R32G32B32_UINT view at 20 (4 elements), SFLOAT at 264, SINT at 384: texels with
+ *    alpha 1, sizes, (0, 0, 0, 1) past the end and at element 0x55555556 (three texels per element would wrap to
+ *    texel 2).
+ *    KosmicKrisp only: a view of R16G16B16_UINT (no texel buffer features, invalid usage) is created and reads as a
+ *    null descriptor.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -354,6 +362,108 @@ int main(int argc, char **argv)
 		submit(cmd);
 		uint32_t want[3] = { word(8), word(16), 4 };
 		expect("push descriptor set: view at 8", out, want, 3);
+	}
+
+	/* 4. tb_rgb32.comp */
+	{
+		const VkFormat rgb32[3] = { VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_SINT };
+		int supported = 1;
+		for (uint32_t i = 0; i < 3; i++) {
+			VkFormatProperties fp;
+			vkGetPhysicalDeviceFormatProperties(pd, rgb32[i], &fp);
+			supported &= !!(fp.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT);
+		}
+		const int kk = drv.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
+		if (kk && !supported) {
+			printf("FAIL R32G32B32 formats have no uniform texel buffer feature\n");
+			fails++;
+		}
+		if (!supported && !kk) {
+			printf("SKIP R32G32B32 uniform texel buffers (no uniform texel buffer feature)\n");
+		} else {
+			uint32_t *rw;
+			VkBuffer rbuf = buffer(512, texel, (void **)&rw);
+			for (uint32_t i = 0; i < 64; i++)
+				rw[i] = i;
+			for (uint32_t i = 0; i < 32; i++) {
+				const float v = i + 0.5f;
+				memcpy(&rw[64 + i], &v, 4);
+				rw[96 + i] = (uint32_t)-(int32_t)(i + 1);
+			}
+			VkDescriptorSetLayoutBinding b[5];
+			for (uint32_t i = 0; i < 5; i++)
+				b[i] = (VkDescriptorSetLayoutBinding){ i, i == 4 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+				                                       1, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
+			VkDescriptorBindingFlags flags[5] = { [3] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT };
+			VkDescriptorSetLayout dsl = set_layout(b, 5, flags, 0);
+			VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 8 };
+			VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl,
+				.pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
+			VkPipelineLayout layout;
+			CK(vkCreatePipelineLayout(dev, &plci, NULL, &layout));
+			VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+				.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+				           .module = module("tb_rgb32.comp.spv"), .pName = "main" }, .layout = layout };
+			VkPipeline p;
+			VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p);
+			printf("%-4s create tb_rgb32.comp.spv (VkResult %d)\n", r ? "FAIL" : "OK", r);
+			if (r) return 1;
+			VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dpool,
+				.descriptorSetCount = 1, .pSetLayouts = &dsl };
+			VkDescriptorSet set;
+			CK(vkAllocateDescriptorSets(dev, &dsai, &set));
+			VkBufferView views[4] = { view(rbuf, rgb32[0], 20, 48), view(rbuf, rgb32[1], 264, 48), view(rbuf, rgb32[2], 384, 48),
+			                          kk ? view(rbuf, VK_FORMAT_R16G16B16_UINT, 0, 48) : VK_NULL_HANDLE };
+			printf("OK   views of R32G32B32_UINT/SFLOAT/SINT%s created\n", kk ? " and R16G16B16_UINT (invalid usage)" : "");
+			for (uint32_t i = 0; i < (kk ? 4u : 3u); i++) {
+				VkWriteDescriptorSet w = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = i, .descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = &views[i] };
+				vkUpdateDescriptorSets(dev, 1, &w, 0, NULL);
+			}
+			VkDescriptorBufferInfo obi = { obuf, 0, VK_WHOLE_SIZE };
+			VkWriteDescriptorSet ow = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 4, .descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi };
+			vkUpdateDescriptorSets(dev, 1, &ow, 0, NULL);
+
+			memset(out, 0xcd, 256);
+			const int32_t pc[2] = { 0x55555556, kk };
+			VkCommandBuffer cmd = begin();
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
+			vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
+			vkCmdDispatch(cmd, 1, 1, 1);
+			submit(cmd);
+
+			uint32_t want[36];
+			const float one = 1.0f;
+			for (uint32_t k = 0; k < 4; k++) {
+				for (uint32_t c = 0; c < 3; c++)
+					want[4 * k + c] = 5 + 3 * k + c;
+				want[4 * k + 3] = 1;
+			}
+			want[16] = 4;
+			expect("R32G32B32_UINT view at 20: elements 0-3 (words 5-16, alpha 1), size", out, want, 17);
+			for (uint32_t c = 0; c < 3; c++) {
+				const float v = 5 + c + 0.5f;
+				memcpy(&want[17 + c], &v, 4);
+			}
+			memcpy(&want[20], &one, 4);
+			want[21] = 4;
+			expect("R32G32B32_SFLOAT view at 264: element 1 (5.5, 6.5, 7.5, 1.0), size", out + 17, want + 17, 5);
+			want[22] = (uint32_t)-7;
+			want[23] = (uint32_t)-8;
+			want[24] = (uint32_t)-9;
+			want[25] = 1;
+			expect("R32G32B32_SINT view at 384: element 2 (-7, -8, -9, 1)", out + 22, want + 22, 4);
+			for (uint32_t i = 26; i < 34; i++)
+				want[i] = i == 29 || i == 33;
+			expect("R32G32B32_UINT elements 4 (past the end) and 0x55555556: (0, 0, 0, 1)", out + 26, want + 26, 8);
+			if (kk) {
+				want[34] = 0;
+				want[35] = 0;
+				expect("R16G16B16_UINT view (no texel buffer features): null descriptor (texel 0, size 0)", out + 34, want + 34, 2);
+			}
+		}
 	}
 
 	if (fails) { printf("texel_buffer: %d failure(s)\n", fails); return 1; }

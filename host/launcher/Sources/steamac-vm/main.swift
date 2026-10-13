@@ -19,9 +19,13 @@ do {
     (options, settingsOverrides) = try Options.resolve(CommandLine.arguments, settings: settings)
 } catch {
     FileHandle.standardError.write("steamac-vm: \(error)\n\n\(Options.usage)\n".data(using: .utf8)!)
-    MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("FX Steam Launcher cannot start", "\(error)") }
+    MainActor.assumeIsolated { AppBundle.alertIfLaunchedFromFinder("FX Steam Launcher cannot start", error.localizedDescription) }
     exit(2)
 }
+
+if options.selftestMetalCache { MetalCompilerCache.selfTest() }
+// Before CrashReporting's GPU tags, the window or either Vulkan driver can initialise Metal.
+MetalCompilerCache.prepare()
 
 // MoltenVK (loaded by virglrenderer in this process) logs every instance/device creation at info
 // level, which buries the guest console. Errors only, unless the user asks for more.
@@ -43,6 +47,7 @@ if options.selftestPill { PillSelfTest.run(options) }
 if options.selftestSettings { SettingsSelfTest.run(options, overrides: settingsOverrides) }
 if options.selftestProvision { ProvisionSelfTest.run(options) }
 if options.selftestRemotePlay { RemotePlaySelfTest.run() }
+if options.selftestPointer { PointerSelfTest.run() }
 if options.createDisk != nil { CreateDiskCLI.run(options, settings: settings) }
 if let disk = options.growDisk {
     do {
@@ -100,11 +105,12 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
     /// SteamOS can take ~2 min to stop (systemd stop-job timeouts) before libkrun exits.
     static let gracePeriod: TimeInterval = 180
 
-    /// Force quit: no relaunch even if a restart was pending.
+    /// Force quit: no relaunch even if a restart was pending; the status tells the supervisor the
+    /// user asked for it (CrashReporting.forceQuitStatus).
     private func forceQuit() -> Never {
         log("force quit")
         if let dir = Supervisor.runDir { try? FileManager.default.removeItem(atPath: Supervisor.rebootMarker(dir)) }
-        exit(1)
+        exit(CrashReporting.forceQuitStatus)
     }
 
     func requestShutdown(force: Bool = false) {
@@ -127,7 +133,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
             log("power key sent to guest; repeat the request to force quit")
         }
         progress?.hostRequestedShutdown()
-        window?.setStatus("shutting down… (close again to force quit)")
+        window?.setStatus(String(localized: "shutting down… (close again to force quit)"))
         startGraceTimer()
         if let suspender { suspender.whenAwake(pressPowerKey) } else { pressPowerKey() }
     }
@@ -153,7 +159,7 @@ final class Lifecycle: NSObject, NSApplicationDelegate {
         suspender?.resume(origin: "restart")
         progress.hostRequestedRestart()   // onRebootIntent writes the supervisor's reboot marker
         settingsContext?.restartRequested = true
-        window?.setStatus("restarting… (close to force quit)")
+        window?.setStatus(String(localized: "restarting… (close to force quit)"))
         startGraceTimer()
         let pressPowerKey = {
             guard vm.requestShutdown() else {
@@ -241,11 +247,12 @@ extension Lifecycle: NSMenuItemValidation {
         if item.action == #selector(menuMetalHUD) { item.state = LauncherSettings.shared.metalHUD ? .on : .off }
         if item.action == #selector(menuCheckForUpdates) {
             item.title = UpdateChecker.shared.menuTitle
-            item.badge = UpdateChecker.shared.available != nil ? NSMenuItemBadge(string: "New") : nil
+            item.badge = UpdateChecker.shared.available != nil ? NSMenuItemBadge(string: String(localized: "New", comment: "Badge on a menu item when an update is available")) : nil
         }
         if item.action == #selector(menuSuspend) {
             let suspended = suspender?.suspended ?? false
-            item.title = suspended ? "Resume" : "Suspend"
+            item.title = suspended ? String(localized: "Resume", comment: "App menu: resume the suspended VM")
+                                   : String(localized: "Suspend", comment: "App menu: freeze the VM in memory")
             return suspender != nil && requestedAt == nil
         }
         return true
@@ -323,22 +330,26 @@ do {
     let clockPort = try ClockPort()
     // Guest sleep needs the window (overlay, wake input): headless, the guest's sleep fails instead.
     let sleepPort = options.headless ? nil : try SleepPort()
-    // The guest's gamepad follows the Mac's controller (GamepadBridge): needs the window too.
-    let padPort = options.headless || !options.gamepad ? nil : try PadPort()
+    // The guest's gamepads follow the Mac's controllers (GamepadBridge): need the window too.
+    let padPorts = options.headless || !options.gamepad ? [] : try (0..<GamepadBridge.maxPads).map { try PadPort(player: $0) }
     // Clipboard sharing follows the app's activation (ClipboardSync): window only.
     let clipboardPort = options.headless ? nil : try ClipboardPort()
     let vm = try VM(options: options, display: display, console: console, progressPort: progressPort,
-                    clockPort: clockPort, sleepPort: sleepPort, padPort: padPort, clipboardPort: clipboardPort,
+                    clockPort: clockPort, sleepPort: sleepPort, padPorts: padPorts, clipboardPort: clipboardPort,
                     bepisBridgePort: bepisBridgePort,
                     inputs: inputs, netSocket: Supervisor.netSocket)
     lifecycle.vm = vm
-    let gamepad = padPort.map { GamepadBridge(port: $0, settings: settings, typeOverride: options.padType) }
+    let gamepad = padPorts.isEmpty ? nil : GamepadBridge(ports: padPorts, settings: settings, typeOverride: options.padType)
     let sound = SoundControl()
     if vm.hasSound {
         sound.attach(ctx: vm.ctx, settings: settings)
-        if let missing = sound.missingAPIReason { log("sound: live controls unavailable: \(missing)") }
+        if let missing = sound.missingAPILogReason { log("sound: live controls unavailable: \(missing)") }
     } else {
-        sound.detach(reason: options.sound ? "This libkrun has no sound support (SND=1)." : "Sound was off when this VM started.")
+        if options.sound {
+            sound.detach(reason: "This libkrun has no sound support (SND=1).")
+        } else {
+            sound.detach(reason: "Sound was off when this VM started.")
+        }
     }
 
     for sig in [SIGINT, SIGTERM, SIGHUP] {
@@ -385,7 +396,8 @@ do {
     log("booting \(options.kernel) cpus=\(options.cpus) mem=\(options.memMiB)MiB display=\(options.guestSize.0)x\(options.guestSize.1)"
         + " cmdline=\"\(options.cmdline)\"" + (Supervisor.bootNumber > 1 ? " (boot #\(Supervisor.bootNumber))" : ""))
     log("vm size: " + VMSizing.describe(cpus: options.cpus, cpusSource: options.cpusSource,
-                                        memMiB: options.memMiB, memSource: options.memSource))
+                                        memMiB: options.memMiB, memSource: options.memSource,
+                                        gpuMiB: options.gpuBudgetMiB))
     PerfStats.setEnabled(options.perfStats)
     // Settings > General toggles the stats live unless --perf-stats / STEAMAC_PERF_STATS fixed them.
     let perfSubscription = settings.$perfStats.dropFirst().sink { on in

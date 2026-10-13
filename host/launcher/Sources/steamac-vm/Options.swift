@@ -28,6 +28,13 @@ struct Options {
     var memMiB = VMSizing.autoMemMiB(.current)
     var cpusSource = VMSizing.Source.auto
     var memSource = VMSizing.Source.auto
+    /// --cmdline steamac.gpu_mib=N overrides both renderer and guest reporting for tests.
+    var gpuBudgetMiB: Int {
+        let prefix = "steamac.gpu_mib="
+        let word = cmdline.split(separator: " ").last { $0.hasPrefix(prefix) }
+        return word.flatMap { Int($0.dropFirst(prefix.count)) }
+            ?? VMSizing.gpuBudgetMiB(memMiB: memMiB)
+    }
     /// Initial window content size in points (`--display`, Settings > Display window size).
     var displayWidth = 1280
     var displayHeight = 800
@@ -49,6 +56,7 @@ struct Options {
     var network = true
     var lanRemotePlay = false
     var selftestRemotePlay = false
+    var selftestPointer = false
     var sound = true
     var sshPort = 2222
     /// Steam client of this boot (kernel cmdline `steamac.steam_client=`).
@@ -64,7 +72,7 @@ struct Options {
     var mouseMode: MouseMode = .auto
     var controlFifo: String?
     var autoCapture: Bool?
-    /// The guest gets a gamepad over fx.pad (`--no-gamepad`: no port, no pad this run).
+    /// The guest gets gamepads over fx.pad, fx.pad2, … (`--no-gamepad`: no ports, no pads this run).
     var gamepad = true
     /// `--pad`: what the guest's gamepad is this run (instead of Settings > Controller).
     var padType: LauncherSettings.PadType?
@@ -94,6 +102,7 @@ struct Options {
     /// --accept-eula: accept Valve's SteamOS EULA + Steam Subscriber Agreement (SteamOSLicense).
     var acceptLicense = false
     var selftestProvision = false
+    var selftestMetalCache = false
     var referenceDisk: String?
     /// --ssh-password DISK: print the disk's generated guest password (GuestPassword) and exit.
     var showSSHPassword: String?
@@ -121,6 +130,8 @@ struct Options {
            steamac-vm --selftest-settings [--selftest-out DIR]
            steamac-vm --selftest-provision [--reference-disk IMG]
            steamac-vm --selftest-remote-play
+           steamac-vm --selftest-metal-cache
+           steamac-vm --selftest-pointer
            steamac-vm --create-disk PATH [--branch stable|rc] [--home-gib N]
                       [--password PW] [--keep-cache] [--accept-eula]
            steamac-vm --ssh-password DISK
@@ -154,6 +165,7 @@ struct Options {
                            this DPI (physical size = new size x the same mm per pixel).
       --headless           no window and no input devices; SIGUSR1 dumps the latest frame
       --log FILE           also append the hvc0 console to FILE
+      -AppleLanguages '(L)' UI language for this run: en, ru or zh-Hans (default: the macOS language)
       --no-net             no virtio-net / gvproxy
       --lan-remote-play    expose Steam Remote Play on the LAN (Settings > Advanced; off by default)
       --no-lan-remote-play disable the LAN discovery relay and Remote Play forwards for this boot
@@ -182,6 +194,9 @@ struct Options {
                            (xpad); dualsense, dualshock4: Sony pad as the Linux hid-playstation /
                            hid-sony drivers expose it (PlayStation button glyphs in Steam). Any
                            connected controller drives it; its rumble plays on that controller.
+                           Further controllers are players 2-4 with a pad each (auto: of
+                           its own controller's kind; Settings > Controller "Additional
+                           controllers").
       --krun-log-level N   libkrun log level 0=off .. 5=trace (default 2=warn)
       --steam-client C     Steam client SteamOS starts (kernel cmdline steamac.steam_client=C, added on
                            every boot; default: Settings > Advanced "Steam client", deck unless changed):
@@ -247,6 +262,9 @@ struct Options {
       --selftest-provision unit tests of the disk creator: GPT writer vs the layout of --reference-disk
                            (default work/out/steamos.img, opened read-only), squashfs + CMS verification of
                            the cached bundle, cpio payload, SHA-512 crypt, desync progress parsing
+      --selftest-metal-cache reproduce an inaccessible Metal module cache and verify startup recovery
+      --selftest-pointer   host pointer -> guest cursor mapping (Retina on/off, window vs scanout size,
+                           full-screen letterbox, MetalFX, the guest's focused surface from focus lines)
       --resize-selftest S  S seconds after Steam is ready, resize the window 1600x1000 -> fullscreen ->
                            windowed -> 1280x800, wait for the guest's new scanout each time and dump
                            frames to <--frame-dump>-resize-N-*.png
@@ -283,6 +301,8 @@ struct Options {
         while i < argv.count {
             let a = argv[i]
             if a.hasPrefix("-psn_") { i += 1; continue }   // old Finder process serial number
+            // Cocoa argument-domain overrides of the UI language (NSUserDefaults reads them itself).
+            if a == "-AppleLanguages" || a == "-AppleLocale" { i += 2; continue }
             o.explicit.insert(a)
             switch a {
             case "--kernel": o.kernel = try value(a)
@@ -375,6 +395,8 @@ struct Options {
             case "--selftest-settings": o.selftestSettings = true
             case "--selftest-remote-play": o.selftestRemotePlay = true
             case "--selftest-provision": o.selftestProvision = true
+            case "--selftest-metal-cache": o.selftestMetalCache = true
+            case "--selftest-pointer": o.selftestPointer = true
             case "--reference-disk": o.referenceDisk = try value(a)
             case "--create-disk": o.createDisk = try value(a)
             case "--grow-disk": o.growDisk = try value(a)
@@ -416,7 +438,7 @@ struct Options {
 
     var isSelftest: Bool {
         selftestDisplay || selftestOverlay || selftestStall || selftestPill || selftestSettings || selftestProvision || selftestRemotePlay
-            || createDisk != nil || growDisk != nil
+            || selftestMetalCache || selftestPointer || createDisk != nil || growDisk != nil
             || showSSHPassword != nil
     }
 
@@ -443,6 +465,7 @@ struct Options {
             }
             add("steamac.ssh", o.sshPort == 0 ? "0" : "1")
             add("steamac.steam_client", o.steamClient.rawValue)
+            add("steamac.gpu_mib", String(VMSizing.gpuBudgetMiB(memMiB: o.memMiB)))
             if o.macTime {
                 add("steamac.tz", MacTime.zone)
                 add("steamac.clock24", MacTime.clock24.map { $0 ? "1" : "0" })
@@ -539,6 +562,13 @@ struct Options {
         guard !kernel.isEmpty else { throw OptionError("--kernel is required") }
         guard (1...255).contains(cpus) else { throw OptionError("--cpus must be 1..255") }
         guard memMiB >= 256 else { throw OptionError("--mem must be >= 256") }
+        let gpuWords = cmdline.split(separator: " ").filter { $0.hasPrefix("steamac.gpu_mib=") }
+        if !gpuWords.isEmpty {
+            guard gpuWords.count == 1, let value = Int(gpuWords[0].dropFirst("steamac.gpu_mib=".count)),
+                  (256...16384).contains(value) else {
+                throw OptionError("steamac.gpu_mib must occur once and be 256..16384 MiB")
+            }
+        }
         guard sshPort == 0 || (1024...65535).contains(sshPort) else {
             throw OptionError("--ssh-port must be 0 or 1024..65535")
         }
@@ -597,7 +627,11 @@ enum MacTime {
     }
 }
 
-struct OptionError: Error, CustomStringConvertible {
+/// `description`: English, for the CLI, logs and crash reports ("\(error)"). `localizedDescription`:
+/// the UI text, `localized` when given (String(localized:)), else the English text.
+struct OptionError: LocalizedError, CustomStringConvertible {
     let description: String
-    init(_ d: String) { description = d }
+    let localized: String?
+    init(_ d: String, localized: String? = nil) { description = d; self.localized = localized }
+    var errorDescription: String? { localized ?? description }
 }

@@ -12,8 +12,16 @@
     <string>steamac-vm</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>ru</string>
+        <string>zh-Hans</string>
+    </array>
     <key>CFBundleShortVersionString</key>
-    <string>1.7.6-kiwi.8</string>
+    <string>1.7.6-kiwi.9</string>
     <key>CFBundleVersion</key>
     <string>17609</string>
     <key>CFBundleIconFile</key>

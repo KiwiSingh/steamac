@@ -13,11 +13,13 @@
 //!   shutdown <poweroff|reboot>    session torn down by a system shutdown
 //!   game <appid> <name>           display name from the appmanifest, once per app id and
 //!                                 boot, right after its first `focus game <appid>`
-//!   focus steam | focus game <appid> | focus desktop [<w>x<h>]   gamescope's focused app
-//!                                 (GAMESCOPE_FOCUSED_APP; 0 and 769 = Steam UI), for the
-//!                                 launcher's pointer handling; `focus desktop <w>x<h>` = the
-//!                                 Desktop Mode session's Plasma window of that size, bare
-//!                                 `focus desktop` = the session ended without a system shutdown
+//!   focus steam [<w>x<h>] | focus game <appid> [<w>x<h>] | focus desktop [<w>x<h>]
+//!                                 gamescope's focused app (GAMESCOPE_FOCUSED_APP; 0 and
+//!                                 769 = Steam UI) and the size of the surface the cursor
+//!                                 moves on (focus.rs), for the launcher's pointer handling;
+//!                                 `focus desktop <w>x<h>` = the Desktop Mode session's Plasma
+//!                                 window of that size, bare `focus desktop` = the session
+//!                                 ended without a system shutdown
 //!   alive <uptime_ms> <loadavg1>  heartbeat, once a second from agent start
 //!   logs-begin / logs / logs-end / logs-failed   log bundle answering the
 //!                                 host's `collect-logs <id>` (collect.rs; the

@@ -39,6 +39,98 @@
 #   0026       steamac: device and queue losses are printed on stderr ("MESA: error: VK_ERROR_DEVICE_LOST: ...",
 #              with the Metal error of a failed command buffer). Release builds lost the device silently:
 #              Venus only logged "vkQueueSubmit resulted in CS error" (STEAMAC-G, M4 Max).
+#   0027       steamac: sparse residency queries in shaders (OpImageSparse* -> MSL sparse_sample/sparse_read/
+#              sparse_gather, MinLod -> min_lod_clamp): shaderResourceResidency.
+#   0028       steamac: sparse binding and residency (D3D12 tiled resources through vkd3d-proton): Metal 4
+#              placement sparse textures/buffers, 64 KiB pages of placement heaps mapped by vkQueueBindSparse
+#              through MTL4CommandQueue updateTextureMappings/updateBufferMappings; standard 2D block shapes,
+#              strict non-resident reads, per-layer mip tails from the first level smaller than a tile;
+#              sparse resources bind only the device-local memory type (never a host-pointer import).
+#              Not available: sparse 3D (Metal's 3D tiles are one slice deep, not Vulkan's standard 3D
+#              blocks), sparse MSAA. Within one render pass, depth writes to unbound tiles stay in tile
+#              memory for later draws of the pass (D3D12 Tiled Resources Tier 2 allows that cache).
+#   0029       steamac: sampler min/max reduction (VK_EXT_sampler_filter_minmax, filterMinmaxSingleComponentFormats)
+#              before Apple10, where Metal's reductionMode is unsupported: point samplers plus a shader
+#              footprint reduction (exact for 1D/2D/3D/arrays; anisotropy ignored, cube corners approximated).
+#              With 0027/0028 vkd3d-proton reports Tiled Resources Tier 2, hence feature level 12_0.
+#   0030       steamac: unmaps of sparse buffer pages are applied. Metal held back MTL4CommandQueue unmaps of
+#              placement sparse buffers (and texture buffers) until the queue mapped a page of a resident
+#              resource: an unmap ending a vkQueueBindSparse left the page mapped (vkd3d-proton's
+#              test_update_tile_mappings_remap_stress). A bind submit that unmapped buffer pages ends by
+#              mapping the queue's resident one page buffer.
+#   0031       steamac: texel buffer views of sparse buffers. Metal makes no texture from a placement sparse
+#              buffer (nil; vkd3d-proton's typed views of reserved buffers, ClearUnorderedAccessViewUint, lost
+#              the Venus context): views are placement sparse texture buffers from the page below the view,
+#              mapped like the buffer's pages (recorded per buffer, mapped heaps retained) at creation and on
+#              every later bind.
+#   0032       steamac: sparse sample residency for LODs past the last level. Metal samples the last level
+#              but reported the missing level past it not resident (vkd3d-proton's texture_feedback
+#              SampleGrad); sparse samples limit the LOD to the view's last level (level/min_lod_clamp/the
+#              implicit LOD through the bias) and take the last level's residency for gradients past it.
+#   0033       steamac: VK_EXT_image_view_min_lod advertised by default (was MESA_KK_EXPERIMENTAL=image_view_min_lod;
+#              hk's lowering: a 16-bit descriptor load and a max per sample when minLod is enabled, fetches below
+#              the minimum LOD read zero). vkd3d-proton's ResourceMinLODClamp needs it (test_view_min_lod 706/706;
+#              without it vkd3d-proton rebases views, 10 failures).
+#   0034       steamac: residency of sparse loads through texel buffer views (Metal has no sparse read of texture
+#              buffers: CheckAccessFullyMapped after typed buffer loads always reported resident, vkd3d-proton's
+#              test_buffer_feedback_instructions / test_sparse_default_mapping). Sparse residency buffers get an R8Uint
+#              placement sparse 2D array texture whose 64 KiB tiles are the buffer's pages, mapped to the same heap
+#              pages by the same queue mapping updates; texel buffer descriptors grow to 32 bytes and sparse loads take
+#              the residency of a sparse_read of their page's tile. Metal crashes in updateTextureMappings when a
+#              texture mapping update follows a buffer/texture-buffer one that followed a texture one: the queue
+#              signals and waits for an event in between (a signal alone let later buffer unmaps be overtaken).
+#   0035       steamac: sparse residency through views with baseMipLevel > 0, and of gathers. Metal reports
+#              such a view's residency for the image's level/LOD without the base (fetch, explicit LOD,
+#              imageLoad; gradient and implicit LODs only in their clamps), and a gather resident when its
+#              footprint crosses into an unbound tile. Such views get residency views from level 0 (storage
+#              image descriptors grow to 16 bytes); sparse operations through them take the residency of the
+#              same operation on that view at level/LOD + base, with the sampler's LOD clamps applied in the
+#              shader (samplers get an unclamped copy when they could matter); gathers take that of a
+#              bilinear sample of their level through a LINEAR unclamped copy of the sampler.
+#   0036       steamac: sampler min/max emulation (0029) only for draws/dispatches with a reduction sampler
+#              bound. It cost every sample, also through ordinary samplers (twice the GPU time of
+#              sampling-bound shaders, 1.3-1.6x their compile time). Pipelines sampling from descriptor sets
+#              get a program without the emulation (immutable samplers resolved at compile time) and one
+#              with it, used while a bound set (per-set count of reduction samplers, never decremented)
+#              holds one; the second program's MSL is built at creation, its Metal compile happens on first
+#              use (first at creation once a set of the pipeline's layout got a reduction sampler: descriptor
+#              heaps). Update-after-bind sets that get one after recording make the submission re-record the
+#              command buffer; one-time-submit buffers use the emulating program for them. MESA_KK_DEBUG=minmax
+#              logs reduction samplers, emulating/plain programs compiled and re-recordings.
+#   0037       steamac: query pools past Metal's limits. All occlusion queries of a device shared one visibility
+#              result buffer of 32768 (Metal's maximum visibility query offset, 256 KB), and every timestamp
+#              pool took counter heaps of its own while Metal allows 32 per process, which every guest device
+#              shares under virglrenderer: further pools failed to create, and Venus' next vkCmdBeginQuery /
+#              vkCmdResetQueryPool on one was a CS error (STEAMAC-G: Dota 2, Counter-Strike 2). Occlusion
+#              results live in chunks of 32768 created as needed (16 per device; a render pass writes the
+#              chunk of its active query, a query of another chunk restarts the Metal render pass); timestamp
+#              pools take 32-entry chunks of 32 process-wide counter heaps of 4096.
+#   0038       steamac: a command queue error first logs the failed command buffer's GPU time and the semaphore
+#              waits submitted before their signal that are still unsignalled (value, current value, age; the
+#              queue keeps the last 8). STEAMAC-G: M3/M4/M5 lose devices with MTL4CommandQueueErrorTimeout after
+#              Steam's UI starts; on an M1 Max a Metal 4 queue wait that is never signalled ends after 4.0 s
+#              without an error, so the message has to tell such a wait from GPU work that ran too long.
+#   0039       steamac: a command queue error also logs the failed command buffer's guest application, its
+#              commit-to-start delay or that it never started (raw GPU times), the queue's last completion,
+#              the Metal error's userInfo, the devices alive and the last ones created/destroyed in the
+#              process, and once the Metal/IOGPU/AGX error messages of the process' os_log (the IOGPU
+#              reason: Metal 4 reports page faults, hangs and recovery victims as one Timeout code). STEAMAC-G
+#              timeouts follow Steam's hellovr_vulkan probe teardown by 0.3-1.1 s. MESA_KK_DEBUG=commits logs
+#              late/long command buffers and device lifetimes. Queue teardown waits for every feedback
+#              handler (they could run after vkDestroyDevice).
+#   0040       steamac: the base texture of every image plane (and of the 2D array alias of 3D images), block-texel view
+#              subresource texture and texel buffer view texture is in the device's residency set, from bind/creation
+#              until before its release (sparse images as before). Metal 4 takes an attachment as resident only when
+#              its base texture object is in a residency set, not its heap, the buffer it was made from (host pointer
+#              imports) or the bound view; KosmicKrisp only added heaps and buffers, and Metal API validation reported
+#              every render pass (9033 times in one Steam boot). STEAMAC-G: M3+ timeouts follow Steam's first MSAA
+#              targets/window images and window resizes. Repro: host/moltenvk/repro residency.c.
+#   0042       steamac: R32G32B32_UINT/SINT/SFLOAT uniform texel buffers (R32 texture buffers of three texels per
+#              element, flagged in the descriptor's texel offset; fetches read three texels, alpha 1). vkd3d-proton views
+#              12-byte structured buffers as R32G32B32_UINT texel buffers without checking format features, and
+#              kk_CreateBufferView dereferenced the missing Metal format (STEAMAC-2Z: The Witcher 3 crashed the VM).
+#              Views of other formats no texture buffer backs read as null descriptors (one warning per format).
+#              Repro: host/moltenvk/repro texel_buffer.c 4.
 #
 # Two meson builds: (1) the host compiler tools mesa_clc + vtn_bindgen2 against Homebrew LLVM
 # (shared) and SPIRV-LLVM-Translator, installed into work/build/host-kosmickrisp/clc; (2) the driver
@@ -215,6 +307,21 @@ mv -f "$lib.tmp.$$" "$lib"
 	echo "  0024 = steamac: single texel alignment for texel buffer views (vkd3d-proton)"
 	echo "  0025 = steamac: timestamp pools over several Metal counter heaps (4096 each; vkd3d-proton 8192)"
 	echo "  0026 = steamac: device/queue losses (and their Metal error) printed on stderr"
+	echo "  0027 = steamac: sparse residency queries in shaders (MSL sparse_sample/sparse_read)"
+	echo "  0028 = steamac: sparse binding/residency via Metal 4 placement sparse resources (tiled resources)"
+	echo "  0029 = steamac: sampler min/max reduction emulated in shaders before Apple10"
+	echo "  0030 = steamac: unmaps of sparse buffer pages applied (resident one page buffer mapped after them)"
+	echo "  0031 = steamac: texel buffer views of sparse buffers (placement sparse texture buffers)"
+	echo "  0032 = steamac: sparse sample residency for LODs past the last level"
+	echo "  0033 = steamac: VK_EXT_image_view_min_lod by default"
+	echo "  0034 = steamac: residency of sparse loads through texel buffer views (residency texture per buffer)"
+	echo "  0035 = steamac: sparse residency through views with baseMipLevel > 0 (residency views from level 0), and of gathers"
+	echo "  0036 = steamac: sampler min/max emulation only for draws with a reduction sampler bound (second program)"
+	echo "  0037 = steamac: occlusion queries past one visibility buffer (chunks), timestamp pools on shared counter heaps"
+	echo "  0038 = steamac: command queue errors name the GPU time and still unsignalled semaphore waits"
+	echo "  0039 = steamac: command queue errors name the device, timing and os_log GPU error; queue teardown waits for handlers"
+	echo "  0040 = steamac: base textures of image planes, subresource and texel buffer view textures in the residency set"
+	echo "  0042 = steamac: R32G32B32 uniform texel buffers; views of unsupported formats read as null descriptors"
 	echo
 	echo "Known gaps (host/moltenvk/repro/run.sh): transform feedback with strip geometry shaders and"
 	echo "the overflow counter (draft !44928)."

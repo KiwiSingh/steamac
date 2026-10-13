@@ -14,8 +14,8 @@ func krun(_ name: String, _ r: Int32) throws -> Int32 {
     return r
 }
 
-/// Input devices handed to the window (nil in headless mode). The gamepad is not among them: the
-/// guest creates it over fx.pad (PadPort, GamepadBridge).
+/// Input devices handed to the window (nil in headless mode). The gamepads are not among them: the
+/// guest creates them over fx.pad, fx.pad2, … (PadPort, GamepadBridge).
 struct VMInputs {
     let keyboard: InputDevice
     let tablet: InputDevice
@@ -37,7 +37,7 @@ final class VM {
     static let maxDisplaySide = 4095
 
     init(options o: Options, display: DisplayBackend, console: Console, progressPort: ProgressPort?,
-         clockPort: ClockPort?, sleepPort: SleepPort?, padPort: PadPort?, clipboardPort: ClipboardPort?,
+         clockPort: ClockPort?, sleepPort: SleepPort?, padPorts: [PadPort], clipboardPort: ClipboardPort?,
          bepisBridgePort: BepisBridgePort?,
          inputs: VMInputs?, netSocket: String?) throws {
         VM.raiseFileLimit()
@@ -66,10 +66,11 @@ final class VM {
             try krun("krun_add_console_port_inout(\(SleepPort.name))",
                      krun_add_console_port_inout(ctx, UInt32(con), SleepPort.name, s.guestInputFd, s.guestOutputFd))
         }
-        // The Mac's controller -> the guest's uinput gamepad (fx-pad.service), its rumble back.
-        if let p = padPort {
-            try krun("krun_add_console_port_inout(\(PadPort.name))",
-                     krun_add_console_port_inout(ctx, UInt32(con), PadPort.name, p.guestInputFd, p.guestOutputFd))
+        // The Mac's controllers -> the guest's uinput gamepads (fx-pad.service, fx-pad@.service: one
+        // port per player), their rumble back.
+        for p in padPorts {
+            try krun("krun_add_console_port_inout(\(p.name))",
+                     krun_add_console_port_inout(ctx, UInt32(con), p.name, p.guestInputFd, p.guestOutputFd))
         }
         // The Mac's clipboard <-> SteamOS's (fx-clipboard-agent.service, ClipboardSync).
         if let c = clipboardPort {
@@ -105,8 +106,9 @@ final class VM {
         // GPU: Venus only (no virgl GL), host-visible shm window for blobs. virglrenderer (in this
         // process) opens the Vulkan driver named by VKR_VULKAN_DRIVER (its patch 0013).
         setenv("VKR_VULKAN_DRIVER", "@rpath/" + o.vulkanDriver.library, 1)
+        setenv("VKR_GPU_BUDGET_MIB", String(o.gpuBudgetMiB), 1)
         OverlayView.vulkanDriver = o.vulkanDriver
-        log("gpu: Venus → \(o.vulkanDriver.name)")
+        log("gpu: Venus → \(o.vulkanDriver.name), \(o.gpuBudgetMiB) MiB advertised memory budget")
         let flags = o.gpuFlags ?? (STEAMAC_VIRGL_VENUS | STEAMAC_VIRGL_NO_VIRGL)
         try krun("krun_set_gpu_options2", krun_set_gpu_options2(ctx, flags, UInt64(o.shmMiB) << 20))
         let (gw, gh) = o.guestSize

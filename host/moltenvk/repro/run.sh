@@ -36,9 +36,10 @@
 #    loads, read-modify-write, runtime array after a header) with limited buffer ranges: in-bounds data,
 #    out-of-bounds zeros, out-of-bounds stores discarded; a store through an OpCopyObject of an access chain
 #    into a function-local array (dxil-spirv), values read back.
-# 9. invalid_usage.c: VK_NULL_HANDLE set layouts in a pipeline layout (independent sets, from Venus) and
-#    rasterizationSamples 8 (not supported by Apple GPUs); then a pipeline whose MSL does not compile, whose
-#    MSL must be logged as "[mvk-msl] " lines on stderr.
+# 9. invalid_usage.c: VK_NULL_HANDLE set layouts in a pipeline layout (independent sets, from Venus),
+#    rasterizationSamples 8 (not supported by Apple GPUs) and VK_NULL_HANDLE descriptor sets bound among others
+#    (Counter-Strike 2, STEAMAC-25: buffers of the sets around the null one written by a dispatch and a draw); then
+#    a pipeline whose MSL does not compile, whose MSL must be logged as "[mvk-msl] " lines on stderr.
 # 10. vertex_input.c: vertex input layouts Metal's always-on vertex descriptor validation aborts on (zero
 #    strides, static/dynamic/per instance/zero divisor, attributes past the stride, attributes of undescribed
 #    bindings, with and without geometry shader emulation), one process per case; points check the
@@ -46,10 +47,17 @@
 # 11. device_address.c: atomics on vector components behind buffer device addresses (vkd3d-proton's
 #    scalar-layout uvec3 counter, std430 uvec4 with a dynamic component, ivec2), values read back.
 # 12. queries.c: occlusion query results copied from a later command buffer, one copy per query with
-#    availability and wait (Venus' query feedback): availability of queries other than 0.
+#    availability and wait (Venus' query feedback): availability of queries other than 0; a timestamp pool of 8192;
+#    48 one-query timestamp pools on two devices (more than Metal's 32 counter heaps per process, which every guest
+#    device shares under virglrenderer) and occlusion pools of 32760, 8 and 40000 queries (more than one 256 KB
+#    visibility result buffer) with one render pass counting samples in queries of all of them (STEAMAC-G: Dota 2 /
+#    Counter-Strike 2 "vkCmdBeginQuery resulted in CS error" after a query pool failed to create on KosmicKrisp).
 # 13. texel_buffer.c: texel buffer views at offsets that are not 16-byte aligned (single texel alignment, required by
 #    vkd3d-proton): uniform/storage texel buffers, arrays, variable-count arrays, copies and push descriptors, values
-#    read back; storage buffer array sizes written one element per update.
+#    read back; storage buffer array sizes written one element per update; R32G32B32 uniform texel buffers (vkd3d-proton's
+#    views of 12-byte structured buffers; KosmicKrisp crashed in vkCreateBufferView, STEAMAC-2Z: skipped where the formats
+#    have no uniform texel buffer feature, MoltenVK) and on KosmicKrisp a view of a format without texel buffer features
+#    reading as a null descriptor.
 # 14. multi_entry.c: modules with vertex, fragment and compute entry points (shaders/multi_entry/ linked with
 #    spirv-link, SPIR-V 1.0 and 1.6) whose compute entry point has workgroup variables (one zero-initialized):
 #    the vertex/fragment pipeline draws, the compute pipeline counts in workgroup memory.
@@ -70,17 +78,48 @@
 # 17. msl_helpers.c: fragment helpers with an OpKill-only block, directly and through a nested caller
 #    (STEAMAC-1Q): discard left-half pixels, render right-half colors, suppress writes after discard;
 #    a compute helper named log10(float) (STEAMAC-1R), its implementation's values read back.
-# 18. device_lost.c (KosmicKrisp only): a device loss must be printed on stderr (STEAMAC-G: a release build lost
+# 18. frag_output.c: fragment outputs of another numeric type than their color attachment (STEAMAC-2C: an unsigned
+#    output to R32_SINT failed in Metal): signedness changes, a padded scalar, location 1 next to a matching output,
+#    an output array indexed dynamically, float to R32_UINT and ivec4 to RGBA8_UNORM (bits checked on MoltenVK only),
+#    two outputs packed into one location's components; every pipeline must be created and write the output's bits.
+# 19. device_lost.c (KosmicKrisp only): a device loss must be printed on stderr (STEAMAC-G: a release build lost
 #    the device silently and Venus only logged "vkQueueSubmit resulted in CS error"); the runtime's queue-loss
 #    path (a timeline signal of value 0) stands in for a failed Metal command buffer, which can't be provoked.
-# 19. host_memory.c: 16 KiB host-visible allocations as virglrenderer makes them (POSIX shm imported as host memory,
+# 20. host_memory.c: 16 KiB host-visible allocations as virglrenderer makes them (POSIX shm imported as host memory,
 #    the shm fd plus two dups per mapped allocation; STEAMAC-G: Left 4 Dead 2's context died after a blob export and
 #    shm_open failed): at a Finder launch's soft RLIMIT_NOFILE of 256 they run out of fds within 256 / 3 allocations,
 #    the driver never failing; at the limit steamac-vm raises itself to, 8192 live ones, 20000 free + allocate rounds and
 #    8192 live plain allocations of that type succeed, and every fd is closed after the frees.
+# 21. sparse.c (KosmicKrisp only): vkd3d-proton's Tiled Resources Tier 2 feature gate, standard 2D tiles and
+#    per-layer mip tails, strict unbound image/buffer reads and shader residency, minimum-LOD clamps,
+#    binary/timeline sparse bind ordering, page relocation and image/plain-buffer aliases; vkd3d-proton's remap stress
+#    (100 rounds of tile range updates batched like its UpdateTileMappings: NULL ranges ending a vkQueueBindSparse must
+#    unmap); texel buffer views of sparse buffers made before and after binds, following rebinds and unmaps, and the
+#    residency of OpImageSparseRead/OpImageSparseFetch through them (CheckAccessFullyMapped after typed buffer loads,
+#    4- and 16-byte texels); residency of explicit-gradient, explicit-LOD, fragment implicit-LOD samples, fetches and
+#    gathers reaching or passing the last level (NEAREST and LINEAR mip), through samplers clamping the LOD and through
+#    views with baseMipLevel > 0 (also fetches, explicit-LOD samples through a MIN reduction sampler and imageLoad of
+#    storage views of levels > 0: Metal reported the image's level lod instead of base + lod); gathers whose footprint
+#    crosses into an unbound tile (Metal reported them resident); a D32 sparse depth attachment with unbound tiles
+#    (depth tests read 0 and writes are dropped across render passes; within one render pass tile memory keeps them,
+#    printed as INFO: Tiled Resources Tier 2 allows it); R32/R8 sampler MIN/MAX reduction over bilinear footprints and
+#    adjacent mip levels, with weighted-average controls, through immutable samplers, update-after-bind sets that get
+#    the reduction sampler after recording (replayed at submission, and one-time-submit) and sets rewritten before a
+#    resubmission; then (sparse minmax-log, MESA_KK_DEBUG=minmax) where KosmicKrisp emulates MIN/MAX (before Apple10),
+#    dispatches without a reduction sampler bound must run the pipeline's program without the emulation (its log
+#    names every other program compiled: none until a reduction sampler is bound, then the emulating one once; a
+#    pipeline created after its layout got one compiles the emulating program first and the plain one on first use).
+# 22. residency.c (KosmicKrisp only; STEAMAC-G): Metal 4 takes an attachment as resident only when its base texture object
+#    is in a residency set of the command buffer or queue (not the heap it was placed in, the buffer it was made from or
+#    the view bound). Every kind of attachment KosmicKrisp makes is rendered (clear/store, meta clears, resolves, a blit):
+#    textures in heaps of the device-local and host-visible types, in the private heap of a host pointer import (tiled)
+#    and of the imported buffer (LINEAR, also through the 2D array view input attachments get), 4x MSAA color/depth/stencil
+#    (also host-imported), depth/stencil, format views, layer views, 2D views of 3D images, sparse binding images, images
+#    at offsets of one allocation. Run with MTL_DEBUG_LAYER_WARNING_MODE=nslog (Metal does not report it otherwise; with
+#    warnings logged the error assert mode aborts on it), any "not added to any residency set" line fails it.
 # All run with Metal API validation in assert mode (MTL_DEBUG_LAYER), so a Metal validation error
 # fails the run instead of aborting a VM later.
-# All must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
+# All applicable tests must pass on MoltenVK. On KosmicKrisp all but 5 and 10 must pass (1 sizes the descriptor pool with
 # combinedImageSamplerDescriptorCount like gamescope; 2 skips the VK_NULL_HANDLE binds, which virglrenderer no
 # longer passes to the driver; 9 without the MSL log, which is MoltenVK's; 13 expects (0, 0, 0, 0) past the end of
 # an RGBA8 view, MoltenVK returns alpha 1); not run there: 5 (Mesa !44928 is a draft: strip-GS transform feedback
@@ -252,6 +291,9 @@ build descriptor_heap
 build msl_helpers
 "$work/msl_helpers" "$gspv"
 
+build frag_output
+"$work/frag_output" "$gspv"
+
 if [ "$driver" = kosmickrisp ]; then
 	build device_lost
 	"$work/device_lost"
@@ -259,3 +301,21 @@ fi
 
 build host_memory
 "$work/host_memory"
+
+if [ "$driver" = kosmickrisp ]; then
+	build sparse
+	"$work/sparse" "$gspv"
+	"$work/sparse" "$gspv" minmax-log
+
+	# Metal reports a non-resident attachment as a validation warning (not printed by default): log warnings,
+	# so the error assert mode fails on it, and fail on any such line it only logged.
+	build residency
+	residency_log=$work/residency.log
+	MTL_DEBUG_LAYER_WARNING_MODE=nslog "$work/residency" > "$residency_log" 2>&1 || { cat "$residency_log"; exit 1; }
+	if grep -q 'not added to any residency set' "$residency_log"; then
+		cat "$residency_log"
+		echo "FAIL residency: $(grep -c 'not added to any residency set' "$residency_log") attachments not in a residency set"
+		exit 1
+	fi
+	grep -e '^OK' -e '^SKIP' "$residency_log"
+fi

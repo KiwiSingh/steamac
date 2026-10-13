@@ -73,6 +73,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// Auto mode: where the guest cursor is (guest pixels); nil = unknown, re-anchor first.
     private var guestCursor: (Int, Int)?
     private var lastPointerMotion = Date.distantPast
+    /// The surface gamescope moves the cursor on, in its pixels, as the agent reports it with
+    /// each focus line (nil = not reported: the display).
+    private var guestSurface: (Int, Int)?
     /// What the guest says has focus (progress agent `focus …`); Steam until told otherwise.
     private(set) var guestFocus: GuestFocus = .steam
     private var wheelHiRemainder = (0.0, 0.0)   // (vertical, horizontal) in 1/120 notch units
@@ -269,7 +272,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
 
     func setStatus(_ status: String?) {
-        let title = status.map { "\(baseTitle) — \($0)" } ?? baseTitle
+        let title = status.map { String(localized: "\(baseTitle) — \($0)", comment: "Window title: app name and current status") } ?? baseTitle
         if window.title != title { window.title = title }
     }
 
@@ -277,15 +280,15 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// ("Downloading Steam update 70%", "Starting Steam…", "Shutting down…").
     private func updateTitle() {
         if guestAsleep {
-            setStatus("sleeping — click to wake")
+            setStatus(String(localized: "sleeping — click to wake"))
         } else if pausedGame != nil {
-            setStatus("paused")
+            setStatus(String(localized: "paused", comment: "Window status: the game is paused"))
         } else if let s = progress.flatMap({ WindowController.progressStatus($0.state) }) {
-            setStatus(captured ? "\(s) — mouse captured, Ctrl+Option releases" : s)
+            setStatus(captured ? String(localized: "\(s) — mouse captured, Ctrl+Option releases") : s)
         } else if captured {
-            setStatus("mouse captured — Ctrl+Option releases")
+            setStatus(String(localized: "mouse captured — Ctrl+Option releases"))
         } else if inputs != nil && clickCaptures {
-            setStatus("click to capture the mouse")
+            setStatus(String(localized: "click to capture the mouse"))
         } else {
             setStatus(nil)
         }
@@ -300,7 +303,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         case .boot:
             guard !s.indeterminate, s.fraction > 0 else { return ellipsized }
             let t = s.title.hasSuffix("…") ? String(s.title.dropLast()) : s.title
-            return "\(t) \(Int((s.fraction * 100).rounded(.down)))%"
+            return String(localized: "\(t) \(Int((s.fraction * 100).rounded(.down)))%")
         }
     }
 
@@ -351,6 +354,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         progress.onChange = { [weak self] s in previous?(s); self?.progressChanged(s) }
         let previousFocus = progress.onFocus
         progress.onFocus = { [weak self] f in previousFocus?(f); self?.guestFocusChanged(f) }
+        progress.onFocusSurface = { [weak self] s in self?.guestSurfaceChanged(s) }
         let previousReady = progress.onReady
         progress.onReady = { [weak self] in previousReady?(); self?.overlay.hide() }
         let previousShutdown = progress.onShutdown
@@ -645,44 +649,38 @@ final class WindowController: NSObject, NSWindowDelegate {
     // focused surface's pixels and clamps the cursor to that surface. So in `auto` mode the host
     // pointer is mirrored with exact relative deltas through the virtio mouse, after anchoring the
     // guest cursor at the top-left corner with one large negative delta whenever its position is
-    // unknown (pointer entered the picture, idle, after a capture). Desktop Mode runs inside the
-    // same gamescope (Plasma is one KWin window, `focus desktop <w>x<h>`), so it takes the same
-    // path, mapped onto that window as gamescope shows it. The absolute tablet is used only in
+    // unknown (pointer entered the picture, idle, after a capture), mapped onto the focused
+    // surface as gamescope shows it (PointerMap): the agent reports its size with every focus
+    // line (`focus steam 1920x1200`: Steam's window when its Display > Resolution is not native;
+    // Desktop Mode's Plasma window, `focus desktop <w>x<h>`). The absolute tablet is used only in
     // `tablet` mode.
 
     /// Idle time after which the guest cursor may have been moved by the guest (warps, a game's
     /// smaller surface clamping); the next motion re-anchors.
     static let reanchorAfterIdle: TimeInterval = 1.5
-    /// gamescope's `--max-scale` (guest/layer/usr/lib/steamos/gamescope-session): a smaller
-    /// surface is shown at most this many times its size.
-    static let gamescopeMaxScale = 2.0
 
     private var usesTablet: Bool {
         mouseMode == .tablet
     }
 
-    /// The surface relative motion lands on, in its pixels: the Desktop Mode desktop window, else
-    /// the display (Steam's UI and games fill it).
-    private var pointerSurface: (Int, Int) {
-        if case .desktop(let w, let h) = guestFocus { return (w, h) }
-        return scanoutSize
+    /// Current host view -> guest cursor mapping (the picture as drawn, the current scanout, the
+    /// focused surface).
+    var pointerMap: PointerMap {
+        PointerMap(picture: view.fitRect, display: scanoutSize, surface: guestSurface ?? scanoutSize)
     }
 
-    /// Where `pointerSurface` appears in the view: gamescope fits it into the display (aspect kept,
-    /// centred, upscaled at most `gamescopeMaxScale` times).
-    private var pointerRect: CGRect {
-        let fit = view.fitRect
-        let (w, h) = pointerSurface, (sw, sh) = scanoutSize
-        guard (w, h) != (sw, sh), w > 0, h > 0, sw > 0, sh > 0 else { return fit }
-        let scale = min(Double(sw) / Double(w), Double(sh) / Double(h), WindowController.gamescopeMaxScale)
-        let pw = fit.width * CGFloat(Double(w) * scale / Double(sw))
-        let ph = fit.height * CGFloat(Double(h) * scale / Double(sh))
-        return CGRect(x: fit.midX - pw / 2, y: fit.midY - ph / 2, width: pw, height: ph)
+    func guestSurfaceChanged(_ s: (Int, Int)?) {
+        guard s.map({ [$0.0, $0.1] }) != guestSurface.map({ [$0.0, $0.1] }) else { return }
+        guestSurface = s
+        log("input: guest pointer surface " + (s.map { "\($0.0)x\($0.1)" } ?? "= display"))
+        guestCursor = nil
     }
 
-    /// "Name (appid)" when the guest told us the game's name.
+    /// "Name (appid)" when the guest told us the game's name. IDs are interpolated as text: an
+    /// Int would be grouped like a quantity ("1 091 500").
     private func gameLabel(_ id: Int) -> String {
-        settings.gameName(id).map { "\($0) (\(id))" } ?? "game \(id)"
+        settings.gameName(id).map { String(localized: "\($0) (\(String(id)))", comment: "Game name and Steam app ID") }
+            ?? String(localized: "game \(String(id))")
     }
 
     private var focusedGame: Int? {
@@ -714,8 +712,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         if captured && mouseMode == .auto && !clickCaptures { releasePointer() }
         updateTitle()
         if let id = focusedGame, mouseMode == .auto {
-            flashStatus(settings.autoCapture(for: id) ? "click to capture the mouse (Ctrl+Option releases)"
-                                                      : "auto-capture off for \(gameLabel(id)) (Ctrl+Cmd+G captures)")
+            flashStatus(settings.autoCapture(for: id) ? String(localized: "click to capture the mouse (Ctrl+Option releases)")
+                                                      : String(localized: "auto-capture off for \(gameLabel(id)) (Ctrl+Cmd+G captures)"))
         }
     }
 
@@ -736,7 +734,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         settings.setAutoCapture(on, for: id)
         if !on && captured { releasePointer() }
         updateTitle()
-        flashStatus(on ? "auto-capture on for \(gameLabel(id))" : "auto-capture off for \(gameLabel(id))")
+        flashStatus(on ? String(localized: "auto-capture on for \(gameLabel(id))")
+                       : String(localized: "auto-capture off for \(gameLabel(id))"))
     }
 
     @objc func toggleGlobalAutoCapture(_ sender: Any?) {
@@ -746,7 +745,8 @@ final class WindowController: NSObject, NSWindowDelegate {
             + (settings.autoCaptureOverride != nil ? "; --auto-capture still applies to this run" : ""))
         if captured && !clickCaptures { releasePointer() }
         updateTitle()
-        flashStatus("auto-capture in games \(settings.globalAutoCapture ? "on" : "off")")
+        flashStatus(settings.globalAutoCapture ? String(localized: "auto-capture in games on")
+                                               : String(localized: "auto-capture in games off"))
     }
 
     @objc func toggleCaptureNow(_ sender: Any?) { captured ? releasePointer() : grabPointer() }
@@ -755,12 +755,15 @@ final class WindowController: NSObject, NSWindowDelegate {
     func installMouseMenu() {
         guard let main = NSApp.mainMenu else { return }
         let item = NSMenuItem()
-        let menu = NSMenu(title: "Mouse")
+        let menu = NSMenu(title: String(localized: "Mouse", comment: "Menu for mouse capture controls"))
         menu.autoenablesItems = true
-        for (title, action) in [("Capture Mouse in This Game", #selector(toggleGameAutoCapture(_:))),
-                                ("Auto-Capture Mouse in Games", #selector(toggleGlobalAutoCapture(_:))),
-                                ("Capture / Release Mouse Now (Ctrl+Cmd+G)", #selector(toggleCaptureNow(_:)))] {
-            let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        let entries: [(LocalizedStringResource, Selector)] = [
+            ("Capture Mouse in This Game", #selector(toggleGameAutoCapture(_:))),
+            ("Auto-Capture Mouse in Games", #selector(toggleGlobalAutoCapture(_:))),
+            ("Capture / Release Mouse Now (Ctrl+Cmd+G)", #selector(toggleCaptureNow(_:))),
+        ]
+        for (title, action) in entries {
+            let i = NSMenuItem(title: String(localized: title), action: action, keyEquivalent: "")
             i.target = self
             menu.addItem(i)
         }
@@ -774,11 +777,11 @@ extension WindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(toggleGameAutoCapture(_:)):
             if let id = focusedGame {
-                item.title = "Capture Mouse in This Game (\(gameLabel(id)))"
+                item.title = String(localized: "Capture Mouse in This Game (\(gameLabel(id)))")
                 item.state = settings.autoCapture(for: id) ? .on : .off
                 return mouseMode == .auto
             }
-            item.title = "Capture Mouse in This Game"
+            item.title = String(localized: "Capture Mouse in This Game")
             item.state = .off
             return false
         case #selector(toggleGlobalAutoCapture(_:)):
@@ -849,18 +852,12 @@ extension WindowController {
     }
 
     private func inPicture(_ e: NSEvent) -> Bool {
-        (usesTablet ? view.fitRect : pointerRect).contains(view.convert(e.locationInWindow, from: nil))
+        (usesTablet ? view.fitRect : pointerMap.surfaceRect).contains(view.convert(e.locationInWindow, from: nil))
     }
 
-    /// Host pointer position in pixels of `pointerSurface`, clamped to it.
+    /// Host pointer position in pixels of the focused surface, clamped to it.
     private func guestPoint(_ e: NSEvent) -> (Int, Int) {
-        let p = view.convert(e.locationInWindow, from: nil)
-        let r = pointerRect
-        guard r.width > 0, r.height > 0 else { return (0, 0) }
-        let ux = Double((p.x - r.minX) / r.width)
-        let uy = 1 - Double((p.y - r.minY) / r.height)   // AppKit views are bottom-left origin
-        let (w, h) = pointerSurface
-        return (min(w - 1, max(0, Int(ux * Double(w)))), min(h - 1, max(0, Int(uy * Double(h)))))
+        pointerMap.surfacePoint(view.convert(e.locationInWindow, from: nil))
     }
 
     private func moveTablet(_ e: NSEvent) {
@@ -879,7 +876,8 @@ extension WindowController {
         let target = guestPoint(e)
         let now = Date()
         if guestCursor == nil || now.timeIntervalSince(lastPointerMotion) > WindowController.reanchorAfterIdle {
-            let far = -Int32(4 * (scanoutSize.0 + scanoutSize.1))
+            let (sw, sh) = pointerMap.surface
+            let far = -Int32(4 * (max(sw, scanoutSize.0) + max(sh, scanoutSize.1)))
             inputs.mouse.send([(EV.REL, REL.X, far), (EV.REL, REL.Y, far)])
             guestCursor = (0, 0)
         }
@@ -1018,7 +1016,7 @@ enum MainMenu {
         appMenu.addItem(item("Report a Problem…", report, target))
         appMenu.addItem(.separator())
         // Ctrl+Cmd+S also works while the VM window has the keyboard (WindowController.processKey).
-        let suspendItem = item("Suspend", suspend, target, key: "s")
+        let suspendItem = item(LocalizedStringResource("Suspend", comment: "App menu: freeze the VM in memory"), suspend, target, key: "s")
         suspendItem.keyEquivalentModifierMask = [.command, .control]
         appMenu.addItem(suspendItem)
         appMenu.addItem(item("Restart VM", restart, target))
@@ -1027,18 +1025,18 @@ enum MainMenu {
         appMenu.addItem(.separator())
         // Lifecycle.applicationShouldTerminate decides (shut down; asks first while suspended).
         // While the VM window has the keyboard, Cmd+Q goes to the guest like every key.
-        appMenu.addItem(NSMenuItem(title: "Quit FX Steam Launcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenu.addItem(NSMenuItem(title: String(localized: "Quit FX Steam Launcher"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         addEditAndWindowMenus(main)
         let viewItem = NSMenuItem()
         main.insertItem(viewItem, at: 2)
-        let viewMenu = NSMenu(title: "View")
+        let viewMenu = NSMenu(title: String(localized: "View", comment: "Menu for display controls"))
         viewItem.submenu = viewMenu
         viewMenu.addItem(item("Toggle Full Screen (Ctrl+Cmd+F)", fullscreen, target))
         viewMenu.addItem(item("Grab Pointer (Ctrl+Cmd+G; Ctrl+Option releases)", grab, target))
         viewMenu.addItem(item("Show Boot Progress", overlay, target))
         // Ticked by the target's validateMenuItem (follows Settings > Display and Ctrl+Cmd+P).
         viewMenu.addItem(item("Show Metal Performance HUD (Ctrl+Cmd+P)", metalHUD, target))
-        let help = NSMenu(title: "Help")
+        let help = NSMenu(title: String(localized: "Help", comment: "Application help menu"))
         help.addItem(item("Report a Problem…", report, target))
         let helpItem = NSMenuItem()
         helpItem.submenu = help
@@ -1055,34 +1053,37 @@ enum MainMenu {
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         if let (action, target) = settings { appMenu.addItem(item("Settings…", action, target, key: ",")) }
-        appMenu.addItem(NSMenuItem(title: "Quit FX Steam Launcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenu.addItem(NSMenuItem(title: String(localized: "Quit FX Steam Launcher"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         addEditAndWindowMenus(main)
         NSApp.mainMenu = main
     }
 
     /// Standard Edit (text fields in Settings) and Window (Cmd+W closes Settings) menus.
     private static func addEditAndWindowMenus(_ main: NSMenu) {
-        let edit = NSMenu(title: "Edit")
-        for (title, action, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"),
-                                     ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
-                                     ("Paste", #selector(NSText.paste(_:)), "v"),
-                                     ("Select All", #selector(NSText.selectAll(_:)), "a")] {
-            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        let edit = NSMenu(title: String(localized: "Edit", comment: "Standard text editing menu"))
+        let entries: [(LocalizedStringResource, Selector, String)] = [
+            ("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"),
+            ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Paste", #selector(NSText.paste(_:)), "v"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ]
+        for (title, action, key) in entries {
+            edit.addItem(NSMenuItem(title: String(localized: title), action: action, keyEquivalent: key))
         }
         let editItem = NSMenuItem()
         editItem.submenu = edit
         main.addItem(editItem)
-        let window = NSMenu(title: "Window")
-        window.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
-        window.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        let window = NSMenu(title: String(localized: "Window", comment: "Standard window management menu"))
+        window.addItem(NSMenuItem(title: String(localized: "Close", comment: "Menu command: close the window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        window.addItem(NSMenuItem(title: String(localized: "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
         let windowItem = NSMenuItem()
         windowItem.submenu = window
         main.addItem(windowItem)
         NSApp.windowsMenu = window
     }
 
-    private static func item(_ title: String, _ action: Selector, _ target: AnyObject, key: String = "") -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+    private static func item(_ title: LocalizedStringResource, _ action: Selector, _ target: AnyObject, key: String = "") -> NSMenuItem {
+        let i = NSMenuItem(title: String(localized: title), action: action, keyEquivalent: key)
         i.target = target
         return i
     }
